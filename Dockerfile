@@ -15,12 +15,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM alpine:3.21
 
+RUN apk add --no-cache tzdata
+
 WORKDIR /app
 
-RUN adduser -D -H -s /sbin/nologin app
-
 COPY --from=builder /out/ktk-schedule /app/ktk-schedule
-
-USER app
 
 CMD ["/app/ktk-schedule"]
