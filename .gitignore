@@ -1,0 +1,7 @@
+.env
+*.exe
+*.out
+*.db
+.vscode/
+data/
+*.log
