@@ -6,4 +6,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ktk_schedule_data:/app/data
+
+volumes:
+  ktk_schedule_data:
