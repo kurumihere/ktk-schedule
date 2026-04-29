@@ -3,14 +3,20 @@ package ktk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const PairTypeIndependentWork = 9
+const pairTypeIndependentWork = 9
+const maxResponseBodyBytes = 4 << 20
+
+var shortWeekdayNames = [...]string{"Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"}
 
 type ScheduleDay struct {
 	Date     string         `json:"Date"`
@@ -39,7 +45,7 @@ type ScheduleItem struct {
 	} `json:"ExtraData"`
 }
 
-type LectureHallResponse struct {
+type lectureHallResponse struct {
 	LectureHalls map[string][]LectureHall `json:"LectureHalls"`
 }
 
@@ -54,14 +60,36 @@ type LectureHall struct {
 type LectureHallMap map[int]LectureHall
 
 func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
-	url := fmt.Sprintf(
-		"%s/v0/050ba56b37f0337e/8f7c3cbf3115ae2c/28beedf026903f63?Teacher=&Group=%d&Week=%d",
-		c.baseURL,
-		groupID,
-		weekMillis,
-	)
+	if c.endpointSnapshot().SchedulePath == "" {
+		if err := c.RefreshEndpoints(ctx, groupID, weekMillis); err != nil {
+			return nil, err
+		}
+		return c.getSchedule(ctx, groupID, weekMillis)
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	days, err := c.getSchedule(ctx, groupID, weekMillis)
+	if err == nil {
+		return days, nil
+	}
+	if !shouldRefreshEndpoints(err) {
+		return nil, err
+	}
+
+	if refreshErr := c.RefreshEndpoints(ctx, groupID, weekMillis); refreshErr != nil {
+		return nil, fmt.Errorf("%w; endpoint refresh failed: %v", err, refreshErr)
+	}
+
+	return c.getSchedule(ctx, groupID, weekMillis)
+}
+
+func (c *Client) getSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
+	endpoint := c.endpointSnapshot()
+	requestURL, err := c.buildScheduleURL(endpoint.SchedulePath, groupID, weekMillis)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -70,29 +98,58 @@ func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64)
 	req.Header.Set("Referer", c.baseURL+"/")
 	req.Header.Set("User-Agent", "ktk-schedule/1.0")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := readLimitedBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("schedule failed: %s: %s", resp.Status, string(body))
+		return nil, endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
 	}
 
 	var days []ScheduleDay
 	if err := json.Unmarshal(body, &days); err != nil {
-		return nil, err
+		return nil, endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
 	}
 
 	return days, nil
 }
 
-func (c *Client) GetLectureHalls(ctx context.Context) (LectureHallMap, error) {
-	url := c.baseURL + "/v0/050ba56b37f0337e/8f7c3cbf3115ae2c/lecture-hall?Branch=44b72cd889a44234a8a7a49750fedf1bc5a654d8b06257ec5866711be0be6286"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *Client) GetLectureHalls(ctx context.Context, groupID int, weekMillis int64) (LectureHallMap, error) {
+	endpoint := c.endpointSnapshot()
+	if endpoint.LectureHallPath == "" || endpoint.BranchID == "" {
+		if err := c.RefreshEndpoints(ctx, groupID, weekMillis); err != nil {
+			return nil, err
+		}
+		return c.getLectureHalls(ctx)
+	}
+
+	halls, err := c.getLectureHalls(ctx)
+	if err == nil {
+		return halls, nil
+	}
+	if !shouldRefreshEndpoints(err) {
+		return nil, err
+	}
+
+	if refreshErr := c.RefreshEndpoints(ctx, groupID, weekMillis); refreshErr != nil {
+		return nil, fmt.Errorf("%w; endpoint refresh failed: %v", err, refreshErr)
+	}
+
+	return c.getLectureHalls(ctx)
+}
+
+func (c *Client) getLectureHalls(ctx context.Context) (LectureHallMap, error) {
+	endpoint := c.endpointSnapshot()
+	requestURL, err := c.buildLectureHallURL(endpoint.LectureHallPath, endpoint.BranchID)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -101,21 +158,21 @@ func (c *Client) GetLectureHalls(ctx context.Context) (LectureHallMap, error) {
 	req.Header.Set("Referer", c.baseURL+"/")
 	req.Header.Set("User-Agent", "ktk-schedule/1.0")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := readLimitedBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("lecture halls failed: %s: %s", resp.Status, string(body))
+		return nil, endpointError{operation: "lecture halls", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
 	}
 
-	var data LectureHallResponse
+	var data lectureHallResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, err
+		return nil, endpointError{operation: "lecture halls", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
 	}
 
 	result := make(LectureHallMap)
@@ -127,6 +184,88 @@ func (c *Client) GetLectureHalls(ctx context.Context) (LectureHallMap, error) {
 	}
 
 	return result, nil
+}
+
+func (c *Client) buildScheduleURL(path string, groupID int, weekMillis int64) (string, error) {
+	requestURL, err := c.resolveURL(path)
+	if err != nil {
+		return "", err
+	}
+
+	parsedURL, err := url.Parse(requestURL)
+	if err != nil {
+		return "", err
+	}
+
+	query := parsedURL.Query()
+	query.Set("Teacher", "")
+	query.Set("Group", strconv.Itoa(groupID))
+	query.Set("Week", strconv.FormatInt(weekMillis, 10))
+	parsedURL.RawQuery = query.Encode()
+
+	return parsedURL.String(), nil
+}
+
+func (c *Client) buildLectureHallURL(path, branchID string) (string, error) {
+	requestURL, err := c.resolveURL(path)
+	if err != nil {
+		return "", err
+	}
+
+	parsedURL, err := url.Parse(requestURL)
+	if err != nil {
+		return "", err
+	}
+
+	query := parsedURL.Query()
+	query.Set("Branch", branchID)
+	parsedURL.RawQuery = query.Encode()
+
+	return parsedURL.String(), nil
+}
+
+func readLimitedBody(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+}
+
+type endpointError struct {
+	operation  string
+	statusCode int
+	status     string
+	body       string
+	err        error
+}
+
+func (e endpointError) Error() string {
+	if e.err != nil {
+		return fmt.Sprintf("%s failed: unexpected response: %v", e.operation, e.err)
+	}
+	return fmt.Sprintf("%s failed: %s", e.operation, e.status)
+}
+
+func (e endpointError) Unwrap() error {
+	return e.err
+}
+
+func shouldRefreshEndpoints(err error) bool {
+	var endpointErr endpointError
+	if !errors.As(err, &endpointErr) {
+		return false
+	}
+
+	if endpointErr.statusCode == http.StatusNotFound || endpointErr.statusCode == http.StatusGone {
+		return true
+	}
+	if endpointErr.err != nil && looksLikeHTML(endpointErr.body) {
+		return true
+	}
+
+	return false
+}
+
+func looksLikeHTML(body string) bool {
+	body = strings.TrimSpace(strings.ToLower(body))
+	return strings.HasPrefix(body, "<!doctype html") || strings.HasPrefix(body, "<html")
 }
 
 func WeekStartMillis(now time.Time, loc *time.Location) int64 {
@@ -157,6 +296,34 @@ func FindTodayIndex(days []ScheduleDay) int {
 	return 0
 }
 
+func FindDateIndex(days []ScheduleDay, now time.Time, loc *time.Location) int {
+	if loc == nil {
+		loc = time.Local
+	}
+
+	today := now.In(loc).Format(time.DateOnly)
+	for i, day := range days {
+		if scheduleDate(day.Date, loc) == today {
+			return i
+		}
+	}
+
+	return FindTodayIndex(days)
+}
+
+func scheduleDate(value string, loc *time.Location) string {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		value = strings.TrimSpace(value)
+		if len(value) >= len(time.DateOnly) {
+			return value[:len(time.DateOnly)]
+		}
+		return value
+	}
+
+	return parsed.In(loc).Format(time.DateOnly)
+}
+
 func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 	var b strings.Builder
 
@@ -173,10 +340,13 @@ func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 	}
 
 	for _, subject := range day.Subjects {
-		isIndependent := subject.ExtendedData.PairType == PairTypeIndependentWork
+		isIndependent := subject.ExtendedData.PairType == pairTypeIndependentWork
 		hall := FormatLectureHall(subject.LectureHall, halls)
 
-		b.WriteString(fmt.Sprintf("%d пара — %s\n", subject.Pair, subject.Discipline))
+		b.WriteString(strconv.Itoa(subject.Pair))
+		b.WriteString(" пара — ")
+		b.WriteString(subject.Discipline)
+		b.WriteByte('\n')
 
 		if isIndependent {
 			b.WriteString("📘 Тип: Самостоятельная работа\n")
@@ -208,19 +378,11 @@ func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 
 func FormatLectureHall(id int, halls LectureHallMap) string {
 	hall, ok := halls[id]
-	if !ok {
-		return fmt.Sprintf("%d", id)
-	}
-
-	if hall.Number == "" {
-		return fmt.Sprintf("%d", id)
-	}
-
-	if hall.Virtual {
+	if ok && hall.Number != "" {
 		return hall.Number
 	}
 
-	return hall.Number
+	return strconv.Itoa(id)
 }
 
 func ShortDayLabel(day ScheduleDay) string {
@@ -235,17 +397,7 @@ func ShortDayLabel(day ScheduleDay) string {
 		return date
 	}
 
-	names := map[time.Weekday]string{
-		time.Monday:    "Пн",
-		time.Tuesday:   "Вт",
-		time.Wednesday: "Ср",
-		time.Thursday:  "Чт",
-		time.Friday:    "Пт",
-		time.Saturday:  "Сб",
-		time.Sunday:    "Вс",
-	}
-
-	return names[parsed.Weekday()] + " " + date
+	return shortWeekdayNames[parsed.Weekday()] + " " + date
 }
 
 func FormatDate(value string) string {

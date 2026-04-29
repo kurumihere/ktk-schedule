@@ -7,46 +7,94 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 )
 
 type Client struct {
-	baseURL string
-	http    *http.Client
+	baseURL    string
+	device     string
+	httpClient *http.Client
+
+	endpointsMu sync.RWMutex
+	endpoints   Endpoints
 }
 
-type SignInRequest struct {
+type Option func(*Client)
+
+type signInRequest struct {
 	Login    string `json:"Login"`
 	Password string `json:"Password"`
 	Device   string `json:"Device"`
 }
 
-func NewClient(baseURL string) (*Client, error) {
+func NewClient(baseURL string, options ...Option) (*Client, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("base url is empty")
+	}
+	parsedBaseURL, err := url.Parse(baseURL)
+	if err != nil || parsedBaseURL.Scheme == "" || parsedBaseURL.Host == "" {
+		return nil, fmt.Errorf("invalid base url: %q", baseURL)
+	}
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Client{
-		baseURL: baseURL,
-		http: &http.Client{
+	client := &Client{
+		baseURL:   parsedBaseURL.String(),
+		device:    "ktk-schedule",
+		endpoints: DefaultEndpoints(),
+		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 			Jar:     jar,
 		},
-	}, nil
+	}
+
+	for _, option := range options {
+		option(client)
+	}
+	client.endpoints = client.endpoints.WithFallback(DefaultEndpoints())
+
+	return client, nil
+}
+
+func WithEndpoints(endpoints Endpoints) Option {
+	return func(c *Client) {
+		c.endpoints = endpoints.WithFallback(c.endpoints)
+	}
+}
+
+func WithDeviceName(device string) Option {
+	return func(c *Client) {
+		device = strings.TrimSpace(device)
+		if device != "" {
+			c.device = device
+		}
+	}
 }
 
 func (c *Client) SignIn(ctx context.Context, login, password string) error {
-	body, err := json.Marshal(SignInRequest{
+	body, err := json.Marshal(signInRequest{
 		Login:    login,
 		Password: password,
-		Device:   "ktk-schedule",
+		Device:   c.device,
 	})
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sign-in", bytes.NewReader(body))
+	endpoint := c.endpointSnapshot()
+	signInURL, err := c.resolveURL(endpoint.SignInPath)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, signInURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -57,7 +105,7 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 	req.Header.Set("Referer", c.baseURL+"/")
 	req.Header.Set("User-Agent", "ktk-schedule/1.0")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -68,4 +116,38 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 	}
 
 	return nil
+}
+
+func (c *Client) endpointSnapshot() Endpoints {
+	c.endpointsMu.RLock()
+	defer c.endpointsMu.RUnlock()
+	return c.endpoints
+}
+
+func (c *Client) Endpoints() Endpoints {
+	return c.endpointSnapshot()
+}
+
+func (c *Client) setEndpoints(endpoints Endpoints) {
+	c.endpointsMu.Lock()
+	defer c.endpointsMu.Unlock()
+	c.endpoints = endpoints.WithFallback(c.endpoints).WithFallback(DefaultEndpoints())
+}
+
+func (c *Client) resolveURL(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("empty endpoint path")
+	}
+
+	baseURL, err := url.Parse(c.baseURL + "/")
+	if err != nil {
+		return "", err
+	}
+	reference, err := url.Parse(path)
+	if err != nil {
+		return "", err
+	}
+
+	return baseURL.ResolveReference(reference).String(), nil
 }

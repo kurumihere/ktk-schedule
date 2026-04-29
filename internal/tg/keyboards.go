@@ -3,13 +3,13 @@ package tg
 import (
 	"fmt"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot/models"
 
 	"ktk-schedule/internal/ktk"
 )
 
-func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int) *tgbotapi.InlineKeyboardMarkup {
-	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
+func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int) *models.InlineKeyboardMarkup {
+	rows := make([][]models.InlineKeyboardButton, 0, len(days)+1)
 
 	prevText := "⬅️"
 	nextText := "➡️"
@@ -22,11 +22,11 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int) *tgbotapi.Inline
 		nextText = "⛔"
 	}
 
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData(prevText, "schedule:prev"),
-		tgbotapi.NewInlineKeyboardButtonData("Сегодня", "schedule:today"),
-		tgbotapi.NewInlineKeyboardButtonData(nextText, "schedule:next"),
-	))
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: prevText, CallbackData: "schedule:prev"},
+		{Text: "Сегодня", CallbackData: "schedule:today"},
+		{Text: nextText, CallbackData: "schedule:next"},
+	})
 
 	for i, day := range days {
 		label := ktk.ShortDayLabel(day)
@@ -34,11 +34,10 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int) *tgbotapi.Inline
 			label = "✅ " + label
 		}
 
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("schedule:day:%d", i)),
-		))
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: label, CallbackData: fmt.Sprintf("schedule:day:%d", i)},
+		})
 	}
 
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	return &keyboard
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
