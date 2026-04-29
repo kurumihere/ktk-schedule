@@ -131,13 +131,19 @@ func (c *Client) GetLectureHalls(ctx context.Context) (LectureHallMap, error) {
 
 func WeekStartMillis(now time.Time, loc *time.Location) int64 {
 	t := now.In(loc)
+
 	weekday := int(t.Weekday())
 	if weekday == 0 {
 		weekday = 7
 	}
 
-	monday := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).
-		AddDate(0, 0, -(weekday - 1))
+	monday := time.Date(
+		t.Year(),
+		t.Month(),
+		t.Day(),
+		6, 0, 0, 0,
+		loc,
+	).AddDate(0, 0, -(weekday - 1))
 
 	return monday.UnixMilli()
 }
