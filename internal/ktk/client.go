@@ -8,15 +8,18 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type Client struct {
-	baseURL    string
-	device     string
-	httpClient *http.Client
+	baseURL       string
+	device        string
+	debugSchedule bool
+	subgroup      string
+	httpClient    *http.Client
 
 	endpointsMu sync.RWMutex
 	endpoints   Endpoints
@@ -78,6 +81,12 @@ func WithDeviceName(device string) Option {
 	}
 }
 
+func WithScheduleDebug(enabled bool) Option {
+	return func(c *Client) {
+		c.debugSchedule = enabled
+	}
+}
+
 func (c *Client) SignIn(ctx context.Context, login, password string) error {
 	body, err := json.Marshal(signInRequest{
 		Login:    login,
@@ -110,12 +119,20 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	body, _ = readLimitedBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sign in failed: %s", resp.Status)
 	}
+	if subgroup := extractPersonalSubgroup(body); subgroup != "" {
+		c.subgroup = subgroup
+	}
 
 	return nil
+}
+
+func (c *Client) Subgroup() string {
+	return c.subgroup
 }
 
 func (c *Client) endpointSnapshot() Endpoints {
@@ -150,4 +167,51 @@ func (c *Client) resolveURL(path string) (string, error) {
 	}
 
 	return baseURL.ResolveReference(reference).String(), nil
+}
+
+func extractPersonalSubgroup(body []byte) string {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return ""
+	}
+	return findPersonalSubgroup(value)
+}
+
+func findPersonalSubgroup(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, raw := range typed {
+			if strings.Contains(strings.ToLower(key), "subgroup") {
+				if subgroup := subgroupFromValue(raw); subgroup != "" {
+					return subgroup
+				}
+			}
+		}
+		for _, raw := range typed {
+			if subgroup := findPersonalSubgroup(raw); subgroup != "" {
+				return subgroup
+			}
+		}
+	case []any:
+		for _, raw := range typed {
+			if subgroup := findPersonalSubgroup(raw); subgroup != "" {
+				return subgroup
+			}
+		}
+	}
+	return ""
+}
+
+func subgroupFromValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		if subgroup, ok := ParsePersonalSubgroup(typed); ok {
+			return subgroup
+		}
+	case float64:
+		if subgroup, ok := ParsePersonalSubgroup(strconv.Itoa(int(typed))); ok {
+			return subgroup
+		}
+	}
+	return ""
 }

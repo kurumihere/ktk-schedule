@@ -14,11 +14,13 @@ func TestSaveUserEncryptsPassword(t *testing.T) {
 	defer store.Close()
 
 	user := User{
-		TelegramID: 1001,
-		Login:      "student",
-		Password:   "student-password",
-		GroupID:    269,
-		Notify:     true,
+		TelegramID:       1001,
+		Login:            "student",
+		Password:         "student-password",
+		GroupID:          269,
+		Notify:           true,
+		Subgroup:         "right",
+		ShowAllSubgroups: true,
 	}
 	if err := store.SaveUser(user); err != nil {
 		t.Fatal(err)
@@ -47,6 +49,12 @@ func TestSaveUserEncryptsPassword(t *testing.T) {
 	}
 	if !saved.Notify {
 		t.Fatal("notify flag was not restored")
+	}
+	if saved.Subgroup != user.Subgroup {
+		t.Fatalf("unexpected subgroup: %q", saved.Subgroup)
+	}
+	if !saved.ShowAllSubgroups {
+		t.Fatal("show all subgroups flag was not restored")
 	}
 }
 
@@ -97,6 +105,42 @@ func TestLegacyPlaintextPasswordMigration(t *testing.T) {
 	}
 	if migrated.PasswordLegacy {
 		t.Fatal("migrated user must not be marked as legacy")
+	}
+	if migrated.Subgroup != "left" {
+		t.Fatalf("unexpected migrated subgroup: %q", migrated.Subgroup)
+	}
+}
+
+func TestSubgroupSettings(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	user := User{
+		TelegramID: 1003,
+		Login:      "student",
+		Password:   "student-password",
+		GroupID:    269,
+		Subgroup:   "left",
+	}
+	if err := store.SaveUser(user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetShowAllSubgroups(user.TelegramID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSubgroup(user.TelegramID, "right"); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := store.GetUser(user.TelegramID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Subgroup != "right" {
+		t.Fatalf("unexpected subgroup: %q", saved.Subgroup)
+	}
+	if saved.ShowAllSubgroups {
+		t.Fatal("manual subgroup selection must disable all-subgroups mode")
 	}
 }
 

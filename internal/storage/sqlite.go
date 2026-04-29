@@ -16,11 +16,13 @@ type Storage struct {
 }
 
 type User struct {
-	TelegramID int64
-	Login      string
-	Password   string
-	GroupID    int
-	Notify     bool
+	TelegramID       int64
+	Login            string
+	Password         string
+	GroupID          int
+	Notify           bool
+	Subgroup         string
+	ShowAllSubgroups bool
 
 	PasswordLegacy bool
 }
@@ -49,7 +51,7 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) init() error {
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS users (
 		telegram_id INTEGER PRIMARY KEY,
 		login TEXT NOT NULL,
@@ -57,8 +59,14 @@ func (s *Storage) init() error {
 		group_id INTEGER NOT NULL,
 		notify INTEGER NOT NULL DEFAULT 0
 	);
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+
+	if err := s.addColumnIfMissing("users", "subgroup", "subgroup TEXT NOT NULL DEFAULT 'left'"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("users", "show_all_subgroups", "show_all_subgroups INTEGER NOT NULL DEFAULT 0")
 }
 
 func (s *Storage) SaveUser(user User) error {
@@ -68,13 +76,15 @@ func (s *Storage) SaveUser(user User) error {
 	}
 
 	_, err = s.db.Exec(`
-	INSERT INTO users (telegram_id, login, password, group_id, notify)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO users (telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(telegram_id) DO UPDATE SET
 		login = excluded.login,
 		password = excluded.password,
-		group_id = excluded.group_id;
-	`, user.TelegramID, user.Login, password, user.GroupID, boolToInt(user.Notify))
+		group_id = excluded.group_id,
+		subgroup = excluded.subgroup,
+		show_all_subgroups = excluded.show_all_subgroups;
+	`, user.TelegramID, user.Login, password, user.GroupID, boolToInt(user.Notify), user.Subgroup, boolToInt(user.ShowAllSubgroups))
 
 	return err
 }
@@ -93,18 +103,33 @@ func (s *Storage) SetNotify(telegramID int64, enabled bool) error {
 	return err
 }
 
+func (s *Storage) SetSubgroup(telegramID int64, subgroup string) error {
+	_, err := s.db.Exec(`
+	UPDATE users SET subgroup = ?, show_all_subgroups = 0 WHERE telegram_id = ?;
+	`, subgroup, telegramID)
+	return err
+}
+
+func (s *Storage) SetShowAllSubgroups(telegramID int64, enabled bool) error {
+	_, err := s.db.Exec(`
+	UPDATE users SET show_all_subgroups = ? WHERE telegram_id = ?;
+	`, boolToInt(enabled), telegramID)
+	return err
+}
+
 func (s *Storage) GetUser(telegramID int64) (*User, error) {
 	row := s.db.QueryRow(`
-	SELECT telegram_id, login, password, group_id, notify
+	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups
 	FROM users
 	WHERE telegram_id = ?;
 	`, telegramID)
 
 	var user User
 	var notify int
+	var showAllSubgroups int
 	var password string
 
-	err := row.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify)
+	err := row.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -118,12 +143,13 @@ func (s *Storage) GetUser(telegramID int64) (*User, error) {
 	}
 
 	user.Notify = notify == 1
+	user.ShowAllSubgroups = showAllSubgroups == 1
 	return &user, nil
 }
 
 func (s *Storage) ListNotifyUsers() ([]User, error) {
 	rows, err := s.db.Query(`
-	SELECT telegram_id, login, password, group_id, notify
+	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups
 	FROM users
 	WHERE notify = 1;
 	`)
@@ -137,9 +163,10 @@ func (s *Storage) ListNotifyUsers() ([]User, error) {
 	for rows.Next() {
 		var user User
 		var notify int
+		var showAllSubgroups int
 		var password string
 
-		if err := rows.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify); err != nil {
+		if err := rows.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups); err != nil {
 			return nil, err
 		}
 
@@ -151,10 +178,41 @@ func (s *Storage) ListNotifyUsers() ([]User, error) {
 		user.Password = password
 		user.PasswordLegacy = legacy
 		user.Notify = notify == 1
+		user.ShowAllSubgroups = showAllSubgroups == 1
 		users = append(users, user)
 	}
 
 	return users, rows.Err()
+}
+
+func (s *Storage) addColumnIfMissing(table, column, definition string) error {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ");")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + definition + ";")
+	return err
 }
 
 func (s *Storage) decodePassword(value string) (string, bool, error) {

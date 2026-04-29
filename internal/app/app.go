@@ -19,7 +19,7 @@ import (
 	"ktk-schedule/internal/tg"
 )
 
-const helpText = "Привет! Я ktk-schedule\n\nКоманды:\n/login логин пароль\n/schedule\n/group 269\n/notify_on\n/notify_off"
+const helpText = "Привет! Я ktk-schedule\n\nКоманды:\n/login логин пароль\n/schedule\n/group 269\n/subgroup 1\n/subgroups_on\n/subgroups_off\n/notify_on\n/notify_off"
 
 type App struct {
 	cfg      config.Config
@@ -35,10 +35,12 @@ type App struct {
 }
 
 type Session struct {
-	Client       *ktk.Client
-	Schedule     []ktk.ScheduleDay
-	Halls        ktk.LectureHallMap
-	CurrentIndex int
+	Client           *ktk.Client
+	Schedule         []ktk.ScheduleDay
+	Halls            ktk.LectureHallMap
+	CurrentIndex     int
+	Subgroup         string
+	ShowAllSubgroups bool
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -97,6 +99,9 @@ func (a *App) registerHandlers() {
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "login", telegram.MatchTypeCommandStartOnly, a.handleLogin)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "schedule", telegram.MatchTypeCommandStartOnly, a.handleSchedule)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "group", telegram.MatchTypeCommandStartOnly, a.handleGroup)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroup", telegram.MatchTypeCommandStartOnly, a.handleSubgroup)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_on", telegram.MatchTypeCommandStartOnly, a.handleSubgroupsOn)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_off", telegram.MatchTypeCommandStartOnly, a.handleSubgroupsOff)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_on", telegram.MatchTypeCommandStartOnly, a.handleNotifyOn)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_off", telegram.MatchTypeCommandStartOnly, a.handleNotifyOff)
 	a.bot.RegisterHandler(telegram.HandlerTypeCallbackQueryData, "schedule:", telegram.MatchTypePrefix, a.handleCallback)
@@ -182,12 +187,15 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 
 	login := args[0]
 	password := args[1]
+	subgroup := clientSubgroupOrDefault(nil, a.cfg.DefaultSubgroup)
 	user := storage.User{
-		TelegramID: chatID,
-		Login:      login,
-		Password:   password,
-		GroupID:    a.cfg.DefaultGroup,
-		Notify:     false,
+		TelegramID:       chatID,
+		Login:            login,
+		Password:         password,
+		GroupID:          a.cfg.DefaultGroup,
+		Notify:           false,
+		Subgroup:         subgroup,
+		ShowAllSubgroups: false,
 	}
 
 	client, err := a.authClient(ctx, login, password, user.GroupID)
@@ -195,6 +203,7 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 		a.send(ctx, chatID, "Не удалось войти: "+err.Error())
 		return
 	}
+	user.Subgroup = clientSubgroupOrDefault(client, a.cfg.DefaultSubgroup)
 
 	if err := a.storage.SaveUser(user); err != nil {
 		a.send(ctx, chatID, "Не удалось сохранить пользователя: "+err.Error())
@@ -208,12 +217,14 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 	}
 
 	a.setSession(chatID, &Session{
-		Client:       client,
-		Halls:        halls,
-		CurrentIndex: 0,
+		Client:           client,
+		Halls:            halls,
+		CurrentIndex:     0,
+		Subgroup:         user.Subgroup,
+		ShowAllSubgroups: user.ShowAllSubgroups,
 	})
 
-	a.send(ctx, chatID, fmt.Sprintf("Авторизация успешна.\nГруппа: %d\n\nТеперь напиши /schedule", user.GroupID))
+	a.send(ctx, chatID, fmt.Sprintf("Авторизация успешна.\nГруппа: %d\nПодгруппа: %s\n\nТеперь напиши /schedule", user.GroupID, ktk.SubgroupLabel(user.Subgroup)))
 }
 
 func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *models.Update) {
@@ -248,15 +259,18 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
-	currentIndex := a.todayIndex(days)
-	session.Schedule = days
+	displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+	currentIndex := a.todayIndex(displayDays)
+	session.Schedule = displayDays
 	session.CurrentIndex = currentIndex
+	session.Subgroup = user.Subgroup
+	session.ShowAllSubgroups = user.ShowAllSubgroups
 	a.setSession(chatID, session)
 
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
-		Text:        ktk.FormatScheduleDay(days[currentIndex], session.Halls),
-		ReplyMarkup: tg.ScheduleKeyboard(days, currentIndex),
+		Text:        a.formatScheduleDay(displayDays[currentIndex], session),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex),
 	})
 }
 
@@ -288,6 +302,81 @@ func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.U
 	}
 
 	a.send(ctx, chatID, fmt.Sprintf("Группа изменена на %d.\nТеперь напиши /schedule", groupID))
+}
+
+func (a *App) handleSubgroup(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+
+	chatID := update.Message.Chat.ID
+	user, err := a.storage.GetUser(chatID)
+	if err != nil {
+		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
+		return
+	}
+	if user == nil {
+		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+		return
+	}
+
+	subgroup, ok := ktk.ParsePersonalSubgroup(commandArgs(update.Message.Text))
+	if !ok {
+		a.send(ctx, chatID, "Используй:\n/subgroup 1\nили\n/subgroup 2")
+		return
+	}
+
+	if err := a.storage.SetSubgroup(chatID, subgroup); err != nil {
+		a.send(ctx, chatID, "Не удалось сохранить подгруппу: "+err.Error())
+		return
+	}
+	if session := a.getSession(chatID); session != nil {
+		session.Subgroup = subgroup
+		session.ShowAllSubgroups = false
+		a.setSession(chatID, session)
+	}
+
+	a.send(ctx, chatID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
+}
+
+func (a *App) handleSubgroupsOn(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+	a.handleSubgroupsMode(ctx, update, true)
+}
+
+func (a *App) handleSubgroupsOff(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+	a.handleSubgroupsMode(ctx, update, false)
+}
+
+func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, enabled bool) {
+	if update.Message == nil {
+		return
+	}
+
+	chatID := update.Message.Chat.ID
+	user, err := a.storage.GetUser(chatID)
+	if err != nil {
+		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
+		return
+	}
+	if user == nil {
+		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+		return
+	}
+
+	if err := a.storage.SetShowAllSubgroups(chatID, enabled); err != nil {
+		a.send(ctx, chatID, "Не удалось сохранить режим подгрупп: "+err.Error())
+		return
+	}
+	if session := a.getSession(chatID); session != nil {
+		session.ShowAllSubgroups = enabled
+		a.setSession(chatID, session)
+	}
+
+	if enabled {
+		a.send(ctx, chatID, "Теперь показываю обе подгруппы.\nНапиши /schedule")
+	} else {
+		a.send(ctx, chatID, "Теперь показываю только твою подгруппу: "+ktk.SubgroupLabel(user.Subgroup)+".\nНапиши /schedule")
+	}
 }
 
 func (a *App) handleNotifyOn(ctx context.Context, _ *telegram.Bot, update *models.Update) {
@@ -381,7 +470,7 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
 		ChatID:      chatID,
 		MessageID:   message.ID,
-		Text:        ktk.FormatScheduleDay(day, session.Halls),
+		Text:        a.formatScheduleDay(day, session),
 		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex),
 	})
 	if err != nil {
@@ -401,6 +490,8 @@ func (a *App) handleDefault(ctx context.Context, _ *telegram.Bot, update *models
 
 func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, error) {
 	if session := a.getSession(user.TelegramID); session != nil && session.Client != nil {
+		session.Subgroup = user.Subgroup
+		session.ShowAllSubgroups = user.ShowAllSubgroups
 		if session.Halls == nil {
 			halls, err := a.loadLectureHalls(ctx, session.Client, user.GroupID)
 			if err != nil {
@@ -431,9 +522,11 @@ func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, e
 	}
 
 	session := &Session{
-		Client:       client,
-		Halls:        halls,
-		CurrentIndex: 0,
+		Client:           client,
+		Halls:            halls,
+		CurrentIndex:     0,
+		Subgroup:         user.Subgroup,
+		ShowAllSubgroups: user.ShowAllSubgroups,
 	}
 
 	a.setSession(user.TelegramID, session)
@@ -451,6 +544,7 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 	client, err := ktk.NewClient(
 		a.cfg.BaseURL,
 		ktk.WithDeviceName(a.cfg.KTKDeviceName),
+		ktk.WithScheduleDebug(a.cfg.KTKDebugSchedule),
 		ktk.WithEndpoints(endpoints),
 	)
 	if err != nil {
@@ -550,16 +644,19 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 			continue
 		}
 
-		index := a.todayIndex(days)
-		text := "Доброе утро. Расписание на сегодня:\n\n" + ktk.FormatScheduleDay(days[index], session.Halls)
+		displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+		index := a.todayIndex(displayDays)
+		text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
 		a.sendMessage(ctx, &telegram.SendMessageParams{
 			ChatID:      user.TelegramID,
 			Text:        text,
-			ReplyMarkup: tg.ScheduleKeyboard(days, index),
+			ReplyMarkup: tg.ScheduleKeyboard(displayDays, index),
 		})
 
-		session.Schedule = days
+		session.Schedule = displayDays
 		session.CurrentIndex = index
+		session.Subgroup = user.Subgroup
+		session.ShowAllSubgroups = user.ShowAllSubgroups
 		a.setSession(user.TelegramID, session)
 	}
 }
@@ -595,6 +692,24 @@ func (a *App) todayIndex(days []ktk.ScheduleDay) int {
 	return ktk.FindDateIndex(days, time.Now(), a.location)
 }
 
+func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
+	return ktk.FormatScheduleDayWithOptions(day, session.Halls, ktk.FormatOptions{
+		ShowSubgroupLabels: session.ShowAllSubgroups,
+	})
+}
+
 func isMessageNotModified(err error) bool {
 	return strings.Contains(err.Error(), "message is not modified")
+}
+
+func clientSubgroupOrDefault(client *ktk.Client, fallback string) string {
+	if client != nil {
+		if subgroup, ok := ktk.ParsePersonalSubgroup(client.Subgroup()); ok {
+			return subgroup
+		}
+	}
+	if subgroup, ok := ktk.ParsePersonalSubgroup(fallback); ok {
+		return subgroup
+	}
+	return "left"
 }

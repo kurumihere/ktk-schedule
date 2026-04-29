@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 const pairTypeIndependentWork = 9
 const maxResponseBodyBytes = 4 << 20
+const maxDebugScheduleItemBytes = 4096
 
 var shortWeekdayNames = [...]string{"Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"}
 
@@ -30,6 +32,7 @@ type ScheduleItem struct {
 	Teacher      string `json:"Teacher"`
 	LectureHall  int    `json:"LectureHall"`
 	Pair         int    `json:"Pair"`
+	Subgroup     string `json:"Subgroup"`
 	ExtendedData struct {
 		AcademicHour   int    `json:"AcademicHour"`
 		DisciplineFull string `json:"DisciplineFull"`
@@ -58,6 +61,10 @@ type LectureHall struct {
 }
 
 type LectureHallMap map[int]LectureHall
+
+type FormatOptions struct {
+	ShowSubgroupLabels bool
+}
 
 func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
 	if c.endpointSnapshot().SchedulePath == "" {
@@ -108,6 +115,9 @@ func (c *Client) getSchedule(ctx context.Context, groupID int, weekMillis int64)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+	}
+	if c.debugSchedule {
+		logScheduleDebug(body)
 	}
 
 	var days []ScheduleDay
@@ -228,6 +238,38 @@ func readLimitedBody(resp *http.Response) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 }
 
+func logScheduleDebug(body []byte) {
+	var days []struct {
+		Subjects []json.RawMessage `json:"Subjects"`
+	}
+	if err := json.Unmarshal(body, &days); err != nil {
+		log.Printf("schedule debug: invalid json: %v", err)
+		return
+	}
+
+	var subjectCount int
+	var firstSubject json.RawMessage
+	var firstSubjectDay int
+	for dayIndex, day := range days {
+		subjectCount += len(day.Subjects)
+		if len(firstSubject) == 0 && len(day.Subjects) > 0 {
+			firstSubject = day.Subjects[0]
+			firstSubjectDay = dayIndex
+		}
+	}
+
+	log.Printf("schedule debug: days=%d subjects=%d", len(days), subjectCount)
+	if len(firstSubject) == 0 {
+		return
+	}
+
+	item := string(firstSubject)
+	if len(item) > maxDebugScheduleItemBytes {
+		item = item[:maxDebugScheduleItemBytes] + "..."
+	}
+	log.Printf("schedule debug item day=%d: %s", firstSubjectDay, item)
+}
+
 type endpointError struct {
 	operation  string
 	statusCode int
@@ -324,7 +366,84 @@ func scheduleDate(value string, loc *time.Location) string {
 	return parsed.In(loc).Format(time.DateOnly)
 }
 
+func ParsePersonalSubgroup(value string) (string, bool) {
+	switch normalizeSubgroup(value) {
+	case "left":
+		return "left", true
+	case "right":
+		return "right", true
+	default:
+		return "", false
+	}
+}
+
+func SubgroupLabel(value string) string {
+	switch normalizeSubgroup(value) {
+	case "left":
+		return "1 подгруппа"
+	case "right":
+		return "2 подгруппа"
+	case "middle":
+		return "общая"
+	default:
+		return "подгруппа не выбрана"
+	}
+}
+
+func FilterScheduleDays(days []ScheduleDay, subgroup string, showAll bool) []ScheduleDay {
+	if showAll {
+		return days
+	}
+
+	var ok bool
+	subgroup, ok = ParsePersonalSubgroup(subgroup)
+	if !ok {
+		return days
+	}
+
+	filtered := make([]ScheduleDay, len(days))
+	for i, day := range days {
+		filtered[i] = day
+		filtered[i].Subjects = filterSubjects(day.Subjects, subgroup)
+	}
+
+	return filtered
+}
+
+func filterSubjects(subjects []ScheduleItem, subgroup string) []ScheduleItem {
+	filtered := make([]ScheduleItem, 0, len(subjects))
+	for _, subject := range subjects {
+		itemSubgroup := normalizeSubgroup(subject.Subgroup)
+		if _, ok := ParsePersonalSubgroup(itemSubgroup); !ok || itemSubgroup == subgroup {
+			filtered = append(filtered, subject)
+		}
+	}
+	return filtered
+}
+
+func normalizeSubgroup(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, "-", "")
+	value = strings.ReplaceAll(value, " ", "")
+
+	switch value {
+	case "1", "left", "first", "one", "первая", "первый", "1подгруппа", "подгруппа1":
+		return "left"
+	case "2", "right", "second", "two", "вторая", "второй", "2подгруппа", "подгруппа2":
+		return "right"
+	case "", "middle", "common", "both", "all", "общая", "обе":
+		return "middle"
+	default:
+		return value
+	}
+}
+
 func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
+	return FormatScheduleDayWithOptions(day, halls, FormatOptions{})
+}
+
+func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options FormatOptions) string {
 	var b strings.Builder
 
 	title := FormatDate(day.Date)
@@ -344,7 +463,15 @@ func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 		hall := FormatLectureHall(subject.LectureHall, halls)
 
 		b.WriteString(strconv.Itoa(subject.Pair))
-		b.WriteString(" пара — ")
+		b.WriteString(" пара")
+		if options.ShowSubgroupLabels {
+			if label := formatSubjectSubgroup(subject.Subgroup); label != "" {
+				b.WriteString(" [")
+				b.WriteString(label)
+				b.WriteString("]")
+			}
+		}
+		b.WriteString(" — ")
 		b.WriteString(subject.Discipline)
 		b.WriteByte('\n')
 
@@ -374,6 +501,17 @@ func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func formatSubjectSubgroup(value string) string {
+	switch normalizeSubgroup(value) {
+	case "left":
+		return "1"
+	case "right":
+		return "2"
+	default:
+		return ""
+	}
 }
 
 func FormatLectureHall(id int, halls LectureHallMap) string {

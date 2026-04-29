@@ -19,7 +19,9 @@ type Config struct {
 	KTKLectureHallPath string
 	KTKBranchID        string
 	KTKDeviceName      string
+	KTKDebugSchedule   bool
 	DefaultGroup       int
+	DefaultSubgroup    string
 	NotifyTime         string
 	Timezone           string
 }
@@ -28,6 +30,10 @@ func Load() (Config, error) {
 	_ = godotenv.Load()
 
 	defaultGroup, err := strconv.Atoi(getenv("DEFAULT_GROUP_ID", "269"))
+	if err != nil {
+		return Config{}, err
+	}
+	debugSchedule, err := getenvBool("KTK_DEBUG_SCHEDULE", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -42,7 +48,9 @@ func Load() (Config, error) {
 		KTKLectureHallPath: strings.TrimSpace(os.Getenv("KTK_LECTURE_HALL_PATH")),
 		KTKBranchID:        strings.TrimSpace(os.Getenv("KTK_BRANCH_ID")),
 		KTKDeviceName:      getenv("KTK_DEVICE_NAME", "ktk-schedule"),
+		KTKDebugSchedule:   debugSchedule,
 		DefaultGroup:       defaultGroup,
+		DefaultSubgroup:    getenv("DEFAULT_SUBGROUP", "1"),
 		NotifyTime:         getenv("NOTIFY_TIME", "07:30"),
 		Timezone:           getenv("TIMEZONE", "Asia/Yekaterinburg"),
 	}
@@ -63,4 +71,17 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func getenvBool(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, err
+	}
+	return parsed, nil
 }
