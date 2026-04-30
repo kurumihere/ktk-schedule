@@ -185,6 +185,29 @@ func (s *Storage) ListNotifyUsers() ([]User, error) {
 	return users, rows.Err()
 }
 
+func (s *Storage) ListUserIDs() ([]int64, error) {
+	rows, err := s.db.Query(`
+	SELECT telegram_id
+	FROM users
+	ORDER BY telegram_id;
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+
+	return ids, rows.Err()
+}
+
 func (s *Storage) addColumnIfMissing(table, column, definition string) error {
 	rows, err := s.db.Query("PRAGMA table_info(" + table + ");")
 	if err != nil {

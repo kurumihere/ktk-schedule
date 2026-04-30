@@ -20,6 +20,22 @@ const maxDebugScheduleItemBytes = 4096
 
 var shortWeekdayNames = [...]string{"Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"}
 
+var MonthGenitive = [...]string{
+	"",
+	"января",
+	"февраля",
+	"марта",
+	"апреля",
+	"мая",
+	"июня",
+	"июля",
+	"августа",
+	"сентября",
+	"октября",
+	"ноября",
+	"декабря",
+}
+
 type ScheduleDay struct {
 	Date     string         `json:"Date"`
 	Today    bool           `json:"Today"`
@@ -44,6 +60,7 @@ type ScheduleItem struct {
 		Homework        struct {
 			Task     *string `json:"Task"`
 			Deadline *string `json:"Deadline"`
+			Webinar  *string `json:"Webinar"`
 		} `json:"Homework"`
 	} `json:"ExtraData"`
 }
@@ -310,7 +327,11 @@ func looksLikeHTML(body string) bool {
 	return strings.HasPrefix(body, "<!doctype html") || strings.HasPrefix(body, "<html")
 }
 
-func WeekStartMillis(now time.Time, loc *time.Location) int64 {
+func WeekStart(now time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.Local
+	}
+
 	t := now.In(loc)
 
 	weekday := int(t.Weekday())
@@ -318,15 +339,91 @@ func WeekStartMillis(now time.Time, loc *time.Location) int64 {
 		weekday = 7
 	}
 
-	monday := time.Date(
+	return time.Date(
 		t.Year(),
 		t.Month(),
 		t.Day(),
 		6, 0, 0, 0,
 		loc,
 	).AddDate(0, 0, -(weekday - 1))
+}
 
-	return monday.UnixMilli()
+func WeekStartMillis(now time.Time, loc *time.Location) int64 {
+	return WeekStart(now, loc).UnixMilli()
+}
+
+func WeekStartFromMillis(value int64, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.UnixMilli(value).In(loc)
+}
+
+func ParseScheduleDate(raw string, now time.Time, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return normalizeDate(now, loc), nil
+	}
+
+	for _, layout := range []string{time.DateOnly, "02.01.2006", "2.1.2006"} {
+		if parsed, err := time.ParseInLocation(layout, raw, loc); err == nil {
+			return normalizeDate(parsed, loc), nil
+		}
+	}
+
+	year := now.In(loc).Year()
+	for _, layout := range []string{"02.01.2006", "2.1.2006"} {
+		if parsed, err := time.ParseInLocation(layout, fmt.Sprintf("%s.%d", raw, year), loc); err == nil {
+			return normalizeDate(parsed, loc), nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("invalid schedule date: %q", raw)
+}
+
+func WeekLabel(weekStart time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
+
+	weekStart = WeekStart(weekStart, loc)
+	weekEnd := weekStart.AddDate(0, 0, 5)
+	return fmt.Sprintf(
+		"Неделя %d (с %s по %s)",
+		AcademicWeekNumber(weekStart, loc),
+		formatDayMonth(weekStart),
+		formatDayMonth(weekEnd),
+	)
+}
+
+func AcademicWeekNumber(value time.Time, loc *time.Location) int {
+	if loc == nil {
+		loc = time.Local
+	}
+
+	weekStart := WeekStart(value, loc)
+	start := WeekStart(time.Date(weekStart.Year(), time.September, 1, 12, 0, 0, 0, loc), loc)
+	if weekStart.Before(start) {
+		start = WeekStart(time.Date(weekStart.Year()-1, time.September, 1, 12, 0, 0, 0, loc), loc)
+	}
+	if weekStart.Before(start) {
+		return 1
+	}
+
+	return int(weekStart.Sub(start).Hours()/(24*7)) + 1
+}
+
+func normalizeDate(value time.Time, loc *time.Location) time.Time {
+	t := value.In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, loc)
+}
+
+func formatDayMonth(value time.Time) string {
+	return fmt.Sprintf("%02d %s", value.Day(), MonthGenitive[value.Month()])
 }
 
 func FindTodayIndex(days []ScheduleDay) int {
@@ -485,16 +582,12 @@ func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options
 
 		b.WriteString("🏫 Кабинет: " + hall + "\n")
 
-		if subject.ExtraData.LectureTheme != "" && subject.ExtraData.LectureTheme != "*нераспределенное занятие" {
-			b.WriteString("Тема: " + subject.ExtraData.LectureTheme + "\n")
+		if subject.ExtraData.Homework.Task != nil && strings.TrimSpace(*subject.ExtraData.Homework.Task) != "" {
+			b.WriteString("Задание: " + strings.TrimSpace(*subject.ExtraData.Homework.Task) + "\n")
 		}
 
-		if subject.ExtraData.LectureHomework != "" {
-			b.WriteString("ДЗ: " + subject.ExtraData.LectureHomework + "\n")
-		}
-
-		if subject.ExtraData.Homework.Task != nil && *subject.ExtraData.Homework.Task != "" {
-			b.WriteString("Задание: " + *subject.ExtraData.Homework.Task + "\n")
+		if subject.ExtraData.Homework.Webinar != nil && strings.TrimSpace(*subject.ExtraData.Homework.Webinar) != "" {
+			b.WriteString("Вебинар: " + strings.TrimSpace(*subject.ExtraData.Homework.Webinar) + "\n")
 		}
 
 		b.WriteString("\n")

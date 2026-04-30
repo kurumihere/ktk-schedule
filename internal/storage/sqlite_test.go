@@ -144,6 +144,31 @@ func TestSubgroupSettings(t *testing.T) {
 	}
 }
 
+func TestListUserIDs(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	for _, id := range []int64{3002, 3001} {
+		if err := store.SaveUser(User{
+			TelegramID: id,
+			Login:      "student",
+			Password:   "student-password",
+			GroupID:    269,
+			Subgroup:   "left",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := store.ListUserIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != 3001 || ids[1] != 3002 {
+		t.Fatalf("unexpected user ids: %#v", ids)
+	}
+}
+
 func newTestStorage(t *testing.T) *Storage {
 	t.Helper()
 

@@ -22,6 +22,7 @@ type Config struct {
 	KTKDebugSchedule   bool
 	DefaultGroup       int
 	DefaultSubgroup    string
+	OwnerTelegramID    int64
 	NotifyTime         string
 	Timezone           string
 }
@@ -37,9 +38,16 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	ownerTelegramID, err := getenvInt64("OWNER_TELEGRAM_ID", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	if ownerTelegramID < 0 {
+		return Config{}, errors.New("OWNER_TELEGRAM_ID must be positive")
+	}
 
 	cfg := Config{
-		BotToken:           os.Getenv("BOT_TOKEN"),
+		BotToken:           strings.TrimSpace(os.Getenv("BOT_TOKEN")),
 		BaseURL:            getenv("KTK_BASE_URL", "https://workspace.ktk-45.ru"),
 		DatabasePath:       getenv("DATABASE_PATH", "ktk-schedule.db"),
 		CredentialsSecret:  strings.TrimSpace(os.Getenv("CREDENTIALS_SECRET")),
@@ -51,12 +59,16 @@ func Load() (Config, error) {
 		KTKDebugSchedule:   debugSchedule,
 		DefaultGroup:       defaultGroup,
 		DefaultSubgroup:    getenv("DEFAULT_SUBGROUP", "1"),
+		OwnerTelegramID:    ownerTelegramID,
 		NotifyTime:         getenv("NOTIFY_TIME", "07:30"),
 		Timezone:           getenv("TIMEZONE", "Asia/Yekaterinburg"),
 	}
 
 	if cfg.BotToken == "" {
 		return Config{}, errors.New("BOT_TOKEN is empty")
+	}
+	if err := validateBotToken(cfg.BotToken); err != nil {
+		return Config{}, err
 	}
 	if len(cfg.CredentialsSecret) < 32 {
 		return Config{}, errors.New("CREDENTIALS_SECRET must be at least 32 characters")
@@ -84,4 +96,28 @@ func getenvBool(key string, fallback bool) (bool, error) {
 		return false, err
 	}
 	return parsed, nil
+}
+
+func getenvInt64(key string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+
+	return strconv.ParseInt(value, 10, 64)
+}
+
+func validateBotToken(token string) error {
+	botID, secret, ok := strings.Cut(token, ":")
+	if !ok || botID == "" || secret == "" {
+		return errors.New("BOT_TOKEN has invalid format; expected token from @BotFather like 123456:ABC")
+	}
+
+	for _, r := range botID {
+		if r < '0' || r > '9' {
+			return errors.New("BOT_TOKEN has invalid bot id; copy the full token from @BotFather")
+		}
+	}
+
+	return nil
 }

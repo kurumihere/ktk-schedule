@@ -19,7 +19,22 @@ import (
 	"ktk-schedule/internal/tg"
 )
 
-const helpText = "Привет! Я ktk-schedule\n\nКоманды:\n/login логин пароль\n/schedule\n/group 269\n/subgroup 1\n/subgroups_on\n/subgroups_off\n/notify_on\n/notify_off"
+const helpText = `Привет! Я ktk-schedule
+
+Команды:
+/start (Показать список команд)
+/login логин пароль (Авторизоваться в workspace)
+/schedule [дата] (Показать расписание на текущую неделю или дату)
+/group 269 (Изменить группу)
+/subgroup 1 || 2 (Выбрать первую-вторую подгруппу)
+/subgroups_on || _off (Показывать обе подгруппы в одном расписании || Показывать только выбранную подгруппу)
+/notify_on || _off (Включить || Отключить утренние уведомления)
+`
+
+const (
+	weekSelectPageSize = 5
+	announceSendDelay  = 50 * time.Millisecond
+)
 
 type App struct {
 	cfg      config.Config
@@ -39,6 +54,8 @@ type Session struct {
 	Schedule         []ktk.ScheduleDay
 	Halls            ktk.LectureHallMap
 	CurrentIndex     int
+	WeekStart        time.Time
+	WeekSelectOffset int
 	Subgroup         string
 	ShowAllSubgroups bool
 }
@@ -86,7 +103,7 @@ func New(cfg config.Config) (*App, error) {
 	)
 	if err != nil {
 		_ = store.Close()
-		return nil, err
+		return nil, fmt.Errorf("initialize telegram bot: %w; check BOT_TOKEN from @BotFather", err)
 	}
 
 	app.bot = bot
@@ -96,7 +113,9 @@ func New(cfg config.Config) (*App, error) {
 
 func (a *App) registerHandlers() {
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "start", telegram.MatchTypeCommandStartOnly, a.handleStart)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "my_id", telegram.MatchTypeCommandStartOnly, a.handleMyID)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "login", telegram.MatchTypeCommandStartOnly, a.handleLogin)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "announce", telegram.MatchTypeCommandStartOnly, a.handleAnnounce)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "schedule", telegram.MatchTypeCommandStartOnly, a.handleSchedule)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "group", telegram.MatchTypeCommandStartOnly, a.handleGroup)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroup", telegram.MatchTypeCommandStartOnly, a.handleSubgroup)
@@ -171,6 +190,14 @@ func (a *App) handleStart(ctx context.Context, _ *telegram.Bot, update *models.U
 		return
 	}
 	a.send(ctx, update.Message.Chat.ID, helpText)
+}
+
+func (a *App) handleMyID(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+	if update.Message == nil {
+		return
+	}
+
+	a.send(ctx, update.Message.Chat.ID, fmt.Sprintf("Telegram ID: %d", telegramSenderID(update.Message)))
 }
 
 func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.Update) {
@@ -249,28 +276,26 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
-	days, err := a.loadSchedule(ctx, session.Client, user.GroupID)
+	targetDate, err := ktk.ParseScheduleDate(commandArgs(update.Message.Text), time.Now(), a.location)
+	if err != nil {
+		a.send(ctx, chatID, "Не понял дату. Используй /schedule, /schedule 01.09 или /schedule 2026-09-01")
+		return
+	}
+
+	displayDays, currentIndex, err := a.refreshSessionSchedule(ctx, *user, session, targetDate)
 	if err != nil {
 		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
 		return
 	}
-	if len(days) == 0 {
+	if len(displayDays) == 0 {
 		a.send(ctx, chatID, "Расписание пустое. Попробуй позже.")
 		return
 	}
 
-	displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
-	currentIndex := a.todayIndex(displayDays)
-	session.Schedule = displayDays
-	session.CurrentIndex = currentIndex
-	session.Subgroup = user.Subgroup
-	session.ShowAllSubgroups = user.ShowAllSubgroups
-	a.setSession(chatID, session)
-
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
 		Text:        a.formatScheduleDay(displayDays[currentIndex], session),
-		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location),
 	})
 }
 
@@ -387,6 +412,82 @@ func (a *App) handleNotifyOff(ctx context.Context, _ *telegram.Bot, update *mode
 	a.handleNotify(ctx, update, false)
 }
 
+func (a *App) handleAnnounce(ctx context.Context, bot *telegram.Bot, update *models.Update) {
+	message := update.Message
+	if message == nil {
+		return
+	}
+
+	chatID := message.Chat.ID
+	if a.cfg.OwnerTelegramID == 0 {
+		a.send(ctx, chatID, "Рассылка отключена. Напиши /my_id и укажи OWNER_TELEGRAM_ID в .env.")
+		return
+	}
+	if telegramSenderID(message) != a.cfg.OwnerTelegramID {
+		a.send(ctx, chatID, "Нет доступа.")
+		return
+	}
+
+	text := commandArgs(message.Text)
+	if text == "" && message.ReplyToMessage == nil {
+		a.send(ctx, chatID, "Используй:\n/announce текст\n\nИли ответь /announce на сообщение, которое нужно разослать.")
+		return
+	}
+
+	recipients, err := a.storage.ListUserIDs()
+	if err != nil {
+		a.send(ctx, chatID, "Не удалось получить список пользователей: "+err.Error())
+		return
+	}
+	if len(recipients) == 0 {
+		a.send(ctx, chatID, "Некому отправлять: в базе нет авторизованных пользователей.")
+		return
+	}
+
+	sent, failed := a.broadcastAnnouncement(ctx, bot, recipients, message, text)
+	a.send(ctx, chatID, fmt.Sprintf("Рассылка завершена.\nДоставлено: %d\nОшибок: %d", sent, failed))
+}
+
+func (a *App) broadcastAnnouncement(ctx context.Context, bot *telegram.Bot, recipients []int64, message *models.Message, text string) (int, int) {
+	sent := 0
+	failed := 0
+	ticker := time.NewTicker(announceSendDelay)
+	defer ticker.Stop()
+
+	for i, recipient := range recipients {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return sent, failed + len(recipients) - i
+			case <-ticker.C:
+			}
+		}
+
+		var err error
+		if text != "" {
+			_, err = bot.SendMessage(ctx, &telegram.SendMessageParams{
+				ChatID: recipient,
+				Text:   text,
+			})
+		} else {
+			_, err = bot.CopyMessage(ctx, &telegram.CopyMessageParams{
+				ChatID:     recipient,
+				FromChatID: message.Chat.ID,
+				MessageID:  message.ReplyToMessage.ID,
+			})
+		}
+
+		if err != nil {
+			failed++
+			log.Printf("announcement delivery error chat_id=%d: %v", recipient, err)
+			continue
+		}
+		sent++
+	}
+
+	return sent, failed
+}
+
 func (a *App) handleNotify(ctx context.Context, update *models.Update, enabled bool) {
 	if update.Message == nil {
 		return
@@ -431,25 +532,67 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 
 	chatID := message.Chat.ID
 	session := a.getSession(chatID)
-	if session == nil || len(session.Schedule) == 0 {
+	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
 		a.send(ctx, chatID, "Расписание устарело. Напиши /schedule ещё раз.")
 		return
 	}
+	if session.WeekStart.IsZero() {
+		session.WeekStart = ktk.WeekStart(time.Now(), a.location)
+	}
 
+	data := callback.Data
 	oldIndex := session.CurrentIndex
 	switch {
-	case callback.Data == "schedule:prev":
+	case data == "schedule:week:select":
+		session.WeekSelectOffset = 0
+		a.setSession(chatID, session)
+		a.editWeekSelectMessage(ctx, bot, chatID, message.ID, session)
+		return
+	case strings.HasPrefix(data, "schedule:week:page:"):
+		delta, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:week:page:"))
+		if err != nil {
+			return
+		}
+		session.WeekSelectOffset += delta * weekSelectPageSize
+		a.setSession(chatID, session)
+		a.editWeekSelectMessage(ctx, bot, chatID, message.ID, session)
+		return
+	case data == "schedule:back":
+		a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
+		return
+	case data == "schedule:week:prev":
+		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, a.selectedScheduleDate(session).AddDate(0, 0, -7))
+		return
+	case data == "schedule:week:next":
+		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, a.selectedScheduleDate(session).AddDate(0, 0, 7))
+		return
+	case data == "schedule:week:today":
+		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, time.Now())
+		return
+	case strings.HasPrefix(data, "schedule:week:open:"):
+		weekMillis, err := strconv.ParseInt(strings.TrimPrefix(data, "schedule:week:open:"), 10, 64)
+		if err != nil {
+			return
+		}
+		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, ktk.WeekStartFromMillis(weekMillis, a.location))
+		return
+	case data == "schedule:prev":
 		if session.CurrentIndex > 0 {
 			session.CurrentIndex--
 		}
-	case callback.Data == "schedule:next":
+	case data == "schedule:next":
 		if session.CurrentIndex < len(session.Schedule)-1 {
 			session.CurrentIndex++
 		}
-	case callback.Data == "schedule:today":
+	case data == "schedule:today":
+		todayWeekStart := ktk.WeekStart(time.Now(), a.location)
+		if !session.WeekStart.Equal(todayWeekStart) {
+			a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, time.Now())
+			return
+		}
 		session.CurrentIndex = a.todayIndex(session.Schedule)
-	case strings.HasPrefix(callback.Data, "schedule:day:"):
-		index, err := strconv.Atoi(strings.TrimPrefix(callback.Data, "schedule:day:"))
+	case strings.HasPrefix(data, "schedule:day:"):
+		index, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:day:"))
 		if err != nil || index < 0 || index >= len(session.Schedule) {
 			return
 		}
@@ -465,13 +608,20 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		return
 	}
 	a.setSession(chatID, session)
+	a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
+}
+
+func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	if session.CurrentIndex < 0 || session.CurrentIndex >= len(session.Schedule) {
+		return
+	}
 
 	day := session.Schedule[session.CurrentIndex]
 	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
 		ChatID:      chatID,
-		MessageID:   message.ID,
+		MessageID:   messageID,
 		Text:        a.formatScheduleDay(day, session),
-		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex),
+		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
 	})
 	if err != nil {
 		if isMessageNotModified(err) {
@@ -481,10 +631,46 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 }
 
+func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        "Выбери неделю:\n\nСейчас открыта " + ktk.WeekLabel(session.WeekStart, a.location),
+		ReplyMarkup: tg.WeekSelectKeyboard(session.WeekStart, session.WeekSelectOffset, a.location),
+	})
+	if err != nil {
+		if isMessageNotModified(err) {
+			return
+		}
+		log.Println("edit week select message error:", err)
+	}
+}
+
+func (a *App) selectedScheduleDate(session *Session) time.Time {
+	weekStart := session.WeekStart
+	if weekStart.IsZero() {
+		weekStart = ktk.WeekStart(time.Now(), a.location)
+	}
+
+	index := session.CurrentIndex
+	if index < 0 {
+		index = 0
+	}
+	return weekStart.AddDate(0, 0, index)
+}
+
 func (a *App) handleDefault(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	if update.Message == nil || update.Message.Text == "" {
+	if update.Message == nil {
 		return
 	}
+	if a.cfg.OwnerTelegramID != 0 && telegramSenderID(update.Message) == a.cfg.OwnerTelegramID {
+		a.send(ctx, update.Message.Chat.ID, "Чтобы разослать это сообщение, ответь на него командой /announce.")
+		return
+	}
+	if update.Message.Text == "" {
+		return
+	}
+
 	a.send(ctx, update.Message.Chat.ID, "Неизвестная команда. Напиши /start")
 }
 
@@ -572,11 +758,59 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 	return client, nil
 }
 
-func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int) ([]ktk.ScheduleDay, error) {
+func (a *App) refreshSessionSchedule(ctx context.Context, user storage.User, session *Session, targetDate time.Time) ([]ktk.ScheduleDay, int, error) {
+	weekStart := ktk.WeekStart(targetDate, a.location)
+	days, err := a.loadSchedule(ctx, session.Client, user.GroupID, weekStart)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+	if len(displayDays) == 0 {
+		return displayDays, 0, nil
+	}
+
+	currentIndex := ktk.FindDateIndex(displayDays, targetDate, a.location)
+	session.Schedule = displayDays
+	session.CurrentIndex = currentIndex
+	session.WeekStart = weekStart
+	session.WeekSelectOffset = 0
+	session.Subgroup = user.Subgroup
+	session.ShowAllSubgroups = user.ShowAllSubgroups
+	a.setSession(user.TelegramID, session)
+
+	return displayDays, currentIndex, nil
+}
+
+func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session, targetDate time.Time) {
+	user, err := a.storage.GetUser(chatID)
+	if err != nil {
+		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
+		return
+	}
+	if user == nil {
+		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+		return
+	}
+
+	days, _, err := a.refreshSessionSchedule(ctx, *user, session, targetDate)
+	if err != nil {
+		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
+		return
+	}
+	if len(days) == 0 {
+		a.send(ctx, chatID, "Расписание пустое. Попробуй другую неделю.")
+		return
+	}
+
+	a.editScheduleMessage(ctx, bot, chatID, messageID, session)
+}
+
+func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int, weekStart time.Time) ([]ktk.ScheduleDay, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	weekMillis := ktk.WeekStartMillis(time.Now(), a.location)
+	weekMillis := ktk.WeekStartMillis(weekStart, a.location)
 	days, err := client.GetSchedule(requestCtx, groupID, weekMillis)
 	if err == nil {
 		a.cacheEndpoints(client.Endpoints())
@@ -634,30 +868,22 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 			continue
 		}
 
-		days, err := a.loadSchedule(ctx, session.Client, user.GroupID)
+		displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
 		if err != nil {
 			a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание: "+err.Error())
 			continue
 		}
-		if len(days) == 0 {
+		if len(displayDays) == 0 {
 			a.send(ctx, user.TelegramID, "Доброе утро. Расписание на сегодня не найдено.")
 			continue
 		}
 
-		displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
-		index := a.todayIndex(displayDays)
 		text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
 		a.sendMessage(ctx, &telegram.SendMessageParams{
 			ChatID:      user.TelegramID,
 			Text:        text,
-			ReplyMarkup: tg.ScheduleKeyboard(displayDays, index),
+			ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location),
 		})
-
-		session.Schedule = displayDays
-		session.CurrentIndex = index
-		session.Subgroup = user.Subgroup
-		session.ShowAllSubgroups = user.ShowAllSubgroups
-		a.setSession(user.TelegramID, session)
 	}
 }
 
@@ -700,6 +926,13 @@ func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
 
 func isMessageNotModified(err error) bool {
 	return strings.Contains(err.Error(), "message is not modified")
+}
+
+func telegramSenderID(message *models.Message) int64 {
+	if message.From != nil {
+		return message.From.ID
+	}
+	return message.Chat.ID
 }
 
 func clientSubgroupOrDefault(client *ktk.Client, fallback string) string {
