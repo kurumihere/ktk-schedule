@@ -123,6 +123,7 @@ const (
 	markGradeMinus = 256
 	markMissing    = 16
 	markLate       = 32
+	markBug        = 8
 )
 
 var sickMarkDigits = map[int]bool{
@@ -135,6 +136,7 @@ var markSymbols = map[int]string{
 	markGradeMinus: "-",
 	markMissing:    "Н",
 	markLate:       "О",
+	markBug:        "🪲",
 }
 
 func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
