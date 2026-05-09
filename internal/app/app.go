@@ -3,7 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,14 +46,16 @@ type App struct {
 	endpointsMu sync.RWMutex
 	endpoints   ktk.Endpoints
 
-	sessionsMu sync.RWMutex
-	sessions   map[int64]*Session
+	sessions     sync.Map
+	healthServer *http.Server
 }
 
 type Session struct {
 	Client           *ktk.Client
 	Schedule         []ktk.ScheduleDay
 	Halls            ktk.LectureHallMap
+	CallPresets      ktk.CallPresetMap
+	AbsenceMarks     []ktk.AbsenceMark
 	CurrentIndex     int
 	WeekStart        time.Time
 	WeekSelectOffset int
@@ -85,9 +88,21 @@ func New(cfg config.Config) (*App, error) {
 			SignInPath:      cfg.KTKSignInPath,
 			SchedulePath:    cfg.KTKSchedulePath,
 			LectureHallPath: cfg.KTKLectureHallPath,
+			CallPresetPath:  cfg.KTKCallPresetPath,
 			BranchID:        cfg.KTKBranchID,
 		},
-		sessions: make(map[int64]*Session),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"status":"ok"}`)
+	})
+	app.healthServer = &http.Server{
+		Addr:        ":" + cfg.HealthPort,
+		Handler:     mux,
+		ReadTimeout: 5 * time.Second,
 	}
 
 	bot, err := telegram.New(
@@ -98,7 +113,7 @@ func New(cfg config.Config) (*App, error) {
 		}),
 		telegram.WithDefaultHandler(app.handleDefault),
 		telegram.WithErrorsHandler(func(err error) {
-			log.Println("telegram error:", err)
+			slog.Error("telegram error", "error", err)
 		}),
 	)
 	if err != nil {
@@ -128,32 +143,38 @@ func (a *App) registerHandlers() {
 
 func (a *App) Close() {
 	if err := a.storage.Close(); err != nil {
-		log.Println("storage close error:", err)
+		slog.Error("storage close", "error", err)
+	}
+
+	if a.healthServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
+			slog.Error("health server shutdown", "error", err)
+		}
 	}
 }
 
 func (a *App) Run(ctx context.Context) error {
 	if me, err := a.bot.GetMe(ctx); err == nil {
-		log.Printf("Bot started: @%s", me.Username)
+		slog.Info("bot started", "username", me.Username)
 	} else {
-		log.Println("Bot started")
-		log.Println("get me error:", err)
+		slog.Warn("bot started", "error", err)
 	}
 
 	go a.runNotifier(ctx)
+	go a.healthServer.ListenAndServe()
 	a.bot.Start(ctx)
 	return nil
 }
 
 func (a *App) getSession(telegramID int64) *Session {
-	a.sessionsMu.RLock()
-	defer a.sessionsMu.RUnlock()
-
-	session := a.sessions[telegramID]
-	if session == nil {
+	value, ok := a.sessions.Load(telegramID)
+	if !ok {
 		return nil
 	}
 
+	session := value.(*Session)
 	copy := *session
 	return &copy
 }
@@ -164,9 +185,7 @@ func (a *App) setSession(telegramID int64, session *Session) {
 	}
 
 	copy := *session
-	a.sessionsMu.Lock()
-	defer a.sessionsMu.Unlock()
-	a.sessions[telegramID] = &copy
+	a.sessions.Store(telegramID, &copy)
 }
 
 func (a *App) cachedEndpoints() ktk.Endpoints {
@@ -239,13 +258,18 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 
 	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
 	if err != nil {
-		log.Println("lecture halls load error:", err)
+		slog.Warn("lecture halls load", "error", err)
 		halls = make(ktk.LectureHallMap)
 	}
+
+	callPresets := a.loadCallPresets(ctx, client)
+	absenceMarks := a.loadAbsenceMarks(ctx, client)
 
 	a.setSession(chatID, &Session{
 		Client:           client,
 		Halls:            halls,
+		CallPresets:      callPresets,
+		AbsenceMarks:     absenceMarks,
 		CurrentIndex:     0,
 		Subgroup:         user.Subgroup,
 		ShowAllSubgroups: user.ShowAllSubgroups,
@@ -260,13 +284,8 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	}
 
 	chatID := update.Message.Chat.ID
-	user, err := a.storage.GetUser(chatID)
-	if err != nil {
-		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
-		return
-	}
-	if user == nil {
-		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+	user, ok := a.requireUser(ctx, update.Message)
+	if !ok {
 		return
 	}
 
@@ -300,68 +319,48 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 }
 
 func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	if update.Message == nil {
-		return
-	}
-
-	chatID := update.Message.Chat.ID
-	user, err := a.storage.GetUser(chatID)
-	if err != nil {
-		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
-		return
-	}
-	if user == nil {
-		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+	user, ok := a.requireUser(ctx, update.Message)
+	if !ok {
 		return
 	}
 
 	groupID, err := strconv.Atoi(strings.TrimSpace(commandArgs(update.Message.Text)))
 	if err != nil || groupID <= 0 {
-		a.send(ctx, chatID, "Используй:\n/group 269")
+		a.send(ctx, user.TelegramID, "Используй:\n/group 269")
 		return
 	}
 
-	if err := a.storage.SetGroup(chatID, groupID); err != nil {
-		a.send(ctx, chatID, "Не удалось сохранить группу: "+err.Error())
+	if err := a.storage.SetGroup(user.TelegramID, groupID); err != nil {
+		a.send(ctx, user.TelegramID, "Не удалось сохранить группу: "+err.Error())
 		return
 	}
 
-	a.send(ctx, chatID, fmt.Sprintf("Группа изменена на %d.\nТеперь напиши /schedule", groupID))
+	a.send(ctx, user.TelegramID, fmt.Sprintf("Группа изменена на %d.\nТеперь напиши /schedule", groupID))
 }
 
 func (a *App) handleSubgroup(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	if update.Message == nil {
-		return
-	}
-
-	chatID := update.Message.Chat.ID
-	user, err := a.storage.GetUser(chatID)
-	if err != nil {
-		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
-		return
-	}
-	if user == nil {
-		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+	user, ok := a.requireUser(ctx, update.Message)
+	if !ok {
 		return
 	}
 
 	subgroup, ok := ktk.ParsePersonalSubgroup(commandArgs(update.Message.Text))
 	if !ok {
-		a.send(ctx, chatID, "Используй:\n/subgroup 1\nили\n/subgroup 2")
+		a.send(ctx, user.TelegramID, "Используй:\n/subgroup 1\nили\n/subgroup 2")
 		return
 	}
 
-	if err := a.storage.SetSubgroup(chatID, subgroup); err != nil {
-		a.send(ctx, chatID, "Не удалось сохранить подгруппу: "+err.Error())
+	if err := a.storage.SetSubgroup(user.TelegramID, subgroup); err != nil {
+		a.send(ctx, user.TelegramID, "Не удалось сохранить подгруппу: "+err.Error())
 		return
 	}
-	if session := a.getSession(chatID); session != nil {
+	if session := a.getSession(user.TelegramID); session != nil {
 		session.Subgroup = subgroup
 		session.ShowAllSubgroups = false
-		a.setSession(chatID, session)
+		a.setSession(user.TelegramID, session)
 	}
 
-	a.send(ctx, chatID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
+	a.send(ctx, user.TelegramID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
 }
 
 func (a *App) handleSubgroupsOn(ctx context.Context, _ *telegram.Bot, update *models.Update) {
@@ -373,34 +372,24 @@ func (a *App) handleSubgroupsOff(ctx context.Context, _ *telegram.Bot, update *m
 }
 
 func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, enabled bool) {
-	if update.Message == nil {
+	user, ok := a.requireUser(ctx, update.Message)
+	if !ok {
 		return
 	}
 
-	chatID := update.Message.Chat.ID
-	user, err := a.storage.GetUser(chatID)
-	if err != nil {
-		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
+	if err := a.storage.SetShowAllSubgroups(user.TelegramID, enabled); err != nil {
+		a.send(ctx, user.TelegramID, "Не удалось сохранить режим подгрупп: "+err.Error())
 		return
 	}
-	if user == nil {
-		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
-		return
-	}
-
-	if err := a.storage.SetShowAllSubgroups(chatID, enabled); err != nil {
-		a.send(ctx, chatID, "Не удалось сохранить режим подгрупп: "+err.Error())
-		return
-	}
-	if session := a.getSession(chatID); session != nil {
+	if session := a.getSession(user.TelegramID); session != nil {
 		session.ShowAllSubgroups = enabled
-		a.setSession(chatID, session)
+		a.setSession(user.TelegramID, session)
 	}
 
 	if enabled {
-		a.send(ctx, chatID, "Теперь показываю обе подгруппы.\nНапиши /schedule")
+		a.send(ctx, user.TelegramID, "Теперь показываю обе подгруппы.\nНапиши /schedule")
 	} else {
-		a.send(ctx, chatID, "Теперь показываю только твою подгруппу: "+ktk.SubgroupLabel(user.Subgroup)+".\nНапиши /schedule")
+		a.send(ctx, user.TelegramID, "Теперь показываю только твою подгруппу: "+ktk.SubgroupLabel(user.Subgroup)+".\nНапиши /schedule")
 	}
 }
 
@@ -412,6 +401,23 @@ func (a *App) handleNotifyOff(ctx context.Context, _ *telegram.Bot, update *mode
 	a.handleNotify(ctx, update, false)
 }
 
+func (a *App) handleNotify(ctx context.Context, update *models.Update, enabled bool) {
+	user, ok := a.requireUser(ctx, update.Message)
+	if !ok {
+		return
+	}
+
+	if err := a.storage.SetNotify(user.TelegramID, enabled); err != nil {
+		a.send(ctx, user.TelegramID, "Не удалось сохранить настройку: "+err.Error())
+		return
+	}
+
+	if enabled {
+		a.send(ctx, user.TelegramID, "Утреннее расписание включено.")
+	} else {
+		a.send(ctx, user.TelegramID, "Утреннее расписание выключено.")
+	}
+}
 func (a *App) handleAnnounce(ctx context.Context, bot *telegram.Bot, update *models.Update) {
 	message := update.Message
 	if message == nil {
@@ -479,41 +485,13 @@ func (a *App) broadcastAnnouncement(ctx context.Context, bot *telegram.Bot, reci
 
 		if err != nil {
 			failed++
-			log.Printf("announcement delivery error chat_id=%d: %v", recipient, err)
+			slog.Error("announcement delivery", "chat_id", recipient, "error", err)
 			continue
 		}
 		sent++
 	}
 
 	return sent, failed
-}
-
-func (a *App) handleNotify(ctx context.Context, update *models.Update, enabled bool) {
-	if update.Message == nil {
-		return
-	}
-
-	chatID := update.Message.Chat.ID
-	user, err := a.storage.GetUser(chatID)
-	if err != nil {
-		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
-		return
-	}
-	if user == nil {
-		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
-		return
-	}
-
-	if err := a.storage.SetNotify(chatID, enabled); err != nil {
-		a.send(ctx, chatID, "Не удалось сохранить настройку: "+err.Error())
-		return
-	}
-
-	if enabled {
-		a.send(ctx, chatID, "Утреннее расписание включено.")
-	} else {
-		a.send(ctx, chatID, "Утреннее расписание выключено.")
-	}
 }
 
 func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *models.Update) {
@@ -627,7 +605,7 @@ func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID
 		if isMessageNotModified(err) {
 			return
 		}
-		log.Println("edit message error:", err)
+		slog.Error("edit message", "error", err)
 	}
 }
 
@@ -642,7 +620,7 @@ func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chat
 		if isMessageNotModified(err) {
 			return
 		}
-		log.Println("edit week select message error:", err)
+		slog.Error("edit week select message", "error", err)
 	}
 }
 
@@ -681,10 +659,16 @@ func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, e
 		if session.Halls == nil {
 			halls, err := a.loadLectureHalls(ctx, session.Client, user.GroupID)
 			if err != nil {
-				log.Println("lecture halls load error:", err)
+				slog.Warn("lecture halls load", "error", err)
 				halls = make(ktk.LectureHallMap)
 			}
 			session.Halls = halls
+		}
+		if session.CallPresets == nil {
+			session.CallPresets = a.loadCallPresets(ctx, session.Client)
+		}
+		if session.AbsenceMarks == nil {
+			session.AbsenceMarks = a.loadAbsenceMarks(ctx, session.Client)
 		}
 		if user.PasswordLegacy {
 			a.migrateLegacyPassword(user)
@@ -703,13 +687,18 @@ func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, e
 
 	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
 	if err != nil {
-		log.Println("lecture halls load error:", err)
+		slog.Warn("lecture halls load", "error", err)
 		halls = make(ktk.LectureHallMap)
 	}
+
+	callPresets := a.loadCallPresets(ctx, client)
+	absenceMarks := a.loadAbsenceMarks(ctx, client)
 
 	session := &Session{
 		Client:           client,
 		Halls:            halls,
+		CallPresets:      callPresets,
+		AbsenceMarks:     absenceMarks,
 		CurrentIndex:     0,
 		Subgroup:         user.Subgroup,
 		ShowAllSubgroups: user.ShowAllSubgroups,
@@ -721,7 +710,7 @@ func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, e
 
 func (a *App) migrateLegacyPassword(user storage.User) {
 	if err := a.storage.SaveUser(user); err != nil {
-		log.Println("legacy password migration error:", err)
+		slog.Error("legacy password migration", "error", err)
 	}
 }
 
@@ -750,7 +739,7 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 	}
 
 	if err := client.RefreshEndpoints(requestCtx, groupID, weekMillis); err != nil {
-		log.Println("endpoint discovery error:", err)
+		slog.Warn("endpoint discovery", "error", err)
 		return client, nil
 	}
 	a.cacheEndpoints(client.Endpoints())
@@ -818,6 +807,30 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	return days, err
 }
 
+func (a *App) loadCallPresets(ctx context.Context, client *ktk.Client) ktk.CallPresetMap {
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	presets, err := client.GetCallPresets(requestCtx)
+	if err != nil {
+		slog.Warn("call presets load", "error", err)
+		return nil
+	}
+	return presets
+}
+
+func (a *App) loadAbsenceMarks(ctx context.Context, client *ktk.Client) []ktk.AbsenceMark {
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	marks, err := client.GetAbsenceMarks(requestCtx)
+	if err != nil {
+		slog.Warn("absence marks load", "error", err)
+		return nil
+	}
+	return marks
+}
+
 func (a *App) loadLectureHalls(ctx context.Context, client *ktk.Client, groupID int) (ktk.LectureHallMap, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -857,7 +870,7 @@ func (a *App) runNotifier(ctx context.Context) {
 func (a *App) sendDailySchedules(ctx context.Context) {
 	users, err := a.storage.ListNotifyUsers()
 	if err != nil {
-		log.Println("list notify users error:", err)
+		slog.Error("list notify users", "error", err)
 		return
 	}
 
@@ -893,7 +906,7 @@ func (a *App) send(ctx context.Context, chatID int64, text string) {
 
 func (a *App) sendMessage(ctx context.Context, params *telegram.SendMessageParams) {
 	if _, err := a.bot.SendMessage(ctx, params); err != nil {
-		log.Println("send message error:", err)
+		slog.Error("send message", "error", err)
 	}
 }
 
@@ -914,6 +927,22 @@ func hasScheduleEndpoint(endpoints ktk.Endpoints) bool {
 	return strings.TrimSpace(endpoints.SchedulePath) != ""
 }
 
+func (a *App) requireUser(ctx context.Context, msg *models.Message) (*storage.User, bool) {
+	if msg == nil {
+		return nil, false
+	}
+	user, err := a.storage.GetUser(msg.Chat.ID)
+	if err != nil {
+		a.send(ctx, msg.Chat.ID, "Ошибка базы данных: "+err.Error())
+		return nil, false
+	}
+	if user == nil {
+		a.send(ctx, msg.Chat.ID, "Сначала авторизуйся:\n/login логин пароль")
+		return nil, false
+	}
+	return user, true
+}
+
 func (a *App) todayIndex(days []ktk.ScheduleDay) int {
 	return ktk.FindDateIndex(days, time.Now(), a.location)
 }
@@ -921,6 +950,10 @@ func (a *App) todayIndex(days []ktk.ScheduleDay) int {
 func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
 	return ktk.FormatScheduleDayWithOptions(day, session.Halls, ktk.FormatOptions{
 		ShowSubgroupLabels: session.ShowAllSubgroups,
+		CallPresets:        session.CallPresets,
+		AbsenceMarks:       session.AbsenceMarks,
+		Loc:                a.location,
+		Now:                time.Now(),
 	})
 }
 

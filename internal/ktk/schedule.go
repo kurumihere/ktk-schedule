@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,18 +37,21 @@ var MonthGenitive = [...]string{
 }
 
 type ScheduleDay struct {
-	Date     string         `json:"Date"`
-	Today    bool           `json:"Today"`
-	MaxPair  int            `json:"MaxPair"`
-	Subjects []ScheduleItem `json:"Subjects"`
+	CallPreset int            `json:"CallPreset"`
+	Date       string         `json:"Date"`
+	Today      bool           `json:"Today"`
+	MaxPair    int            `json:"MaxPair"`
+	Subjects   []ScheduleItem `json:"Subjects"`
 }
 
 type ScheduleItem struct {
-	Discipline   string `json:"Discipline"`
-	Teacher      string `json:"Teacher"`
-	LectureHall  int    `json:"LectureHall"`
-	Pair         int    `json:"Pair"`
-	Subgroup     string `json:"Subgroup"`
+	Appraisal   int    `json:"Appraisal"`
+	Discipline  string `json:"Discipline"`
+	LectureHall int    `json:"LectureHall"`
+	Mark        int    `json:"Mark"`
+	Pair        int    `json:"Pair"`
+	Subgroup    string `json:"Subgroup"`
+	Teacher     string `json:"Teacher"`
 	ExtendedData struct {
 		AcademicHour   int    `json:"AcademicHour"`
 		DisciplineFull string `json:"DisciplineFull"`
@@ -65,6 +68,37 @@ type ScheduleItem struct {
 	} `json:"ExtraData"`
 }
 
+type CallSetItem struct {
+	Break       int `json:"Break"`
+	Duration    int `json:"Duration"`
+	PairNumber  int `json:"PairNumber"`
+}
+
+type CallPreset struct {
+	ID      int           `json:"ID"`
+	Name    string        `json:"Name"`
+	Begin   string        `json:"Begin"`
+	CallSet []CallSetItem `json:"CallSet"`
+}
+
+type CallPresetMap map[int]CallPreset
+
+type PairTiming struct {
+	StartHour int
+	StartMin  int
+	EndHour   int
+	EndMin    int
+	Duration  int
+}
+
+type FormatOptions struct {
+	ShowSubgroupLabels bool
+	CallPresets        CallPresetMap
+	AbsenceMarks       []AbsenceMark
+	Loc                *time.Location
+	Now                time.Time
+}
+
 type lectureHallResponse struct {
 	LectureHalls map[string][]LectureHall `json:"LectureHalls"`
 }
@@ -79,8 +113,28 @@ type LectureHall struct {
 
 type LectureHallMap map[int]LectureHall
 
-type FormatOptions struct {
-	ShowSubgroupLabels bool
+type AbsenceMark struct {
+	Caption string `json:"Caption"`
+	Digit   int    `json:"Digit"`
+}
+
+const (
+	markGradePlus  = 128
+	markGradeMinus = 256
+	markMissing    = 16
+	markLate       = 32
+)
+
+var sickMarkDigits = map[int]bool{
+	4:  true,
+	11: true,
+}
+
+var markSymbols = map[int]string{
+	markGradePlus:  "+",
+	markGradeMinus: "-",
+	markMissing:    "Н",
+	markLate:       "О",
 }
 
 func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
@@ -113,36 +167,40 @@ func (c *Client) getSchedule(ctx context.Context, groupID int, weekMillis int64)
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Referer", c.baseURL+"/")
-	req.Header.Set("User-Agent", "ktk-schedule/1.0")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := readLimitedBody(resp)
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
-	}
-	if c.debugSchedule {
-		logScheduleDebug(body)
-	}
-
 	var days []ScheduleDay
-	if err := json.Unmarshal(body, &days); err != nil {
-		return nil, endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
-	}
+	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
 
-	return days, nil
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, _ := readLimitedBody(resp)
+
+		if resp.StatusCode != http.StatusOK {
+			return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+		}
+		if c.debugSchedule {
+			logScheduleDebug(body)
+		}
+
+		var result []ScheduleDay
+		if err := json.Unmarshal(body, &result); err != nil {
+			return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+		}
+		days = result
+		return nil
+	})
+
+	return days, err
 }
 
 func (c *Client) GetLectureHalls(ctx context.Context, groupID int, weekMillis int64) (LectureHallMap, error) {
@@ -176,41 +234,154 @@ func (c *Client) getLectureHalls(ctx context.Context) (LectureHallMap, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Referer", c.baseURL+"/")
-	req.Header.Set("User-Agent", "ktk-schedule/1.0")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := readLimitedBody(resp)
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, endpointError{operation: "lecture halls", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
-	}
-
-	var data lectureHallResponse
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, endpointError{operation: "lecture halls", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
-	}
-
-	result := make(LectureHallMap)
-
-	for _, halls := range data.LectureHalls {
-		for _, hall := range halls {
-			result[hall.ID] = hall
+	var result LectureHallMap
+	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return err
 		}
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, _ := readLimitedBody(resp)
+
+		if resp.StatusCode != http.StatusOK {
+			return endpointError{operation: "lecture halls", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+		}
+
+		var data lectureHallResponse
+		if err := json.Unmarshal(body, &data); err != nil {
+			return endpointError{operation: "lecture halls", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+		}
+
+		halls := make(LectureHallMap)
+		for _, hallsList := range data.LectureHalls {
+			for _, hall := range hallsList {
+				halls[hall.ID] = hall
+			}
+		}
+		result = halls
+		return nil
+	})
+
+	return result, err
+}
+
+func (c *Client) GetCallPresets(ctx context.Context) (CallPresetMap, error) {
+	endpoint := c.endpointSnapshot()
+	path := endpoint.CallPresetPath
+	if path == "" {
+		path = DeriveCallPresetPath(endpoint.SchedulePath)
+	}
+	if path == "" {
+		return nil, fmt.Errorf("call-preset endpoint not available")
 	}
 
-	return result, nil
+	return c.getCallPresets(ctx, path)
+}
+
+func (c *Client) getCallPresets(ctx context.Context, path string) (CallPresetMap, error) {
+	var presets []CallPreset
+	err := retryGet(ctx, 3, func(retryCtx context.Context) error {
+		requestURL, err := c.resolveURL(path)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, _ := readLimitedBody(resp)
+
+		if resp.StatusCode != http.StatusOK {
+			return endpointError{operation: "call-preset", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+		}
+
+		var result []CallPreset
+		if err := json.Unmarshal(body, &result); err != nil {
+			return endpointError{operation: "call-preset", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+		}
+		presets = result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	m := make(CallPresetMap, len(presets))
+	for _, p := range presets {
+		m[p.ID] = p
+	}
+	return m, nil
+}
+
+func (c *Client) GetAbsenceMarks(ctx context.Context) ([]AbsenceMark, error) {
+	endpoint := c.endpointSnapshot()
+	path := endpoint.AbsenceMarkPath
+	if path == "" {
+		path = DeriveAbsenceMarkPath(endpoint.SchedulePath)
+	}
+	if path == "" {
+		return nil, fmt.Errorf("absence-mark endpoint not available")
+	}
+
+	return c.getAbsenceMarks(ctx, path)
+}
+
+func (c *Client) getAbsenceMarks(ctx context.Context, path string) ([]AbsenceMark, error) {
+	var marks []AbsenceMark
+	err := retryGet(ctx, 3, func(retryCtx context.Context) error {
+		requestURL, err := c.resolveURL(path)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, _ := readLimitedBody(resp)
+
+		if resp.StatusCode != http.StatusOK {
+			return endpointError{operation: "absence-mark", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+		}
+
+		var result []AbsenceMark
+		if err := json.Unmarshal(body, &result); err != nil {
+			return endpointError{operation: "absence-mark", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+		}
+		marks = result
+		return nil
+	})
+	return marks, err
 }
 
 func (c *Client) buildScheduleURL(path string, groupID int, weekMillis int64) (string, error) {
@@ -260,22 +431,44 @@ func logScheduleDebug(body []byte) {
 		Subjects []json.RawMessage `json:"Subjects"`
 	}
 	if err := json.Unmarshal(body, &days); err != nil {
-		log.Printf("schedule debug: invalid json: %v", err)
+		slog.Warn("schedule debug decode", "error", err)
 		return
 	}
 
 	var subjectCount int
 	var firstSubject json.RawMessage
 	var firstSubjectDay int
+	var gradeCount, markCount int
+	markValues := make(map[int]int)
 	for dayIndex, day := range days {
 		subjectCount += len(day.Subjects)
 		if len(firstSubject) == 0 && len(day.Subjects) > 0 {
 			firstSubject = day.Subjects[0]
 			firstSubjectDay = dayIndex
 		}
+
+		var subjects []struct {
+			Appraisal int `json:"Appraisal"`
+			Mark      int `json:"Mark"`
+		}
+		allRaw, _ := json.Marshal(day.Subjects)
+		json.Unmarshal(allRaw, &subjects)
+		for _, s := range subjects {
+			if s.Appraisal != 0 {
+				gradeCount++
+			}
+			if s.Mark != 0 {
+				markCount++
+				markValues[s.Mark]++
+			}
+		}
 	}
 
-	log.Printf("schedule debug: days=%d subjects=%d", len(days), subjectCount)
+	slog.Debug("schedule debug", "days", len(days), "subjects", subjectCount,
+		"non_zero_appraisal", gradeCount, "non_zero_mark", markCount)
+	if len(markValues) > 0 {
+		slog.Debug("schedule mark values", "marks", fmt.Sprintf("%v", markValues))
+	}
 	if len(firstSubject) == 0 {
 		return
 	}
@@ -284,7 +477,7 @@ func logScheduleDebug(body []byte) {
 	if len(item) > maxDebugScheduleItemBytes {
 		item = item[:maxDebugScheduleItemBytes] + "..."
 	}
-	log.Printf("schedule debug item day=%d: %s", firstSubjectDay, item)
+	slog.Debug("schedule debug item", "day", firstSubjectDay, "item", item)
 }
 
 type endpointError struct {
@@ -540,14 +733,66 @@ func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 	return FormatScheduleDayWithOptions(day, halls, FormatOptions{})
 }
 
+func CalculatePairTiming(preset CallPreset, pairNumber int) (PairTiming, bool) {
+	hour, min := parseBeginTime(preset.Begin)
+	totalMin := hour*60 + min
+
+	for _, c := range preset.CallSet {
+		if c.PairNumber >= pairNumber {
+			if c.PairNumber == pairNumber {
+				totalMin += c.Break
+				return PairTiming{
+					StartHour: totalMin / 60,
+					StartMin:  totalMin % 60,
+					EndHour:   (totalMin + c.Duration) / 60,
+					EndMin:    (totalMin + c.Duration) % 60,
+					Duration:  c.Duration,
+				}, true
+			}
+			break
+		}
+		totalMin += c.Break + c.Duration
+	}
+	return PairTiming{}, false
+}
+
+func parseBeginTime(value string) (int, int) {
+	parts := strings.SplitN(value, "T", 2)
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	timeParts := strings.SplitN(strings.TrimSuffix(parts[1], "Z"), ":", 3)
+	if len(timeParts) < 2 {
+		return 0, 0
+	}
+	hour, _ := strconv.Atoi(timeParts[0])
+	min, _ := strconv.Atoi(timeParts[1])
+	return hour, min
+}
+
+func formatDuration(d time.Duration) string {
+	totalMin := int(d.Minutes())
+	if totalMin < 0 {
+		totalMin = 0
+	}
+	if totalMin < 60 {
+		return fmt.Sprintf("%d мин", totalMin)
+	}
+	hours := totalMin / 60
+	mins := totalMin % 60
+	if mins == 0 {
+		return fmt.Sprintf("%d ч", hours)
+	}
+	return fmt.Sprintf("%d ч %d мин", hours, mins)
+}
+
 func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options FormatOptions) string {
 	var b strings.Builder
 
-	title := FormatDate(day.Date)
 	if day.Today {
-		b.WriteString("📅 Сегодня — " + title + "\n\n")
+		b.WriteString("📅 Сегодня — " + FormatDate(day.Date) + "\n\n")
 	} else {
-		b.WriteString("📅 " + title + "\n\n")
+		b.WriteString("📅 " + FormatDate(day.Date) + "\n\n")
 	}
 
 	if len(day.Subjects) == 0 {
@@ -555,45 +800,155 @@ func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options
 		return b.String()
 	}
 
+	now := options.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if options.Loc != nil {
+		now = now.In(options.Loc)
+	}
+
+	var preset CallPreset
+	if options.CallPresets != nil {
+		preset = options.CallPresets[day.CallPreset]
+	}
+
 	for _, subject := range day.Subjects {
-		isIndependent := subject.ExtendedData.PairType == pairTypeIndependentWork
-		hall := FormatLectureHall(subject.LectureHall, halls)
-
-		b.WriteString(strconv.Itoa(subject.Pair))
-		b.WriteString(" пара")
-		if options.ShowSubgroupLabels {
-			if label := formatSubjectSubgroup(subject.Subgroup); label != "" {
-				b.WriteString(" [")
-				b.WriteString(label)
-				b.WriteString("]")
-			}
-		}
-		b.WriteString(" — ")
-		b.WriteString(subject.Discipline)
-		b.WriteByte('\n')
-
-		if isIndependent {
-			b.WriteString("📘 Тип: Самостоятельная работа\n")
-		}
-
-		if subject.Teacher != "" {
-			b.WriteString("👤 " + subject.Teacher + "\n")
-		}
-
-		b.WriteString("🏫 Кабинет: " + hall + "\n")
-
-		if subject.ExtraData.Homework.Task != nil && strings.TrimSpace(*subject.ExtraData.Homework.Task) != "" {
-			b.WriteString("Задание: " + strings.TrimSpace(*subject.ExtraData.Homework.Task) + "\n")
-		}
-
-		if subject.ExtraData.Homework.Webinar != nil && strings.TrimSpace(*subject.ExtraData.Homework.Webinar) != "" {
-			b.WriteString("Вебинар: " + strings.TrimSpace(*subject.ExtraData.Homework.Webinar) + "\n")
-		}
-
-		b.WriteString("\n")
+		writeSubjectHeader(&b, subject, preset, options)
+		writeTiming(&b, subject, preset, day.Today, now)
+		writeSubjectBody(&b, subject, halls, options)
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func writeSubjectHeader(b *strings.Builder, subject ScheduleItem, preset CallPreset, options FormatOptions) {
+	b.WriteString(strconv.Itoa(subject.Pair))
+	b.WriteString(" пара")
+
+	if preset.ID != 0 {
+		if timing, ok := CalculatePairTiming(preset, subject.Pair); ok {
+			b.WriteString(" [")
+			b.WriteString(strconv.Itoa(timing.Duration))
+			b.WriteString(" мин]")
+		}
+	}
+
+	if options.ShowSubgroupLabels {
+		if label := formatSubjectSubgroup(subject.Subgroup); label != "" {
+			b.WriteString(" [")
+			b.WriteString(label)
+			b.WriteString("]")
+		}
+	}
+
+	b.WriteString(" — ")
+	b.WriteString(subject.Discipline)
+	b.WriteByte('\n')
+}
+
+func writeTiming(b *strings.Builder, subject ScheduleItem, preset CallPreset, isToday bool, now time.Time) {
+	if preset.ID == 0 {
+		return
+	}
+
+	timing, ok := CalculatePairTiming(preset, subject.Pair)
+	if !ok {
+		return
+	}
+
+	b.WriteString("⏰ ")
+	writeTwoDigits(b, timing.StartHour)
+	b.WriteByte(':')
+	writeTwoDigits(b, timing.StartMin)
+	b.WriteByte('-')
+	writeTwoDigits(b, timing.EndHour)
+	b.WriteByte(':')
+	writeTwoDigits(b, timing.EndMin)
+	b.WriteByte('\n')
+
+	if !isToday {
+		return
+	}
+
+	pairStart := time.Date(now.Year(), now.Month(), now.Day(),
+		timing.StartHour, timing.StartMin, 0, 0, now.Location())
+	pairEnd := time.Date(now.Year(), now.Month(), now.Day(),
+		timing.EndHour, timing.EndMin, 0, 0, now.Location())
+
+	switch {
+	case now.After(pairStart) && now.Before(pairEnd):
+		elapsed := now.Sub(pairStart)
+		remaining := pairEnd.Sub(now)
+		b.WriteString("⏳ идёт ")
+		b.WriteString(formatDuration(elapsed))
+		b.WriteString(", осталось ")
+		b.WriteString(formatDuration(remaining))
+		b.WriteByte('\n')
+	case now.Before(pairStart) && pairStart.Sub(now) <= time.Hour:
+		b.WriteString("⏳ начнётся через ")
+		b.WriteString(formatDuration(pairStart.Sub(now)))
+		b.WriteByte('\n')
+	}
+}
+
+func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHallMap, options FormatOptions) {
+	if subject.ExtendedData.PairType == pairTypeIndependentWork {
+		b.WriteString("📘 Тип: Самостоятельная работа\n")
+	}
+
+	writeAppraisal(b, subject)
+
+	if !MarkIsGradeModifier(subject.Mark) && subject.Mark != 0 {
+		b.WriteString("📊 Отметка: ")
+		b.WriteString(FormatMark(subject.Mark, options.AbsenceMarks))
+		b.WriteByte('\n')
+	}
+
+	if subject.Teacher != "" {
+		b.WriteString("👤 " + subject.Teacher + "\n")
+	}
+
+	b.WriteString("🏫 Кабинет: " + FormatLectureHall(subject.LectureHall, halls) + "\n")
+
+	if subject.ExtraData.Homework.Task != nil && strings.TrimSpace(*subject.ExtraData.Homework.Task) != "" {
+		b.WriteString("Задание: " + strings.TrimSpace(*subject.ExtraData.Homework.Task) + "\n")
+	}
+
+	if subject.ExtraData.Homework.Webinar != nil && strings.TrimSpace(*subject.ExtraData.Homework.Webinar) != "" {
+		b.WriteString("Вебинар: " + strings.TrimSpace(*subject.ExtraData.Homework.Webinar) + "\n")
+	}
+
+	b.WriteByte('\n')
+}
+
+func writeAppraisal(b *strings.Builder, subject ScheduleItem) {
+	m := subject.Mark
+	hasAppraisal := subject.Appraisal != 0
+	isMod := MarkIsGradeModifier(m)
+
+	if !hasAppraisal && !isMod {
+		return
+	}
+
+	b.WriteString("📊 Оценка: ")
+	if hasAppraisal {
+		b.WriteString(strconv.Itoa(subject.Appraisal))
+	}
+	switch m {
+	case markGradePlus:
+		b.WriteByte('+')
+	case markGradeMinus:
+		b.WriteByte('-')
+	}
+	b.WriteByte('\n')
+}
+
+func writeTwoDigits(b *strings.Builder, n int) {
+	if n < 10 {
+		b.WriteByte('0')
+	}
+	b.WriteString(strconv.Itoa(n))
 }
 
 func formatSubjectSubgroup(value string) string {
@@ -645,4 +1000,70 @@ func FormatShortDate(value string) string {
 		return strings.TrimSuffix(value, "T00:00:00Z")
 	}
 	return t.Format("02.01")
+}
+
+func retryGet(ctx context.Context, maxAttempts int, fn func(context.Context) error) error {
+	var lastErr error
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			slog.Debug("retry", "attempt", attempt, "max_attempts", maxAttempts, "error", lastErr)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff(attempt)):
+			}
+		}
+		if err := fn(ctx); err != nil {
+			lastErr = err
+			if !isTransient(err) {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func backoff(attempt int) time.Duration {
+	return time.Duration(50<<min(attempt-1, 5)) * time.Millisecond
+}
+
+func isTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var epErr endpointError
+	if errors.As(err, &epErr) && epErr.statusCode >= 500 {
+		return true
+	}
+	return false
+}
+
+func FormatMark(value int, absenceMarks []AbsenceMark) string {
+	if symbol, ok := markSymbols[value]; ok {
+		return symbol
+	}
+
+	absenceByDigit := make(map[int]string, len(absenceMarks))
+	for _, am := range absenceMarks {
+		absenceByDigit[am.Digit] = am.Caption
+	}
+
+	if reason, ok := absenceByDigit[value]; ok {
+		if sickMarkDigits[value] {
+			return "Б " + reason
+		}
+		return "Н " + reason
+	}
+
+	return strconv.Itoa(value)
+}
+
+func MarkIsGradeModifier(value int) bool {
+	return value == markGradePlus || value == markGradeMinus
 }

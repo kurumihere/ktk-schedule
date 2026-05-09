@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -20,11 +21,14 @@ type Config struct {
 	KTKBranchID        string
 	KTKDeviceName      string
 	KTKDebugSchedule   bool
+	KTKCallPresetPath  string
 	DefaultGroup       int
 	DefaultSubgroup    string
 	OwnerTelegramID    int64
 	NotifyTime         string
 	Timezone           string
+	LogLevel           slog.Level
+	HealthPort         string
 }
 
 func Load() (Config, error) {
@@ -46,17 +50,22 @@ func Load() (Config, error) {
 		return Config{}, errors.New("OWNER_TELEGRAM_ID must be positive")
 	}
 
+	logLevel := parseLogLevel(os.Getenv("LOG_LEVEL"))
+
 	cfg := Config{
 		BotToken:           strings.TrimSpace(os.Getenv("BOT_TOKEN")),
 		BaseURL:            getenv("KTK_BASE_URL", "https://workspace.ktk-45.ru"),
 		DatabasePath:       getenv("DATABASE_PATH", "ktk-schedule.db"),
 		CredentialsSecret:  strings.TrimSpace(os.Getenv("CREDENTIALS_SECRET")),
+		LogLevel:           logLevel,
+		HealthPort:         getenv("HEALTH_PORT", "8080"),
 		KTKSignInPath:      getenv("KTK_SIGN_IN_PATH", "/sign-in"),
 		KTKSchedulePath:    strings.TrimSpace(os.Getenv("KTK_SCHEDULE_PATH")),
 		KTKLectureHallPath: strings.TrimSpace(os.Getenv("KTK_LECTURE_HALL_PATH")),
 		KTKBranchID:        strings.TrimSpace(os.Getenv("KTK_BRANCH_ID")),
 		KTKDeviceName:      getenv("KTK_DEVICE_NAME", "ktk-schedule"),
 		KTKDebugSchedule:   debugSchedule,
+		KTKCallPresetPath:  strings.TrimSpace(os.Getenv("KTK_CALL_PRESET_PATH")),
 		DefaultGroup:       defaultGroup,
 		DefaultSubgroup:    getenv("DEFAULT_SUBGROUP", "1"),
 		OwnerTelegramID:    ownerTelegramID,
@@ -120,4 +129,19 @@ func validateBotToken(token string) error {
 	}
 
 	return nil
+}
+
+func parseLogLevel(value string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

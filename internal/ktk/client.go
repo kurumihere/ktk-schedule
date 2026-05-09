@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -125,9 +126,11 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 		return fmt.Errorf("sign in failed: %s", resp.Status)
 	}
 	if subgroup := extractPersonalSubgroup(body); subgroup != "" {
+		slog.Debug("subgroup detected", "subgroup", subgroup)
 		c.subgroup = subgroup
 	}
 
+	slog.Info("sign in successful")
 	return nil
 }
 

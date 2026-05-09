@@ -1,11 +1,14 @@
 package ktk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -28,47 +31,94 @@ type endpointCandidates struct {
 	branchIDs        []string
 }
 
+var fallbackScheduleHashes = []string{
+	"f88efc44efafbd74",
+}
+
 func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis int64) error {
 	candidates, err := c.discoverEndpointCandidates(ctx)
 	if err != nil {
 		return err
 	}
 
-	current := c.endpointSnapshot()
-	next := current
+	next := c.endpointSnapshot()
 
-	bestSubjectCount := -1
-	for _, path := range candidates.schedulePaths {
-		days, err := c.validateScheduleEndpoint(ctx, path, groupID, weekMillis)
-		if err != nil {
-			continue
+	bestPath, foundGrades, _ := c.pickScheduleEndpoint(ctx, candidates.schedulePaths, groupID, weekMillis)
+	if bestPath == "" {
+		fallbackBase := next.CallPresetPath
+		if fallbackBase == "" && len(candidates.schedulePaths) > 0 {
+			fallbackBase = candidates.schedulePaths[0]
 		}
-
-		subjectCount := countSubjects(days)
-		if subjectCount > bestSubjectCount {
-			bestSubjectCount = subjectCount
-			next.SchedulePath = path
+		if base := trimLastSegment(fallbackBase); base != "" {
+			for _, hash := range fallbackScheduleHashes {
+				fallbackPath := path.Join(base, hash)
+				if fp, fg, _ := c.pickScheduleEndpoint(ctx, []string{fallbackPath}, groupID, weekMillis); fp != "" {
+					bestPath = fp
+					foundGrades = fg
+					slog.Debug("fallback schedule endpoint", "path", fp, "has_grades", fg)
+					break
+				}
+			}
 		}
 	}
-	if next.SchedulePath == "" {
+
+	if bestPath == "" {
 		return fmt.Errorf("schedule endpoint not found")
 	}
 
-	branchID := current.BranchID
+	next.SchedulePath = bestPath
+	if !foundGrades {
+		slog.Warn("no schedule endpoint with grades found, grades will be unavailable")
+	}
+
+	branchID := next.BranchID
 	if len(candidates.branchIDs) > 0 {
 		branchID = candidates.branchIDs[0]
 	}
-
-	for _, path := range candidates.lectureHallPaths {
-		if err := c.validateLectureHallEndpoint(ctx, path, branchID); err == nil {
-			next.LectureHallPath = path
+	for _, p := range candidates.lectureHallPaths {
+		if err := c.validateLectureHallEndpoint(ctx, p, branchID); err == nil {
+			next.LectureHallPath = p
 			next.BranchID = branchID
 			break
 		}
 	}
 
+	if next.CallPresetPath == "" {
+		next.CallPresetPath = DeriveCallPresetPath(next.SchedulePath)
+	}
+	if next.AbsenceMarkPath == "" {
+		next.AbsenceMarkPath = DeriveAbsenceMarkPath(next.SchedulePath)
+	}
+
 	c.setEndpoints(next)
+	slog.Debug("endpoints refreshed",
+		"schedule_path", next.SchedulePath,
+		"lecture_hall_path", next.LectureHallPath,
+		"call_preset_path", next.CallPresetPath,
+		"branch_id", next.BranchID,
+	)
 	return nil
+}
+
+func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, groupID int, weekMillis int64) (bestPath string, hasGrades bool, bestCount int) {
+	bestCount = -1
+	for _, p := range paths {
+		days, raw, err := c.validateScheduleEndpoint(ctx, p, groupID, weekMillis)
+		if err != nil {
+			continue
+		}
+		pathHasGrades := scheduleHasGrades(raw)
+		if !pathHasGrades && hasGrades {
+			continue
+		}
+		subjectCount := countSubjects(days)
+		if pathHasGrades || subjectCount > bestCount {
+			bestPath = p
+			bestCount = subjectCount
+			hasGrades = hasGrades || pathHasGrades
+		}
+	}
+	return
 }
 
 func (c *Client) discoverEndpointCandidates(ctx context.Context) (endpointCandidates, error) {
@@ -132,29 +182,29 @@ func (c *Client) fetchText(ctx context.Context, requestURL string) (string, erro
 	return string(body), nil
 }
 
-func (c *Client) validateScheduleEndpoint(ctx context.Context, path string, groupID int, weekMillis int64) ([]ScheduleDay, error) {
+func (c *Client) validateScheduleEndpoint(ctx context.Context, path string, groupID int, weekMillis int64) ([]ScheduleDay, []byte, error) {
 	requestURL, err := c.buildScheduleURL(path, groupID, weekMillis)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	body, statusCode, status, err := c.getJSON(ctx, requestURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if statusCode != http.StatusOK {
-		return nil, endpointError{operation: "schedule endpoint validation", statusCode: statusCode, status: status, body: string(body)}
+		return nil, nil, endpointError{operation: "schedule endpoint validation", statusCode: statusCode, status: status, body: string(body)}
 	}
 
 	var days []ScheduleDay
 	if err := json.Unmarshal(body, &days); err != nil {
-		return nil, fmt.Errorf("validate schedule endpoint: %w", err)
+		return nil, nil, fmt.Errorf("validate schedule endpoint: %w", err)
 	}
 	if len(days) == 0 {
-		return nil, fmt.Errorf("validate schedule endpoint: empty schedule")
+		return nil, nil, fmt.Errorf("validate schedule endpoint: empty schedule")
 	}
 
-	return days, nil
+	return days, body, nil
 }
 
 func (c *Client) validateLectureHallEndpoint(ctx context.Context, path, branchID string) error {
@@ -222,6 +272,19 @@ func countSubjects(days []ScheduleDay) int {
 		count += len(day.Subjects)
 	}
 	return count
+}
+
+func scheduleHasGrades(raw []byte) bool {
+	return bytes.Contains(raw, []byte(`"Appraisal"`)) || bytes.Contains(raw, []byte(`"Mark"`))
+}
+
+func trimLastSegment(p string) string {
+	p = strings.TrimRight(p, "/")
+	i := strings.LastIndex(p, "/")
+	if i < 0 {
+		return ""
+	}
+	return p[:i]
 }
 
 func extractScriptURLs(text, base string) []string {

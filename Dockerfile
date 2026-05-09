@@ -15,10 +15,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM alpine:3.21
 
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tzdata curl
 
 WORKDIR /app
 
 COPY --from=builder /out/ktk-schedule /app/ktk-schedule
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:8080/health || exit 1
 
 CMD ["/app/ktk-schedule"]

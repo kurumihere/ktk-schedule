@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -16,16 +17,24 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("config load", "error", err)
+		os.Exit(1)
 	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: cfg.LogLevel,
+	})))
 
 	application, err := app.New(cfg)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("app init", "error", err)
+		os.Exit(1)
 	}
-	defer application.Close()
 
 	if err := application.Run(ctx); err != nil {
-		log.Fatal(err)
+		slog.Error("app run", "error", err)
+		os.Exit(1)
 	}
+
+	slog.Info("bot stopped gracefully")
 }
