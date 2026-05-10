@@ -311,6 +311,15 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
+	if !ktk.IsSchoolDay(displayDays, targetDate, a.location) {
+		a.sendMessage(ctx, &telegram.SendMessageParams{
+			ChatID:      chatID,
+			Text:        "📅 " + targetDate.In(a.location).Format("02.01.2006") + "\n\nПар нет. Сегодня не учебный день.",
+			ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location),
+		})
+		return
+	}
+
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
 		Text:        a.formatScheduleDay(displayDays[currentIndex], session),
@@ -568,6 +577,12 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 			a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, time.Now())
 			return
 		}
+		if !ktk.IsSchoolDay(session.Schedule, time.Now(), a.location) {
+			session.CurrentIndex = a.todayIndex(session.Schedule)
+			a.setSession(chatID, session)
+			a.editNonSchoolDayMessage(ctx, bot, chatID, message.ID, session, time.Now())
+			return
+		}
 		session.CurrentIndex = a.todayIndex(session.Schedule)
 	case strings.HasPrefix(data, "schedule:day:"):
 		index, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:day:"))
@@ -621,6 +636,19 @@ func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chat
 			return
 		}
 		slog.Error("edit week select message", "error", err)
+	}
+}
+
+func (a *App) editNonSchoolDayMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session, date time.Time) {
+	text := "📅 " + date.In(a.location).Format("02.01.2006") + "\n\nПар нет. Сегодня не учебный день."
+	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        text,
+		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
+	})
+	if err != nil && !isMessageNotModified(err) {
+		slog.Error("edit message", "error", err)
 	}
 }
 
@@ -792,6 +820,11 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 		return
 	}
 
+	if targetDate.In(a.location).Format(time.DateOnly) == time.Now().In(a.location).Format(time.DateOnly) && !ktk.IsSchoolDay(days, targetDate, a.location) {
+		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, targetDate)
+		return
+	}
+
 	a.editScheduleMessage(ctx, bot, chatID, messageID, session)
 }
 
@@ -888,6 +921,9 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		}
 		if len(displayDays) == 0 {
 			a.send(ctx, user.TelegramID, "Доброе утро. Расписание на сегодня не найдено.")
+			continue
+		}
+		if !ktk.IsSchoolDay(displayDays, time.Now(), a.location) {
 			continue
 		}
 

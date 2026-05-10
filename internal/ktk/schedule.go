@@ -630,6 +630,20 @@ func FindTodayIndex(days []ScheduleDay) int {
 	return 0
 }
 
+func IsSchoolDay(days []ScheduleDay, now time.Time, loc *time.Location) bool {
+	if loc == nil {
+		loc = time.Local
+	}
+
+	today := now.In(loc).Format(time.DateOnly)
+	for _, day := range days {
+		if scheduleDate(day.Date, loc) == today {
+			return true
+		}
+	}
+	return false
+}
+
 func FindDateIndex(days []ScheduleDay, now time.Time, loc *time.Location) int {
 	if loc == nil {
 		loc = time.Local
@@ -736,26 +750,25 @@ func FormatScheduleDay(day ScheduleDay, halls LectureHallMap) string {
 }
 
 func CalculatePairTiming(preset CallPreset, pairNumber int) (PairTiming, bool) {
+	idx := pairNumber - 1
+	if idx < 0 || idx >= len(preset.CallSet) {
+		return PairTiming{}, false
+	}
+
 	hour, min := parseBeginTime(preset.Begin)
 	totalMin := hour*60 + min
 
-	for _, c := range preset.CallSet {
-		if c.PairNumber >= pairNumber {
-			if c.PairNumber == pairNumber {
-				totalMin += c.Break
-				return PairTiming{
-					StartHour: totalMin / 60,
-					StartMin:  totalMin % 60,
-					EndHour:   (totalMin + c.Duration) / 60,
-					EndMin:    (totalMin + c.Duration) % 60,
-					Duration:  c.Duration,
-				}, true
-			}
-			break
-		}
-		totalMin += c.Break + c.Duration
+	for i := range idx {
+		totalMin += preset.CallSet[i].Break + preset.CallSet[i].Duration
 	}
-	return PairTiming{}, false
+
+	return PairTiming{
+		StartHour: totalMin / 60,
+		StartMin:  totalMin % 60,
+		EndHour:   (totalMin + preset.CallSet[idx].Duration) / 60,
+		EndMin:    (totalMin + preset.CallSet[idx].Duration) % 60,
+		Duration:  preset.CallSet[idx].Duration,
+	}, true
 }
 
 func parseBeginTime(value string) (int, int) {
@@ -797,7 +810,7 @@ func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options
 		b.WriteString("📅 " + FormatDate(day.Date) + "\n\n")
 	}
 
-	if len(day.Subjects) == 0 {
+	if len(day.Subjects) == 0 && day.MaxPair == 0 {
 		b.WriteString("Пар нет.")
 		return b.String()
 	}
@@ -815,10 +828,28 @@ func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options
 		preset = options.CallPresets[day.CallPreset]
 	}
 
-	for _, subject := range day.Subjects {
-		writeSubjectHeader(&b, subject, preset, options)
-		writeTiming(&b, subject, preset, day.Today, now)
-		writeSubjectBody(&b, subject, halls, options)
+	subjectsByPair := make(map[int]ScheduleItem, len(day.Subjects))
+	for _, s := range day.Subjects {
+		subjectsByPair[s.Pair] = s
+	}
+
+	maxPair := day.MaxPair
+	if maxPair < 1 {
+		maxPair = len(subjectsByPair)
+	}
+	if maxPair == 0 {
+		b.WriteString("Пар нет.")
+		return b.String()
+	}
+
+	for p := 1; p <= maxPair; p++ {
+		if s, ok := subjectsByPair[p]; ok {
+			writeSubjectHeader(&b, s, preset, options)
+			writeTiming(&b, s, preset, day.Today, now)
+			writeSubjectBody(&b, s, halls, options)
+		} else {
+			writeEmptyPair(&b, p, preset)
+		}
 	}
 
 	return strings.TrimSpace(b.String())
@@ -846,6 +877,37 @@ func writeSubjectHeader(b *strings.Builder, subject ScheduleItem, preset CallPre
 
 	b.WriteString(" — ")
 	b.WriteString(subject.Discipline)
+	b.WriteByte('\n')
+}
+
+func writeEmptyPair(b *strings.Builder, pairNumber int, preset CallPreset) {
+	b.WriteString(strconv.Itoa(pairNumber))
+	b.WriteString(" пара")
+
+	if preset.ID != 0 {
+		if timing, ok := CalculatePairTiming(preset, pairNumber); ok {
+			b.WriteString(" [")
+			b.WriteString(strconv.Itoa(timing.Duration))
+			b.WriteString(" мин]")
+		}
+	}
+
+	b.WriteString(" — пусто\n")
+
+	if preset.ID != 0 {
+		if timing, ok := CalculatePairTiming(preset, pairNumber); ok {
+			b.WriteString("⏰ ")
+			writeTwoDigits(b, timing.StartHour)
+			b.WriteByte(':')
+			writeTwoDigits(b, timing.StartMin)
+			b.WriteByte('-')
+			writeTwoDigits(b, timing.EndHour)
+			b.WriteByte(':')
+			writeTwoDigits(b, timing.EndMin)
+			b.WriteByte('\n')
+		}
+	}
+
 	b.WriteByte('\n')
 }
 
