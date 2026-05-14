@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const pairTypeIndependentWork = 9
+const (
+	pairTypeIndependentWork = 9
+	pairTypeDistance        = 4
+)
 const maxResponseBodyBytes = 4 << 20
 const maxDebugScheduleItemBytes = 4096
 
@@ -694,6 +697,22 @@ func SubgroupLabel(value string) string {
 	default:
 		return "подгруппа не выбрана"
 	}
+}
+
+func IsRemotePair(s ScheduleItem) bool {
+	return s.ExtendedData.PairType == pairTypeDistance || s.ExtendedData.PairType == pairTypeIndependentWork
+}
+
+func AllSubjectsRemote(day ScheduleDay) bool {
+	if len(day.Subjects) == 0 {
+		return false
+	}
+	for _, s := range day.Subjects {
+		if !IsRemotePair(s) {
+			return false
+		}
+	}
+	return true
 }
 
 func FilterScheduleDays(days []ScheduleDay, subgroup string, showAll bool) []ScheduleDay {

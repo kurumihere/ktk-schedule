@@ -1016,6 +1016,10 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 			continue
 		}
 
+		if ktk.AllSubjectsRemote(displayDays[index]) {
+			continue
+		}
+
 		text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
 		a.sendMessage(ctx, &telegram.SendMessageParams{
 			ChatID:      user.TelegramID,

@@ -123,3 +123,55 @@ func TestFormatScheduleDayShowsTaskAndWebinarOnly(t *testing.T) {
 		t.Fatalf("theme or lecture homework leaked into output: %q", text)
 	}
 }
+
+func TestAllSubjectsRemote(t *testing.T) {
+	day := ScheduleDay{
+		Date: "2026-05-15T00:00:00Z",
+		Subjects: []ScheduleItem{
+			{Discipline: "Math", ExtendedData: struct {
+				AcademicHour   int    "json:\"AcademicHour\""
+				DisciplineFull string "json:\"DisciplineFull\""
+				PairType       int    "json:\"PairType\""
+			}{PairType: 4}},
+			{Discipline: "PE", ExtendedData: struct {
+				AcademicHour   int    "json:\"AcademicHour\""
+				DisciplineFull string "json:\"DisciplineFull\""
+				PairType       int    "json:\"PairType\""
+			}{PairType: 9}},
+		},
+	}
+	if !AllSubjectsRemote(day) {
+		t.Fatal("all subjects are remote, expected true")
+	}
+}
+
+func TestAllSubjectsRemoteReturnsFalseForInPerson(t *testing.T) {
+	day := ScheduleDay{
+		Date: "2026-05-15T00:00:00Z",
+		Subjects: []ScheduleItem{
+			{Discipline: "Math", ExtendedData: struct {
+				AcademicHour   int    "json:\"AcademicHour\""
+				DisciplineFull string "json:\"DisciplineFull\""
+				PairType       int    "json:\"PairType\""
+			}{PairType: 1}},
+			{Discipline: "PE", ExtendedData: struct {
+				AcademicHour   int    "json:\"AcademicHour\""
+				DisciplineFull string "json:\"DisciplineFull\""
+				PairType       int    "json:\"PairType\""
+			}{PairType: 4}},
+		},
+	}
+	if AllSubjectsRemote(day) {
+		t.Fatal("one subject is in-person, expected false")
+	}
+}
+
+func TestAllSubjectsRemoteReturnsFalseForEmptyDay(t *testing.T) {
+	day := ScheduleDay{
+		Date:     "2026-05-15T00:00:00Z",
+		Subjects: nil,
+	}
+	if AllSubjectsRemote(day) {
+		t.Fatal("empty day has no subjects, expected false")
+	}
+}
