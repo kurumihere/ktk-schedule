@@ -48,13 +48,13 @@ type ScheduleDay struct {
 }
 
 type ScheduleItem struct {
-	Appraisal   int    `json:"Appraisal"`
-	Discipline  string `json:"Discipline"`
-	LectureHall int    `json:"LectureHall"`
-	Mark        int    `json:"Mark"`
-	Pair        int    `json:"Pair"`
-	Subgroup    string `json:"Subgroup"`
-	Teacher     string `json:"Teacher"`
+	Appraisal    int    `json:"Appraisal"`
+	Discipline   string `json:"Discipline"`
+	LectureHall  int    `json:"LectureHall"`
+	Mark         int    `json:"Mark"`
+	Pair         int    `json:"Pair"`
+	Subgroup     string `json:"Subgroup"`
+	Teacher      string `json:"Teacher"`
 	ExtendedData struct {
 		AcademicHour   int    `json:"AcademicHour"`
 		DisciplineFull string `json:"DisciplineFull"`
@@ -72,9 +72,9 @@ type ScheduleItem struct {
 }
 
 type CallSetItem struct {
-	Break       int `json:"Break"`
-	Duration    int `json:"Duration"`
-	PairNumber  int `json:"PairNumber"`
+	Break      int `json:"Break"`
+	Duration   int `json:"Duration"`
+	PairNumber int `json:"PairNumber"`
 }
 
 type CallPreset struct {

@@ -3,12 +3,12 @@ package ktk
 import "strings"
 
 type Endpoints struct {
-	SignInPath       string
-	SchedulePath     string
-	LectureHallPath  string
-	CallPresetPath   string
-	AbsenceMarkPath  string
-	BranchID         string
+	SignInPath      string
+	SchedulePath    string
+	LectureHallPath string
+	CallPresetPath  string
+	AbsenceMarkPath string
+	BranchID        string
 }
 
 func DefaultEndpoints() Endpoints {
