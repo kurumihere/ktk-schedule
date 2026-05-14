@@ -173,15 +173,51 @@ schedule debug: days=6 subjects=12
 schedule debug item day=0: { ... }
 ```
 
-### Тесты
+### Разработка
+
+**Требования**
+
+- Go 1.26+
+- `just` — [just.systems](https://just.systems)
+- `air` — `go install github.com/air-verse/air@latest`
+- `golangci-lint` — `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+
+**Установка**
 
 ```bash
-go test -count=1 ./...
-go vet ./...
-go build -o /dev/null ./cmd/bot
+just setup       # настроить pre-commit hook
+just setup-air   # установить air
+just setup-lint  # установить golangci-lint
 ```
 
-На Windows вместо `/dev/null` — `NUL`.
+**Команды**
+
+| Команда | Что делает |
+| --- | --- |
+| `just dev` | Запуск с hot-reload (air) |
+| `just run` | Обычный запуск |
+| `just build` | Сборка бинарника |
+| `just test` | Запуск тестов |
+| `just vet` | go vet |
+| `just lint` | golangci-lint |
+| `just check` | fmt → vet → test → build |
+| `just fmt` | go fmt |
+| `just docker` | docker compose up --build -d |
+| `just clean` | Удаление бинарника и БД |
+
+**Pre-commit hook**
+
+Автоматически запускает `go fmt` и `go vet` перед каждым коммитом.
+Включить: `just setup`.
+
+**CI (Forgejo Actions)**
+
+На каждый push в master:
+1. `go vet ./...`
+2. `go test -count=1 ./...`
+3. `go build`
+
+Файл: `.gitea/workflows/ci.yml`.
 
 ### Структура проекта
 
@@ -194,6 +230,11 @@ go build -o /dev/null ./cmd/bot
 | `internal/storage` | SQLite, миграции. |
 | `internal/credentials` | Шифрование паролей. |
 | `internal/tg` | inline-клавиатуры, helpers. |
+| `.air.toml` | Конфиг hot-reload. |
+| `.golangci.yml` | Конфиг линтера. |
+| `.githooks/` | Pre-commit hook. |
+| `.gitea/workflows/` | CI. |
+| `Justfile` | Команды для разработки. |
 
 ### ⚠️ Disclaimer
 
@@ -363,15 +404,51 @@ schedule debug: days=6 subjects=12
 schedule debug item day=0: { ... }
 ```
 
-### Tests
+### Development
+
+**Prerequisites**
+
+- Go 1.26+
+- `just` — [just.systems](https://just.systems)
+- `air` — `go install github.com/air-verse/air@latest`
+- `golangci-lint` — `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+
+**Setup**
 
 ```bash
-go test -count=1 ./...
-go vet ./...
-go build -o /dev/null ./cmd/bot
+just setup       # configure pre-commit hook
+just setup-air   # install air
+just setup-lint  # install golangci-lint
 ```
 
-On Windows replace `/dev/null` with `NUL`.
+**Commands**
+
+| Command | Action |
+| --- | --- |
+| `just dev` | Run with hot-reload (air) |
+| `just run` | Run normally |
+| `just build` | Build binary |
+| `just test` | Run tests |
+| `just vet` | go vet |
+| `just lint` | golangci-lint |
+| `just check` | fmt → vet → test → build |
+| `just fmt` | go fmt |
+| `just docker` | docker compose up --build -d |
+| `just clean` | Remove binary and DB |
+
+**Pre-commit hook**
+
+Runs `go fmt` and `go vet` automatically before each commit.
+Enable with `just setup`.
+
+**CI (Forgejo Actions)**
+
+On every push to master:
+1. `go vet ./...`
+2. `go test -count=1 ./...`
+3. `go build`
+
+Config: `.gitea/workflows/ci.yml`.
 
 ### Project Structure
 
@@ -384,6 +461,11 @@ On Windows replace `/dev/null` with `NUL`.
 | `internal/storage` | SQLite, migrations. |
 | `internal/credentials` | Password encryption. |
 | `internal/tg` | Inline keyboards, helpers. |
+| `.air.toml` | Hot-reload config. |
+| `.golangci.yml` | Linter config. |
+| `.githooks/` | Pre-commit hook. |
+| `.gitea/workflows/` | CI. |
+| `Justfile` | Dev commands. |
 
 ### ⚠️ Disclaimer
 
