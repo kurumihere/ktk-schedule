@@ -176,7 +176,3 @@ just check   # fmt + vet + test + build
 ### ⚠️ Disclaimer
 
 This project uses a third-party API. The author is not affiliated with KTK and is not responsible for API changes, downtime, or data format changes.
-
-<p align="center">
-  <img src="https://cataas.com/cat" align="center" width="480" />
-</p>
