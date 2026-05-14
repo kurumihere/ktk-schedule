@@ -51,6 +51,9 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) init() error {
+	_, _ = s.db.Exec("PRAGMA journal_mode=WAL")
+	_, _ = s.db.Exec("PRAGMA busy_timeout=5000")
+
 	if _, err := s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS users (
 		telegram_id INTEGER PRIMARY KEY,

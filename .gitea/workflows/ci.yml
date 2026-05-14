@@ -25,3 +25,14 @@ jobs:
       - run: go test -count=1 ./...
 
       - run: go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/bot
+
+  deploy:
+    needs: check
+    if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: native
+    steps:
+      - name: Deploy to VDS
+        run: |
+          cd /root/ktk-schedule
+          git pull origin master
+          docker compose up --build -d
