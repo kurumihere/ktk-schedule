@@ -33,6 +33,10 @@ check: fmt vet test build
 clean:
     rm -f ktk-schedule ktk-schedule.db *.log
 
+backup:
+    cp ktk-schedule.db ktk-schedule-$(date +%Y%m%d-%H%M%S).db
+    @echo "backup created"
+
 setup:
     git config core.hooksPath .githooks
     @echo "pre-commit hooks configured"

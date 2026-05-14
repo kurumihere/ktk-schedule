@@ -49,6 +49,7 @@ type App struct {
 
 	sessions     sync.Map
 	healthServer *http.Server
+	rateLimiter  *rateLimiter
 }
 
 type Session struct {
@@ -78,6 +79,13 @@ func (s *Session) clone() *Session {
 		ShowAllSubgroups: s.ShowAllSubgroups,
 	}
 	copy(c.Schedule, s.Schedule)
+
+	for i := range c.Schedule {
+		if len(s.Schedule[i].Subjects) > 0 {
+			c.Schedule[i].Subjects = make([]ktk.ScheduleItem, len(s.Schedule[i].Subjects))
+			copy(c.Schedule[i].Subjects, s.Schedule[i].Subjects)
+		}
+	}
 
 	if s.Halls != nil {
 		c.Halls = make(ktk.LectureHallMap, len(s.Halls))
@@ -129,6 +137,7 @@ func New(cfg config.Config) (*App, error) {
 			CallPresetPath:  cfg.KTKCallPresetPath,
 			BranchID:        cfg.KTKBranchID,
 		},
+		rateLimiter: newRateLimiter(),
 	}
 
 	mux := http.NewServeMux()
@@ -183,14 +192,6 @@ func (a *App) Close() {
 	if err := a.storage.Close(); err != nil {
 		slog.Error("storage close", "error", err)
 	}
-
-	if a.healthServer != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
-			slog.Error("health server shutdown", "error", err)
-		}
-	}
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -203,6 +204,13 @@ func (a *App) Run(ctx context.Context) error {
 	go a.runNotifier(ctx)
 	go a.healthServer.ListenAndServe()
 	a.bot.Start(ctx)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("health server shutdown", "error", err)
+	}
+
 	return nil
 }
 
@@ -319,6 +327,11 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	}
 
 	chatID := update.Message.Chat.ID
+	if !a.rateLimiter.allow(chatID) {
+		a.send(ctx, chatID, "Подожди немного перед повторным запросом.")
+		return
+	}
+
 	user, ok := a.requireUser(ctx, update.Message)
 	if !ok {
 		return
@@ -555,8 +568,21 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	chatID := message.Chat.ID
 	session := a.getSession(chatID)
 	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
-		a.send(ctx, chatID, "Расписание устарело. Напиши /schedule ещё раз.")
-		return
+		user, err := a.storage.GetUser(chatID)
+		if err != nil {
+			a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
+			return
+		}
+		if user == nil {
+			a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+			return
+		}
+
+		session, err = a.ensureSession(ctx, *user)
+		if err != nil {
+			a.send(ctx, chatID, "Не удалось восстановить сессию: "+err.Error())
+			return
+		}
 	}
 	if session.WeekStart.IsZero() {
 		session.WeekStart = ktk.WeekStart(time.Now(), a.location)

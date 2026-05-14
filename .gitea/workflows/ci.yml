@@ -20,6 +20,8 @@ jobs:
 
       - run: go mod download
 
+      - run: test -z "$(gofmt -l .)" || (echo "unformatted files:" && gofmt -l . && exit 1)
+
       - run: go vet ./...
 
       - run: go test -count=1 ./...

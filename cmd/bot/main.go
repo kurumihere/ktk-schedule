@@ -35,9 +35,8 @@ func main() {
 
 	if err := application.Run(ctx); err != nil {
 		slog.Error("app run", "error", err)
-		stop()
-		return
 	}
 
+	application.Close()
 	slog.Info("bot stopped gracefully")
 }
