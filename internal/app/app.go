@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,6 +62,43 @@ type Session struct {
 	WeekSelectOffset int
 	Subgroup         string
 	ShowAllSubgroups bool
+}
+
+func (s *Session) clone() *Session {
+	if s == nil {
+		return nil
+	}
+	c := &Session{
+		Client:           s.Client,
+		Schedule:         make([]ktk.ScheduleDay, len(s.Schedule)),
+		CurrentIndex:     s.CurrentIndex,
+		WeekStart:        s.WeekStart,
+		WeekSelectOffset: s.WeekSelectOffset,
+		Subgroup:         s.Subgroup,
+		ShowAllSubgroups: s.ShowAllSubgroups,
+	}
+	copy(c.Schedule, s.Schedule)
+
+	if s.Halls != nil {
+		c.Halls = make(ktk.LectureHallMap, len(s.Halls))
+		for k, v := range s.Halls {
+			c.Halls[k] = v
+		}
+	}
+
+	if s.CallPresets != nil {
+		c.CallPresets = make(ktk.CallPresetMap, len(s.CallPresets))
+		for k, v := range s.CallPresets {
+			c.CallPresets[k] = v
+		}
+	}
+
+	if s.AbsenceMarks != nil {
+		c.AbsenceMarks = make([]ktk.AbsenceMark, len(s.AbsenceMarks))
+		copy(c.AbsenceMarks, s.AbsenceMarks)
+	}
+
+	return c
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -174,9 +212,7 @@ func (a *App) getSession(telegramID int64) *Session {
 		return nil
 	}
 
-	session := value.(*Session)
-	copy := *session
-	return &copy
+	return value.(*Session).clone()
 }
 
 func (a *App) setSession(telegramID int64, session *Session) {
@@ -184,8 +220,7 @@ func (a *App) setSession(telegramID int64, session *Session) {
 		return
 	}
 
-	copy := *session
-	a.sessions.Store(telegramID, &copy)
+	a.sessions.Store(telegramID, session.clone())
 }
 
 func (a *App) cachedEndpoints() ktk.Endpoints {
@@ -529,20 +564,13 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 
 	data := callback.Data
 	oldIndex := session.CurrentIndex
+
 	switch {
 	case data == "schedule:week:select":
-		session.WeekSelectOffset = 0
-		a.setSession(chatID, session)
-		a.editWeekSelectMessage(ctx, bot, chatID, message.ID, session)
+		a.handleCallbackWeekSelect(ctx, bot, chatID, message.ID, session)
 		return
 	case strings.HasPrefix(data, "schedule:week:page:"):
-		delta, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:week:page:"))
-		if err != nil {
-			return
-		}
-		session.WeekSelectOffset += delta * weekSelectPageSize
-		a.setSession(chatID, session)
-		a.editWeekSelectMessage(ctx, bot, chatID, message.ID, session)
+		a.handleCallbackWeekPage(ctx, bot, chatID, message.ID, data, session)
 		return
 	case data == "schedule:back":
 		a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
@@ -557,39 +585,20 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, time.Now())
 		return
 	case strings.HasPrefix(data, "schedule:week:open:"):
-		weekMillis, err := strconv.ParseInt(strings.TrimPrefix(data, "schedule:week:open:"), 10, 64)
-		if err != nil {
-			return
-		}
-		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, ktk.WeekStartFromMillis(weekMillis, a.location))
+		a.handleCallbackWeekOpen(ctx, bot, chatID, message.ID, data, session)
 		return
 	case data == "schedule:prev":
-		if session.CurrentIndex > 0 {
-			session.CurrentIndex--
-		}
+		a.handleCallbackPrev(session)
 	case data == "schedule:next":
-		if session.CurrentIndex < len(session.Schedule)-1 {
-			session.CurrentIndex++
-		}
+		a.handleCallbackNext(session)
 	case data == "schedule:today":
-		todayWeekStart := ktk.WeekStart(time.Now(), a.location)
-		if !session.WeekStart.Equal(todayWeekStart) {
-			a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, time.Now())
+		if !a.handleCallbackToday(ctx, bot, chatID, message.ID, session) {
 			return
 		}
-		if !ktk.IsSchoolDay(session.Schedule, time.Now(), a.location) {
-			session.CurrentIndex = a.todayIndex(session.Schedule)
-			a.setSession(chatID, session)
-			a.editNonSchoolDayMessage(ctx, bot, chatID, message.ID, session, time.Now())
-			return
-		}
-		session.CurrentIndex = a.todayIndex(session.Schedule)
 	case strings.HasPrefix(data, "schedule:day:"):
-		index, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:day:"))
-		if err != nil || index < 0 || index >= len(session.Schedule) {
+		if !a.handleCallbackDay(data, session) {
 			return
 		}
-		session.CurrentIndex = index
 	default:
 		return
 	}
@@ -602,6 +611,67 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 	a.setSession(chatID, session)
 	a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
+}
+
+func (a *App) handleCallbackWeekSelect(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	session.WeekSelectOffset = 0
+	a.setSession(chatID, session)
+	a.editWeekSelectMessage(ctx, bot, chatID, messageID, session)
+}
+
+func (a *App) handleCallbackWeekPage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) {
+	delta, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:week:page:"))
+	if err != nil {
+		return
+	}
+	session.WeekSelectOffset += delta * weekSelectPageSize
+	a.setSession(chatID, session)
+	a.editWeekSelectMessage(ctx, bot, chatID, messageID, session)
+}
+
+func (a *App) handleCallbackWeekOpen(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) {
+	weekMillis, err := strconv.ParseInt(strings.TrimPrefix(data, "schedule:week:open:"), 10, 64)
+	if err != nil {
+		return
+	}
+	a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, ktk.WeekStartFromMillis(weekMillis, a.location))
+}
+
+func (a *App) handleCallbackPrev(session *Session) {
+	if session.CurrentIndex > 0 {
+		session.CurrentIndex--
+	}
+}
+
+func (a *App) handleCallbackNext(session *Session) {
+	if session.CurrentIndex < len(session.Schedule)-1 {
+		session.CurrentIndex++
+	}
+}
+
+func (a *App) handleCallbackToday(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) bool {
+	todayWeekStart := ktk.WeekStart(time.Now(), a.location)
+	if !session.WeekStart.Equal(todayWeekStart) {
+		a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, time.Now())
+		return false
+	}
+	if !ktk.IsSchoolDay(session.Schedule, time.Now(), a.location) {
+		session.CurrentIndex = a.todayIndex(session.Schedule)
+		a.setSession(chatID, session)
+		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, time.Now())
+		return false
+	}
+	session.CurrentIndex = a.todayIndex(session.Schedule)
+	return true
+}
+
+func (a *App) handleCallbackDay(data string, session *Session) bool {
+	index, err := strconv.Atoi(strings.TrimPrefix(data, "schedule:day:"))
+	if err != nil || index < 0 || index >= len(session.Schedule) {
+		return false
+	}
+	session.CurrentIndex = index
+	return true
 }
 
 func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
@@ -877,6 +947,8 @@ func (a *App) loadLectureHalls(ctx context.Context, client *ktk.Client, groupID 
 }
 
 func (a *App) runNotifier(ctx context.Context) {
+	a.runDailyScheduleOnce(ctx)
+
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
@@ -898,6 +970,23 @@ func (a *App) runNotifier(ctx context.Context) {
 			a.sendDailySchedules(ctx)
 		}
 	}
+}
+
+func (a *App) runDailyScheduleOnce(ctx context.Context) {
+	now := time.Now().In(a.location)
+	targetTime, err := time.ParseInLocation("15:04", a.cfg.NotifyTime, a.location)
+	if err != nil {
+		slog.Warn("parse notify time", "error", err)
+		return
+	}
+
+	targetToday := time.Date(now.Year(), now.Month(), now.Day(), targetTime.Hour(), targetTime.Minute(), 0, 0, a.location)
+	if now.Before(targetToday) || targetToday.Add(2*time.Minute).Before(now) {
+		return
+	}
+
+	slog.Info("running startup notification", "current_time", now.Format("15:04"), "notify_time", a.cfg.NotifyTime)
+	a.sendDailySchedules(ctx)
 }
 
 func (a *App) sendDailySchedules(ctx context.Context) {
@@ -994,6 +1083,9 @@ func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
 }
 
 func isMessageNotModified(err error) bool {
+	if !errors.Is(err, telegram.ErrorBadRequest) {
+		return false
+	}
 	return strings.Contains(err.Error(), "message is not modified")
 }
 
