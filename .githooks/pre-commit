@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -e
+
+echo "→ go fmt ./..."
+git diff --cached --name-only | grep '\.go$' | xargs gofmt -l -w > /dev/null 2>&1 || true
+git diff --cached --name-only --diff-filter=ACM | grep '\.go$' | xargs -r git add 2>/dev/null || true
+
+echo "→ go vet ./..."
+go vet ./...
+if [ $? -ne 0 ]; then
+    echo "✗ go vet failed. Fix the issues above and commit again."
+    exit 1
+fi
+
+echo "✓ pre-commit checks passed"
