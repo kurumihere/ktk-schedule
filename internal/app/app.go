@@ -50,6 +50,7 @@ type App struct {
 	sessions     sync.Map
 	healthServer *http.Server
 	rateLimiter  *rateLimiter
+	startedAt    time.Time
 }
 
 type Session struct {
@@ -138,6 +139,7 @@ func New(cfg config.Config) (*App, error) {
 			BranchID:        cfg.KTKBranchID,
 		},
 		rateLimiter: newRateLimiter(),
+		startedAt:   time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -185,6 +187,7 @@ func (a *App) registerHandlers() {
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_off", telegram.MatchTypeCommandStartOnly, a.handleSubgroupsOff)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_on", telegram.MatchTypeCommandStartOnly, a.handleNotifyOn)
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_off", telegram.MatchTypeCommandStartOnly, a.handleNotifyOff)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "stats", telegram.MatchTypeCommandStartOnly, a.handleStats)
 	a.bot.RegisterHandler(telegram.HandlerTypeCallbackQueryData, "schedule:", telegram.MatchTypePrefix, a.handleCallback)
 }
 
@@ -456,6 +459,52 @@ func (a *App) handleNotifyOn(ctx context.Context, _ *telegram.Bot, update *model
 
 func (a *App) handleNotifyOff(ctx context.Context, _ *telegram.Bot, update *models.Update) {
 	a.handleNotify(ctx, update, false)
+}
+
+func (a *App) handleStats(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	if a.cfg.OwnerTelegramID == 0 || telegramSenderID(msg) != a.cfg.OwnerTelegramID {
+		return
+	}
+
+	totalUsers, _ := a.storage.CountUsers()
+	notifyUsers, _ := a.storage.CountNotifyUsers()
+
+	var activeSessions int
+	a.sessions.Range(func(_, _ any) bool {
+		activeSessions++
+		return true
+	})
+
+	uptime := time.Since(a.startedAt).Round(time.Second)
+
+	text := fmt.Sprintf(`📊 Статистика
+
+👥 Всего пользователей: %d
+🔔 Уведомлений: %d
+💾 Активных сессий: %d
+⏳ Аптайм: %s
+🌐 Таймзона: %s`, totalUsers, notifyUsers, activeSessions, formatUptime(uptime), a.cfg.Timezone)
+
+	a.send(ctx, msg.Chat.ID, text)
+}
+
+func formatUptime(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dд %dч %dмин", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dч %dмин", hours, mins)
+	}
+	return fmt.Sprintf("%dмин", mins)
 }
 
 func (a *App) handleNotify(ctx context.Context, update *models.Update, enabled bool) {

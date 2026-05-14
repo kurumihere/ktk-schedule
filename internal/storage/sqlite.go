@@ -260,3 +260,15 @@ func boolToInt(value bool) int {
 	}
 	return 0
 }
+
+func (s *Storage) CountUsers() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users;`).Scan(&count)
+	return count, err
+}
+
+func (s *Storage) CountNotifyUsers() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE notify = 1;`).Scan(&count)
+	return count, err
+}
