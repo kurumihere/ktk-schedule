@@ -17,9 +17,13 @@ FROM alpine:3.21
 
 RUN apk add --no-cache tzdata curl
 
+RUN adduser -D -h /app app
 WORKDIR /app
 
 COPY --from=builder /out/ktk-schedule /app/ktk-schedule
+RUN mkdir -p /app/data && chown -R app:app /app
+
+USER app
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://localhost:8080/health || exit 1
