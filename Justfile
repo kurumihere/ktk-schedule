@@ -42,5 +42,3 @@ setup-air:
 
 setup-lint:
     go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-.PHONY: fmt vet build test lint run dev docker docker-down docker-logs check clean setup setup-air setup-lint
