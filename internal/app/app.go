@@ -192,6 +192,7 @@ func (a *App) registerHandlers() {
 }
 
 func (a *App) Close() {
+	a.rateLimiter.Close()
 	if err := a.storage.Close(); err != nil {
 		slog.Error("storage close", "error", err)
 	}
