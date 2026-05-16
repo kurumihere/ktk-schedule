@@ -47,7 +47,8 @@ jobs:
           docker compose up --build -d
 
           for i in $(seq 1 30); do
-            if docker compose ps --filter "status=healthy" --format '{{.Status}}' | grep -q healthy; then
+            health=$(docker inspect --format='{{.State.Health.Status}}' ktk-schedule 2>/dev/null)
+            if [ "$health" = "healthy" ]; then
               echo "container is healthy"
               exit 0
             fi
