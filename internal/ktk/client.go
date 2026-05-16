@@ -109,7 +109,7 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 		return err
 	}
 
-	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Origin", c.baseURL)
 	req.Header.Set("Referer", c.baseURL+"/")
