@@ -34,8 +34,10 @@ const helpText = `Привет! Я ktk-schedule
 `
 
 const (
-	weekSelectPageSize = 5
-	announceSendDelay  = 50 * time.Millisecond
+	weekSelectPageSize     = 5
+	announceSendDelay      = 50 * time.Millisecond
+	sessionMaxAge          = 30 * time.Minute
+	sessionCleanupInterval = 10 * time.Minute
 )
 
 type App struct {
@@ -50,6 +52,7 @@ type App struct {
 	sessions     sync.Map
 	healthServer *http.Server
 	rateLimiter  *rateLimiter
+	stopCh       chan struct{}
 	startedAt    time.Time
 }
 
@@ -64,6 +67,7 @@ type Session struct {
 	WeekSelectOffset int
 	Subgroup         string
 	ShowAllSubgroups bool
+	lastAccess       time.Time
 }
 
 func (s *Session) clone() *Session {
@@ -139,6 +143,7 @@ func New(cfg config.Config) (*App, error) {
 			BranchID:        cfg.KTKBranchID,
 		},
 		rateLimiter: newRateLimiter(),
+		stopCh:      make(chan struct{}),
 		startedAt:   time.Now(),
 	}
 
@@ -192,10 +197,36 @@ func (a *App) registerHandlers() {
 }
 
 func (a *App) Close() {
+	close(a.stopCh)
 	a.rateLimiter.Close()
 	if err := a.storage.Close(); err != nil {
 		slog.Error("storage close", "error", err)
 	}
+}
+
+func (a *App) sessionCleanupLoop() {
+	ticker := time.NewTicker(sessionCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.cleanupSessions()
+		}
+	}
+}
+
+func (a *App) cleanupSessions() {
+	now := time.Now()
+	a.sessions.Range(func(key, value any) bool {
+		s := value.(*Session)
+		if now.Sub(s.lastAccess) > sessionMaxAge {
+			a.sessions.Delete(key)
+		}
+		return true
+	})
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -206,6 +237,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	go a.runNotifier(ctx)
+	go a.sessionCleanupLoop()
 	go a.healthServer.ListenAndServe()
 	a.bot.Start(ctx)
 
@@ -224,7 +256,9 @@ func (a *App) getSession(telegramID int64) *Session {
 		return nil
 	}
 
-	return value.(*Session).clone()
+	s := value.(*Session).clone()
+	s.lastAccess = time.Now()
+	return s
 }
 
 func (a *App) setSession(telegramID int64, session *Session) {
@@ -232,6 +266,7 @@ func (a *App) setSession(telegramID int64, session *Session) {
 		return
 	}
 
+	session.lastAccess = time.Now()
 	a.sessions.Store(telegramID, session.clone())
 }
 
