@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 
 	"ktk-schedule/internal/credentials"
 
@@ -51,8 +53,12 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) init() error {
-	_, _ = s.db.Exec("PRAGMA journal_mode=WAL")
-	_, _ = s.db.Exec("PRAGMA busy_timeout=5000")
+	if _, err := s.db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		slog.Warn("failed to set journal mode", "error", err)
+	}
+	if _, err := s.db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		slog.Warn("failed to set busy timeout", "error", err)
+	}
 
 	if _, err := s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS users (
@@ -211,7 +217,16 @@ func (s *Storage) ListUserIDs() ([]int64, error) {
 	return ids, rows.Err()
 }
 
+var safeIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 func (s *Storage) addColumnIfMissing(table, column, definition string) error {
+	if !safeIdentifier.MatchString(table) {
+		return fmt.Errorf("invalid table name: %s", table)
+	}
+	if !safeIdentifier.MatchString(column) {
+		return fmt.Errorf("invalid column name: %s", column)
+	}
+
 	rows, err := s.db.Query("PRAGMA table_info(" + table + ");")
 	if err != nil {
 		return err
