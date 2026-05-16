@@ -46,5 +46,13 @@ jobs:
 
           docker compose up --build -d
 
-          sleep 5
-          docker compose ps --filter "status=healthy" --format '{{.Status}}' | grep -q healthy || exit 1
+          for i in $(seq 1 30); do
+            if docker compose ps --filter "status=healthy" --format '{{.Status}}' | grep -q healthy; then
+              echo "container is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "container failed to become healthy"
+          docker compose logs --tail=50
+          exit 1
