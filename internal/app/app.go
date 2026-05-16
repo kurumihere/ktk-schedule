@@ -1201,7 +1201,15 @@ func isMessageNotModified(err error) bool {
 	if !errors.Is(err, telegram.ErrorBadRequest) {
 		return false
 	}
-	return strings.Contains(err.Error(), "message is not modified")
+	return strings.HasPrefix(extractTelegramDescription(err), "message is not modified")
+}
+
+func extractTelegramDescription(err error) string {
+	msg := err.Error()
+	if idx := strings.Index(msg, ", "); idx >= 0 {
+		return msg[idx+2:]
+	}
+	return msg
 }
 
 func telegramSenderID(message *models.Message) int64 {

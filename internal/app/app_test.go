@@ -45,7 +45,6 @@ func TestIsMessageNotModified(t *testing.T) {
 	if isMessageNotModified(errors.New("some other error")) {
 		t.Error("expected false for unrelated error")
 	}
-	notModified := fmt.Errorf("bad request, %w", fmt.Errorf("message is not modified"))
 	wrapped := fmt.Errorf("%w, %s", telegram.ErrorBadRequest, "message is not modified")
 	if !isMessageNotModified(wrapped) {
 		t.Error("expected true for wrapped message not modified")
@@ -53,7 +52,6 @@ func TestIsMessageNotModified(t *testing.T) {
 	if isMessageNotModified(fmt.Errorf("%w, %s", telegram.ErrorBadRequest, "invalid chat id")) {
 		t.Error("expected false for other bad request error")
 	}
-	_ = notModified
 }
 
 func TestTelegramSenderID(t *testing.T) {
