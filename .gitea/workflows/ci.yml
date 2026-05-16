@@ -7,9 +7,14 @@ on:
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +27,7 @@ jobs:
 
       - run: go vet ./...
 
-      - run: go test -count=1 ./...
+      - run: go test -count=1 -race ./...
 
       - run: go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/bot
 
@@ -30,9 +35,16 @@ jobs:
     needs: check
     if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
     runs-on: native
+    timeout-minutes: 15
     steps:
       - name: Deploy to VDS
         run: |
           cd /home/forgejo-runner/ktk-schedule
-          git pull origin master
+
+          git fetch origin master
+          git reset --hard origin/master
+
           docker compose up --build -d
+
+          sleep 5
+          docker compose ps --filter "status=healthy" --format '{{.Status}}' | grep -q healthy || exit 1
