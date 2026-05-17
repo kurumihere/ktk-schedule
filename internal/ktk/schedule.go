@@ -289,7 +289,24 @@ func (c *Client) GetCallPresets(ctx context.Context) (CallPresetMap, error) {
 		return nil, fmt.Errorf("call-preset endpoint not available")
 	}
 
-	return c.getCallPresets(ctx, path)
+	presets, err := c.getCallPresets(ctx, path)
+	if err == nil {
+		return presets, nil
+	}
+	if !shouldRefreshEndpoints(err) {
+		return nil, err
+	}
+
+	if refreshErr := c.RefreshEndpoints(ctx, 0, 0); refreshErr != nil {
+		return nil, fmt.Errorf("%w; endpoint refresh failed: %v", err, refreshErr)
+	}
+
+	next := c.endpointSnapshot()
+	if next.CallPresetPath == "" || next.CallPresetPath == path {
+		return nil, err
+	}
+
+	return c.getCallPresets(ctx, next.CallPresetPath)
 }
 
 func (c *Client) getCallPresets(ctx context.Context, path string) (CallPresetMap, error) {

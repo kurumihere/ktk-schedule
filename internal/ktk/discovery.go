@@ -28,6 +28,7 @@ var (
 type endpointCandidates struct {
 	schedulePaths    []string
 	lectureHallPaths []string
+	callPresetPaths  []string
 	branchIDs        []string
 }
 
@@ -84,7 +85,15 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	}
 
 	if next.CallPresetPath == "" {
-		next.CallPresetPath = DeriveCallPresetPath(next.SchedulePath)
+		for _, p := range candidates.callPresetPaths {
+			if err := c.validateCallPresetEndpoint(ctx, p); err == nil {
+				next.CallPresetPath = p
+				break
+			}
+		}
+		if next.CallPresetPath == "" {
+			next.CallPresetPath = DeriveCallPresetPath(next.SchedulePath)
+		}
 	}
 	if next.AbsenceMarkPath == "" {
 		next.AbsenceMarkPath = DeriveAbsenceMarkPath(next.SchedulePath)
@@ -95,6 +104,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		"schedule_path", next.SchedulePath,
 		"lecture_hall_path", next.LectureHallPath,
 		"call_preset_path", next.CallPresetPath,
+		"absence_mark_path", next.AbsenceMarkPath,
 		"branch_id", next.BranchID,
 	)
 	return nil
@@ -229,6 +239,31 @@ func (c *Client) validateLectureHallEndpoint(ctx context.Context, path, branchID
 	return nil
 }
 
+func (c *Client) validateCallPresetEndpoint(ctx context.Context, path string) error {
+	requestURL, err := c.resolveURL(path)
+	if err != nil {
+		return err
+	}
+
+	body, statusCode, status, err := c.getJSON(ctx, requestURL)
+	if err != nil {
+		return err
+	}
+	if statusCode != http.StatusOK {
+		return endpointError{operation: "call-preset endpoint validation", statusCode: statusCode, status: status, body: string(body)}
+	}
+
+	var presets []CallPreset
+	if err := json.Unmarshal(body, &presets); err != nil {
+		return fmt.Errorf("validate call-preset endpoint: %w", err)
+	}
+	if len(presets) == 0 {
+		return fmt.Errorf("validate call-preset endpoint: empty presets")
+	}
+
+	return nil
+}
+
 func (c *Client) getJSON(ctx context.Context, requestURL string) ([]byte, int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -252,6 +287,10 @@ func (c *endpointCandidates) addFromText(text string) {
 	for _, match := range apiPathPattern.FindAllString(text, -1) {
 		if strings.Contains(match, "/lecture-hall") {
 			c.lectureHallPaths = appendUnique(c.lectureHallPaths, match)
+			continue
+		}
+		if strings.Contains(match, "/call-preset") {
+			c.callPresetPaths = appendUnique(c.callPresetPaths, match)
 			continue
 		}
 		c.schedulePaths = appendUnique(c.schedulePaths, match)
