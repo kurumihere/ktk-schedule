@@ -1001,6 +1001,9 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 		return
 	}
 
+	session.CurrentIndex = 0
+	a.setSession(chatID, session)
+
 	if targetDate.In(a.location).Format(time.DateOnly) == time.Now().In(a.location).Format(time.DateOnly) && !ktk.IsSchoolDay(days, targetDate, a.location) {
 		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, targetDate)
 		return

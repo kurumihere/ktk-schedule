@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	scheduleCooldown = 30 * time.Second
+	scheduleCooldown = 15 * time.Second
 	sessionTTL       = 10 * time.Minute
 	cleanupInterval  = 5 * time.Minute
 )
