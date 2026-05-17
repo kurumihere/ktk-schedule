@@ -223,9 +223,14 @@ func (a *App) registerHandlers() {
 func (a *App) Close() {
 	close(a.stopCh)
 	a.rateLimiter.Close()
+
+	slog.Info("shutting down, waiting for active requests")
+	time.Sleep(3 * time.Second)
+
 	if err := a.storage.Close(); err != nil {
 		slog.Error("storage close", "error", err)
 	}
+	slog.Info("shutdown complete")
 }
 
 func (a *App) sessionCleanupLoop() {
