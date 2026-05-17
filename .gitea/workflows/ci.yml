@@ -50,6 +50,8 @@ jobs:
             health=$(docker inspect --format='{{.State.Health.Status}}' ktk-schedule 2>/dev/null)
             if [ "$health" = "healthy" ]; then
               echo "container is healthy"
+              docker image prune -f
+              docker builder prune --filter "until=24h" -f
               exit 0
             fi
             sleep 2
