@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -152,6 +153,29 @@ func New(cfg config.Config) (*App, error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `{"status":"ok"}`)
+	})
+	mux.HandleFunc("/health/extended", func(w http.ResponseWriter, r *http.Request) {
+		var activeSessions int
+		app.sessions.Range(func(_, _ any) bool {
+			activeSessions++
+			return true
+		})
+
+		totalUsers, _ := app.storage.CountUsers()
+		notifyUsers, _ := app.storage.CountNotifyUsers()
+
+		resp := map[string]any{
+			"status":          "ok",
+			"uptime":          formatUptime(time.Since(app.startedAt)),
+			"total_users":     totalUsers,
+			"notify_users":    notifyUsers,
+			"active_sessions": activeSessions,
+			"timezone":        app.cfg.Timezone,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	app.healthServer = &http.Server{
 		Addr:        ":" + cfg.HealthPort,
@@ -613,12 +637,12 @@ func (a *App) broadcastAnnouncement(ctx context.Context, bot *telegram.Bot, reci
 
 		var err error
 		if text != "" {
-			_, err = bot.SendMessage(ctx, &telegram.SendMessageParams{
+			err = sendMessageWithRetry(ctx, bot, &telegram.SendMessageParams{
 				ChatID: recipient,
 				Text:   text,
 			})
 		} else {
-			_, err = bot.CopyMessage(ctx, &telegram.CopyMessageParams{
+			err = copyMessageWithRetry(ctx, bot, &telegram.CopyMessageParams{
 				ChatID:     recipient,
 				FromChatID: message.Chat.ID,
 				MessageID:  message.ReplyToMessage.ID,
@@ -801,7 +825,7 @@ func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID
 		if isMessageNotModified(err) {
 			return
 		}
-		slog.Error("edit message", "error", err)
+		slog.Error("edit message", "chat_id", chatID, "error", err)
 	}
 }
 
@@ -816,7 +840,7 @@ func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chat
 		if isMessageNotModified(err) {
 			return
 		}
-		slog.Error("edit week select message", "error", err)
+		slog.Error("edit week select message", "chat_id", chatID, "error", err)
 	}
 }
 
@@ -829,7 +853,7 @@ func (a *App) editNonSchoolDayMessage(ctx context.Context, bot *telegram.Bot, ch
 		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
 	})
 	if err != nil && !isMessageNotModified(err) {
-		slog.Error("edit message", "error", err)
+		slog.Error("edit message", "chat_id", chatID, "error", err)
 	}
 }
 
@@ -1110,7 +1134,15 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		return
 	}
 
-	for _, user := range users {
+	for i, user := range users {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(announceSendDelay):
+			}
+		}
+
 		session, err := a.ensureSession(ctx, user)
 		if err != nil {
 			a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание: "+err.Error())
@@ -1135,11 +1167,13 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		}
 
 		text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
-		a.sendMessage(ctx, &telegram.SendMessageParams{
+		if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{
 			ChatID:      user.TelegramID,
 			Text:        text,
 			ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location),
-		})
+		}); err != nil {
+			slog.Error("daily schedule delivery", "chat_id", user.TelegramID, "error", err)
+		}
 	}
 }
 
@@ -1149,7 +1183,7 @@ func (a *App) send(ctx context.Context, chatID int64, text string) {
 
 func (a *App) sendMessage(ctx context.Context, params *telegram.SendMessageParams) {
 	if _, err := a.bot.SendMessage(ctx, params); err != nil {
-		slog.Error("send message", "error", err)
+		slog.Error("send message", "chat_id", params.ChatID, "error", err)
 	}
 }
 

@@ -70,3 +70,61 @@ func TestGetScheduleRefreshesStaleEndpointFromWorkspaceAssets(t *testing.T) {
 		t.Fatalf("unexpected lecture halls: %#v", halls)
 	}
 }
+
+func TestCallPresetDiscoveredFromWorkspaceAssets(t *testing.T) {
+	const weekMillis int64 = 1777240800000
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`
+				const schedule = "/v0/root/tenant/schedule";
+				const callPreset = "/v0/root/tenant/call-preset";
+			`))
+		case "/old/stale-schedule":
+			http.NotFound(w, r)
+		case "/v0/root/tenant/schedule":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Today":true,"CallPreset":1,"Subjects":[{"Discipline":"Math","Teacher":"Teacher","LectureHall":42,"Pair":1}]}]`))
+		case "/v0/root/tenant/call-preset":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"ID":1,"Name":"Main","Begin":"2026-01-01T08:30:00Z","CallSet":[{"PairNumber":1,"Duration":45,"Break":10}]}]`))
+		case "/v0/root/tenant/call-preset-derived":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithEndpoints(Endpoints{
+		SchedulePath:   "/old/stale-schedule",
+		CallPresetPath: "/v0/root/tenant/call-preset-derived",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	days, err := client.GetSchedule(context.Background(), 269, weekMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 {
+		t.Fatalf("unexpected schedule length: %d", len(days))
+	}
+
+	presets, err := client.GetCallPresets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presets[1].Name != "Main" {
+		t.Fatalf("unexpected call preset: %#v", presets)
+	}
+
+	endpoints := client.Endpoints()
+	if endpoints.CallPresetPath != "/v0/root/tenant/call-preset" {
+		t.Fatalf("expected discovered call-preset path, got: %s", endpoints.CallPresetPath)
+	}
+}

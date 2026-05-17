@@ -44,6 +44,16 @@ jobs:
           git fetch origin master
           git reset --hard origin/master
 
+          # backup database before deploy
+          backup_dir="/home/forgejo-runner/ktk-schedule/backups"
+          mkdir -p "$backup_dir"
+          db_path=$(docker volume inspect ktk-schedule_ktk_schedule_data --format '{{.Mountpoint}}')/ktk-schedule.db
+          if [ -f "$db_path" ]; then
+            cp "$db_path" "$backup_dir/ktk-schedule-$(date +%Y%m%d-%H%M%S).db"
+            ls -t "$backup_dir"/ktk-schedule-*.db | tail -n +6 | xargs -r rm
+            echo "database backed up"
+          fi
+
           docker compose up --build -d
 
           for i in $(seq 1 30); do

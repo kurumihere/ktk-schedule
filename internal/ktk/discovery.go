@@ -84,16 +84,14 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		}
 	}
 
+	for _, p := range candidates.callPresetPaths {
+		if err := c.validateCallPresetEndpoint(ctx, p); err == nil {
+			next.CallPresetPath = p
+			break
+		}
+	}
 	if next.CallPresetPath == "" {
-		for _, p := range candidates.callPresetPaths {
-			if err := c.validateCallPresetEndpoint(ctx, p); err == nil {
-				next.CallPresetPath = p
-				break
-			}
-		}
-		if next.CallPresetPath == "" {
-			next.CallPresetPath = DeriveCallPresetPath(next.SchedulePath)
-		}
+		next.CallPresetPath = DeriveCallPresetPath(next.SchedulePath)
 	}
 	if next.AbsenceMarkPath == "" {
 		next.AbsenceMarkPath = DeriveAbsenceMarkPath(next.SchedulePath)

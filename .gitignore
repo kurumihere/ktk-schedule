@@ -5,3 +5,4 @@
 *.log
 ktk-schedule
 tmp/
+backups/

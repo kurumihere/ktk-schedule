@@ -75,7 +75,14 @@ func (s *Storage) init() error {
 	if err := s.addColumnIfMissing("users", "subgroup", "subgroup TEXT NOT NULL DEFAULT 'left'"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("users", "show_all_subgroups", "show_all_subgroups INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing("users", "show_all_subgroups", "show_all_subgroups INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_notify ON users (notify)`); err != nil {
+		slog.Warn("failed to create notify index", "error", err)
+	}
+	return nil
 }
 
 func (s *Storage) SaveUser(user User) error {

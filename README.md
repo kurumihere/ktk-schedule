@@ -41,7 +41,7 @@ Telegram-бот для просмотра расписания КТК через
 | Автопоиск API | Находит endpoint-ы сам, включая запасные с оценками |
 | Уведомления | Ежедневная рассылка по утрам |
 | Объявления | Владелец может разослать сообщение всем |
-| Rate limit | 30 сек кулдаун на `/schedule` |
+| Rate limit | 15 сек кулдаун на `/schedule` |
 | Шифрование | AES-GCM для паролей в SQLite |
 | Health check | HTTP `/health` для Docker |
 | Retry | Exponential backoff при сбоях |
@@ -133,7 +133,7 @@ A Telegram bot for KTK schedule. Logs in via workspace, auto-discovers API endpo
 
 ### Features
 
-Sign-in, schedule with inline navigation, group/subgroup switching, pair timing with countdown, grades (2–5 + +/-), attendance marks (Н/О/Б with reasons), API autodiscovery, daily morning notifications, owner announcements, 30s rate limit, AES-GCM encryption, Docker healthcheck, retry with backoff, structured logging, CI/CD with auto-deploy.
+Sign-in, schedule with inline navigation, group/subgroup switching, pair timing with countdown, grades (2–5 + +/-), attendance marks (Н/О/Б with reasons), API autodiscovery, daily morning notifications, owner announcements, 15s rate limit, AES-GCM encryption, Docker healthcheck, retry with backoff, structured logging, CI/CD with auto-deploy.
 
 ### Commands
 
