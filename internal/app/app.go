@@ -1178,11 +1178,13 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 }
 
 func (a *App) send(ctx context.Context, chatID int64, text string) {
-	a.sendMessage(ctx, &telegram.SendMessageParams{ChatID: chatID, Text: text})
+	if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{ChatID: chatID, Text: text}); err != nil {
+		slog.Error("send message", "chat_id", chatID, "error", err)
+	}
 }
 
 func (a *App) sendMessage(ctx context.Context, params *telegram.SendMessageParams) {
-	if _, err := a.bot.SendMessage(ctx, params); err != nil {
+	if err := sendMessageWithRetry(ctx, a.bot, params); err != nil {
 		slog.Error("send message", "chat_id", params.ChatID, "error", err)
 	}
 }
