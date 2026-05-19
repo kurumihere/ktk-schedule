@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	telegram "github.com/go-telegram/bot"
@@ -50,12 +51,11 @@ type App struct {
 	endpointsMu sync.RWMutex
 	endpoints   ktk.Endpoints
 
-	sessions        sync.Map
-	healthServer    *http.Server
-	rateLimiter     *rateLimiter
-	callbackLimiter *rateLimiter
-	stopCh          chan struct{}
-	startedAt       time.Time
+	sessions     sync.Map
+	healthServer *http.Server
+	rateLimiter  *rateLimiter
+	stopCh       chan struct{}
+	startedAt    time.Time
 }
 
 type Session struct {
@@ -69,7 +69,7 @@ type Session struct {
 	WeekSelectOffset int
 	Subgroup         string
 	ShowAllSubgroups bool
-	lastAccess       time.Time
+	lastAccessUnix   int64 // atomic
 }
 
 func (s *Session) clone() *Session {
@@ -113,7 +113,17 @@ func (s *Session) clone() *Session {
 		copy(c.AbsenceMarks, s.AbsenceMarks)
 	}
 
+	c.lastAccessUnix = atomic.LoadInt64(&s.lastAccessUnix)
+
 	return c
+}
+
+func (s *Session) lastAccess() time.Time {
+	return time.Unix(atomic.LoadInt64(&s.lastAccessUnix), 0)
+}
+
+func (s *Session) touchLastAccess() {
+	atomic.StoreInt64(&s.lastAccessUnix, time.Now().Unix())
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -144,10 +154,9 @@ func New(cfg config.Config) (*App, error) {
 			CallPresetPath:  cfg.KTKCallPresetPath,
 			BranchID:        cfg.KTKBranchID,
 		},
-		rateLimiter:     newRateLimiter(scheduleCooldown),
-		callbackLimiter: newRateLimiter(callbackCooldown),
-		stopCh:          make(chan struct{}),
-		startedAt:       time.Now(),
+		rateLimiter: newRateLimiter(),
+		stopCh:      make(chan struct{}),
+		startedAt:   time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -253,7 +262,7 @@ func (a *App) cleanupSessions() {
 	now := time.Now()
 	a.sessions.Range(func(key, value any) bool {
 		s := value.(*Session)
-		if now.Sub(s.lastAccess) > sessionMaxAge {
+		if now.Sub(s.lastAccess()) > sessionMaxAge {
 			a.sessions.Delete(key)
 		}
 		return true
@@ -288,7 +297,7 @@ func (a *App) getSession(telegramID int64) *Session {
 	}
 
 	s := value.(*Session).clone()
-	s.lastAccess = time.Now()
+	s.touchLastAccess()
 	return s
 }
 
@@ -297,7 +306,7 @@ func (a *App) setSession(telegramID int64, session *Session) {
 		return
 	}
 
-	session.lastAccess = time.Now()
+	session.touchLastAccess()
 	a.sessions.Store(telegramID, session.clone())
 }
 
@@ -673,24 +682,15 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		return
 	}
 
-	chatID := callback.From.ID
-	if !a.callbackLimiter.allow(chatID) {
-		_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{
-			CallbackQueryID: callback.ID,
-			ShowAlert:       true,
-			Text:            "Подожди немного перед повторным запросом.",
-		})
-		return
-	}
-
 	_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{CallbackQueryID: callback.ID})
 
 	message := callback.Message.Message
 	if message == nil {
-		a.send(ctx, chatID, "Сообщение устарело. Напиши /schedule ещё раз.")
+		a.send(ctx, callback.From.ID, "Сообщение устарело. Напиши /schedule ещё раз.")
 		return
 	}
-	chatID = message.Chat.ID
+
+	chatID := message.Chat.ID
 	session := a.getSession(chatID)
 	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
 		user, err := a.storage.GetUser(chatID)
@@ -1031,8 +1031,16 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 		return
 	}
 
-	days, _, err := a.refreshSessionSchedule(ctx, *user, session, targetDate)
+	loadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	days, _, err := a.refreshSessionSchedule(loadCtx, *user, session, targetDate)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("schedule load timeout for callback", "chat_id", chatID)
+			a.send(ctx, chatID, "Расписание загружается слишком долго. Попробуй ещё раз.")
+			return
+		}
 		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
 		return
 	}

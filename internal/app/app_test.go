@@ -78,7 +78,7 @@ func TestClientSubgroupOrDefault(t *testing.T) {
 }
 
 func TestRateLimiter(t *testing.T) {
-	rl := newRateLimiter(scheduleCooldown)
+	rl := newRateLimiter()
 	if !rl.allow(1) {
 		t.Error("first request must be allowed")
 	}
