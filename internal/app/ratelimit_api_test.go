@@ -59,7 +59,7 @@ func TestHandleRateLimitCancellable(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if got {
-		t.Error("expected handleRateLimit to return false when context cancelled")
+		t.Error("expected handleRateLimit to return false when context canceled")
 	}
 	if elapsed > 1*time.Second {
 		t.Errorf("expected fast cancellation, got %v", elapsed)

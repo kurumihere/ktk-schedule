@@ -40,6 +40,7 @@ const (
 	announceSendDelay      = 50 * time.Millisecond
 	sessionMaxAge          = 30 * time.Minute
 	sessionCleanupInterval = 10 * time.Minute
+	notifyConcurrency      = 5
 )
 
 type App struct {
@@ -52,6 +53,7 @@ type App struct {
 	endpoints   ktk.Endpoints
 
 	sessions       sync.Map
+	sessionMu      sync.Map // per-user *sync.Mutex for atomic read-modify-write
 	healthServer   *http.Server
 	rateLimiter    *rateLimiter
 	circuitBreaker *circuitBreaker
@@ -332,6 +334,11 @@ func (a *App) setSession(telegramID int64, session *Session) {
 	a.sessions.Store(telegramID, session.clone())
 }
 
+func (a *App) userSessionMu(telegramID int64) *sync.Mutex {
+	mu, _ := a.sessionMu.LoadOrStore(telegramID, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
 func (a *App) cachedEndpoints() ktk.Endpoints {
 	a.endpointsMu.RLock()
 	defer a.endpointsMu.RUnlock()
@@ -520,11 +527,14 @@ func (a *App) handleSubgroup(ctx context.Context, _ *telegram.Bot, update *model
 		a.send(ctx, user.TelegramID, "Не удалось сохранить подгруппу: "+err.Error())
 		return
 	}
+	mu := a.userSessionMu(user.TelegramID)
+	mu.Lock()
 	if session := a.getSession(user.TelegramID); session != nil {
 		session.Subgroup = subgroup
 		session.ShowAllSubgroups = false
 		a.setSession(user.TelegramID, session)
 	}
+	mu.Unlock()
 
 	a.send(ctx, user.TelegramID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
 }
@@ -547,10 +557,13 @@ func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, en
 		a.send(ctx, user.TelegramID, "Не удалось сохранить режим подгрупп: "+err.Error())
 		return
 	}
+	mu := a.userSessionMu(user.TelegramID)
+	mu.Lock()
 	if session := a.getSession(user.TelegramID); session != nil {
 		session.ShowAllSubgroups = enabled
 		a.setSession(user.TelegramID, session)
 	}
+	mu.Unlock()
 
 	if enabled {
 		a.send(ctx, user.TelegramID, "Теперь показываю обе подгруппы.\nНапиши /schedule")
@@ -721,6 +734,10 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 
 	chatID := message.Chat.ID
+	mu := a.userSessionMu(chatID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	session := a.getSession(chatID)
 	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
 		user, err := a.storage.GetUser(chatID)
@@ -1202,56 +1219,63 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		return
 	}
 
-	for i, user := range users {
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(announceSendDelay):
-			}
-		}
+	sem := make(chan struct{}, notifyConcurrency)
+	var wg sync.WaitGroup
 
+	for _, user := range users {
 		if !a.circuitBreaker.Allow() {
 			slog.Warn("circuit breaker opened during daily notifications")
 			break
 		}
 
-		session, err := a.ensureSession(ctx, user)
-		if err != nil {
-			a.circuitBreaker.RecordFailure()
-			slog.Error("daily schedule session error", "chat_id", user.TelegramID, "error", err)
-			a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание. Попробуй позже.")
-			continue
-		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(u storage.User) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			a.sendDailyScheduleToUser(ctx, u)
+		}(user)
+	}
 
-		displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
-		if err != nil {
-			a.circuitBreaker.RecordFailure()
-			slog.Error("daily schedule fetch error", "chat_id", user.TelegramID, "error", err)
-			a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание. Попробуй позже.")
-			continue
-		}
-		a.circuitBreaker.RecordSuccess()
-		if len(displayDays) == 0 {
-			a.send(ctx, user.TelegramID, "Доброе утро. Расписание на сегодня не найдено.")
-			continue
-		}
-		if !ktk.IsSchoolDay(displayDays, time.Now(), a.location) {
-			continue
-		}
+	wg.Wait()
+}
 
-		if ktk.AllSubjectsRemote(displayDays[index]) {
-			continue
-		}
+func (a *App) sendDailyScheduleToUser(ctx context.Context, user storage.User) {
+	session, err := a.ensureSession(ctx, user)
+	if err != nil {
+		a.circuitBreaker.RecordFailure()
+		slog.Error("daily schedule session error", "chat_id", user.TelegramID, "error", err)
+		a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание. Попробуй позже.")
+		return
+	}
 
-		text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
-		if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{
-			ChatID:      user.TelegramID,
-			Text:        text,
-			ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location),
-		}); err != nil {
-			slog.Error("daily schedule delivery", "chat_id", user.TelegramID, "error", err)
-		}
+	displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
+	if err != nil {
+		a.circuitBreaker.RecordFailure()
+		slog.Error("daily schedule fetch error", "chat_id", user.TelegramID, "error", err)
+		a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание. Попробуй позже.")
+		return
+	}
+	a.circuitBreaker.RecordSuccess()
+	if len(displayDays) == 0 {
+		a.send(ctx, user.TelegramID, "Доброе утро. Расписание на сегодня не найдено.")
+		return
+	}
+	if !ktk.IsSchoolDay(displayDays, time.Now(), a.location) {
+		return
+	}
+
+	if ktk.AllSubjectsRemote(displayDays[index]) {
+		return
+	}
+
+	text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
+	if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{
+		ChatID:      user.TelegramID,
+		Text:        text,
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location),
+	}); err != nil {
+		slog.Error("daily schedule delivery", "chat_id", user.TelegramID, "error", err)
 	}
 }
 
