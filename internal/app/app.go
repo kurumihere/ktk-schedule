@@ -50,11 +50,12 @@ type App struct {
 	endpointsMu sync.RWMutex
 	endpoints   ktk.Endpoints
 
-	sessions     sync.Map
-	healthServer *http.Server
-	rateLimiter  *rateLimiter
-	stopCh       chan struct{}
-	startedAt    time.Time
+	sessions        sync.Map
+	healthServer    *http.Server
+	rateLimiter     *rateLimiter
+	callbackLimiter *rateLimiter
+	stopCh          chan struct{}
+	startedAt       time.Time
 }
 
 type Session struct {
@@ -143,9 +144,10 @@ func New(cfg config.Config) (*App, error) {
 			CallPresetPath:  cfg.KTKCallPresetPath,
 			BranchID:        cfg.KTKBranchID,
 		},
-		rateLimiter: newRateLimiter(),
-		stopCh:      make(chan struct{}),
-		startedAt:   time.Now(),
+		rateLimiter:     newRateLimiter(scheduleCooldown),
+		callbackLimiter: newRateLimiter(callbackCooldown),
+		stopCh:          make(chan struct{}),
+		startedAt:       time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -671,15 +673,24 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		return
 	}
 
+	chatID := callback.From.ID
+	if !a.callbackLimiter.allow(chatID) {
+		_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{
+			CallbackQueryID: callback.ID,
+			ShowAlert:       true,
+			Text:            "Подожди немного перед повторным запросом.",
+		})
+		return
+	}
+
 	_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{CallbackQueryID: callback.ID})
 
 	message := callback.Message.Message
 	if message == nil {
-		a.send(ctx, callback.From.ID, "Сообщение устарело. Напиши /schedule ещё раз.")
+		a.send(ctx, chatID, "Сообщение устарело. Напиши /schedule ещё раз.")
 		return
 	}
-
-	chatID := message.Chat.ID
+	chatID = message.Chat.ID
 	session := a.getSession(chatID)
 	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
 		user, err := a.storage.GetUser(chatID)
