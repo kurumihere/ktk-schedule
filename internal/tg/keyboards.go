@@ -9,6 +9,16 @@ import (
 	"ktk-schedule/internal/ktk"
 )
 
+const maxCallbackData = 64
+
+func callbackDataOrPanic(format string, args ...any) string {
+	data := fmt.Sprintf(format, args...)
+	if len(data) > maxCallbackData {
+		panic(fmt.Sprintf("callback data too long (%d bytes): %s", len(data), data))
+	}
+	return data
+}
+
 func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.Time, loc *time.Location) *models.InlineKeyboardMarkup {
 	if weekStart.IsZero() {
 		weekStart = ktk.WeekStart(time.Now(), loc)
@@ -45,7 +55,7 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.T
 		}
 
 		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: label, CallbackData: fmt.Sprintf("schedule:day:%d", i)},
+			{Text: label, CallbackData: callbackDataOrPanic("schedule:day:%d", i)},
 		})
 	}
 
@@ -75,7 +85,7 @@ func WeekSelectKeyboard(baseWeekStart time.Time, offset int, loc *time.Location)
 		}
 
 		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: label, CallbackData: fmt.Sprintf("schedule:week:open:%d", weekStart.UnixMilli())},
+			{Text: label, CallbackData: callbackDataOrPanic("schedule:week:open:%d", weekStart.UnixMilli())},
 		})
 	}
 
