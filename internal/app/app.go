@@ -51,11 +51,12 @@ type App struct {
 	endpointsMu sync.RWMutex
 	endpoints   ktk.Endpoints
 
-	sessions     sync.Map
-	healthServer *http.Server
-	rateLimiter  *rateLimiter
-	stopCh       chan struct{}
-	startedAt    time.Time
+	sessions       sync.Map
+	healthServer   *http.Server
+	rateLimiter    *rateLimiter
+	stopCh         chan struct{}
+	startedAt      time.Time
+	activeHandlers sync.WaitGroup
 }
 
 type Session struct {
@@ -216,27 +217,53 @@ func New(cfg config.Config) (*App, error) {
 }
 
 func (a *App) registerHandlers() {
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "start", telegram.MatchTypeCommandStartOnly, a.handleStart)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "my_id", telegram.MatchTypeCommandStartOnly, a.handleMyID)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "login", telegram.MatchTypeCommandStartOnly, a.handleLogin)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "announce", telegram.MatchTypeCommandStartOnly, a.handleAnnounce)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "schedule", telegram.MatchTypeCommandStartOnly, a.handleSchedule)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "group", telegram.MatchTypeCommandStartOnly, a.handleGroup)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroup", telegram.MatchTypeCommandStartOnly, a.handleSubgroup)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_on", telegram.MatchTypeCommandStartOnly, a.handleSubgroupsOn)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_off", telegram.MatchTypeCommandStartOnly, a.handleSubgroupsOff)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_on", telegram.MatchTypeCommandStartOnly, a.handleNotifyOn)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_off", telegram.MatchTypeCommandStartOnly, a.handleNotifyOff)
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "stats", telegram.MatchTypeCommandStartOnly, a.handleStats)
-	a.bot.RegisterHandler(telegram.HandlerTypeCallbackQueryData, "schedule:", telegram.MatchTypePrefix, a.handleCallback)
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "start", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleStart))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "my_id", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleMyID))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "login", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleLogin))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "announce", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleAnnounce))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "schedule", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSchedule))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "group", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleGroup))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroup", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSubgroup))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_on", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSubgroupsOn))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_off", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSubgroupsOff))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_on", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleNotifyOn))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_off", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleNotifyOff))
+	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "stats", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleStats))
+	a.bot.RegisterHandler(telegram.HandlerTypeCallbackQueryData, "schedule:", telegram.MatchTypePrefix, a.wrapCallbackHandler(a.handleCallback))
+}
+
+func (a *App) wrapHandler(h func(context.Context, *telegram.Bot, *models.Update)) func(context.Context, *telegram.Bot, *models.Update) {
+	return func(ctx context.Context, bot *telegram.Bot, update *models.Update) {
+		a.activeHandlers.Add(1)
+		defer a.activeHandlers.Done()
+		h(ctx, bot, update)
+	}
+}
+
+func (a *App) wrapCallbackHandler(h func(context.Context, *telegram.Bot, *models.Update)) func(context.Context, *telegram.Bot, *models.Update) {
+	return func(ctx context.Context, bot *telegram.Bot, update *models.Update) {
+		a.activeHandlers.Add(1)
+		defer a.activeHandlers.Done()
+		h(ctx, bot, update)
+	}
 }
 
 func (a *App) Close() {
 	close(a.stopCh)
 	a.rateLimiter.Close()
 
-	slog.Info("shutting down, waiting for active requests")
-	time.Sleep(3 * time.Second)
+	slog.Info("shutting down, waiting for active handlers")
+	done := make(chan struct{})
+	go func() {
+		a.activeHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		slog.Info("all handlers completed")
+	case <-time.After(5 * time.Second):
+		slog.Warn("timeout waiting for handlers, forcing shutdown")
+	}
 
 	if err := a.storage.Close(); err != nil {
 		slog.Error("storage close", "error", err)
