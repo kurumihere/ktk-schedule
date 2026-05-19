@@ -55,7 +55,6 @@ type App struct {
 	healthServer   *http.Server
 	rateLimiter    *rateLimiter
 	circuitBreaker *circuitBreaker
-	stopCh         chan struct{}
 	startedAt      time.Time
 	activeHandlers sync.WaitGroup
 }
@@ -158,7 +157,6 @@ func New(cfg config.Config) (*App, error) {
 		},
 		rateLimiter:    newRateLimiter(),
 		circuitBreaker: newCircuitBreaker(5, 30*time.Second),
-		stopCh:         make(chan struct{}),
 		startedAt:      time.Now(),
 	}
 
@@ -231,7 +229,7 @@ func (a *App) registerHandlers() {
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_on", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleNotifyOn))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_off", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleNotifyOff))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "stats", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleStats))
-	a.bot.RegisterHandler(telegram.HandlerTypeCallbackQueryData, "schedule:", telegram.MatchTypePrefix, a.wrapCallbackHandler(a.handleCallback))
+	a.bot.RegisterHandler(telegram.HandlerTypeCallbackQueryData, "schedule:", telegram.MatchTypePrefix, a.wrapHandler(a.handleCallback))
 }
 
 func (a *App) wrapHandler(h func(context.Context, *telegram.Bot, *models.Update)) func(context.Context, *telegram.Bot, *models.Update) {
@@ -242,16 +240,7 @@ func (a *App) wrapHandler(h func(context.Context, *telegram.Bot, *models.Update)
 	}
 }
 
-func (a *App) wrapCallbackHandler(h func(context.Context, *telegram.Bot, *models.Update)) func(context.Context, *telegram.Bot, *models.Update) {
-	return func(ctx context.Context, bot *telegram.Bot, update *models.Update) {
-		a.activeHandlers.Add(1)
-		defer a.activeHandlers.Done()
-		h(ctx, bot, update)
-	}
-}
-
 func (a *App) Close() {
-	close(a.stopCh)
 	a.rateLimiter.Close()
 
 	slog.Info("shutting down, waiting for active handlers")
@@ -267,19 +256,25 @@ func (a *App) Close() {
 		slog.Warn("timeout waiting for handlers, forcing shutdown")
 	}
 
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("health server shutdown", "error", err)
+	}
+
 	if err := a.storage.Close(); err != nil {
 		slog.Error("storage close", "error", err)
 	}
 	slog.Info("shutdown complete")
 }
 
-func (a *App) sessionCleanupLoop() {
+func (a *App) sessionCleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(sessionCleanupInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-a.stopCh:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			a.cleanupSessions()
@@ -306,15 +301,13 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	go a.runNotifier(ctx)
-	go a.sessionCleanupLoop()
-	go a.healthServer.ListenAndServe()
+	go a.sessionCleanupLoop(ctx)
+	go func() {
+		if err := a.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("health server", "error", err)
+		}
+	}()
 	a.bot.Start(ctx)
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("health server shutdown", "error", err)
-	}
 
 	return nil
 }
@@ -384,6 +377,10 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 
 	login := args[0]
 	password := args[1]
+	if login == "" || password == "" {
+		a.send(ctx, chatID, "Логин и пароль не могут быть пустыми.")
+		return
+	}
 	subgroup := clientSubgroupOrDefault(nil, a.cfg.DefaultSubgroup)
 	user := storage.User{
 		TelegramID:       chatID,
@@ -397,7 +394,8 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 
 	client, err := a.authClient(ctx, login, password, user.GroupID)
 	if err != nil {
-		a.send(ctx, chatID, "Не удалось войти: "+err.Error())
+		slog.Error("login failed", "chat_id", chatID, "error", err)
+		a.send(ctx, chatID, "Не удалось войти. Проверь логин и пароль.")
 		return
 	}
 	user.Subgroup = clientSubgroupOrDefault(client, a.cfg.DefaultSubgroup)
@@ -460,7 +458,8 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	displayDays, currentIndex, err := a.refreshSessionSchedule(ctx, *user, session, targetDate)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
+		slog.Error("schedule fetch failed", "chat_id", chatID, "error", err)
+		a.send(ctx, chatID, "Не удалось получить расписание. Попробуй позже.")
 		return
 	}
 	a.circuitBreaker.RecordSuccess()
@@ -492,7 +491,7 @@ func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.U
 	}
 
 	groupID, err := strconv.Atoi(strings.TrimSpace(commandArgs(update.Message.Text)))
-	if err != nil || groupID <= 0 {
+	if err != nil || groupID <= 0 || groupID > 100000 {
 		a.send(ctx, user.TelegramID, "Используй:\n/group 269")
 		return
 	}
@@ -736,7 +735,8 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 
 		session, err = a.ensureSession(ctx, *user)
 		if err != nil {
-			a.send(ctx, chatID, "Не удалось восстановить сессию: "+err.Error())
+			slog.Error("session recovery failed", "chat_id", chatID, "error", err)
+			a.send(ctx, chatID, "Не удалось восстановить сессию. Попробуй /login.")
 			return
 		}
 	}
@@ -1079,7 +1079,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 			a.send(ctx, chatID, "Расписание загружается слишком долго. Попробуй ещё раз.")
 			return
 		}
-		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
+		a.send(ctx, chatID, "Не удалось получить расписание. Попробуй позже.")
 		return
 	}
 	a.circuitBreaker.RecordSuccess()
@@ -1219,14 +1219,16 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		session, err := a.ensureSession(ctx, user)
 		if err != nil {
 			a.circuitBreaker.RecordFailure()
-			a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание: "+err.Error())
+			slog.Error("daily schedule session error", "chat_id", user.TelegramID, "error", err)
+			a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание. Попробуй позже.")
 			continue
 		}
 
 		displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
 		if err != nil {
 			a.circuitBreaker.RecordFailure()
-			a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание: "+err.Error())
+			slog.Error("daily schedule fetch error", "chat_id", user.TelegramID, "error", err)
+			a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание. Попробуй позже.")
 			continue
 		}
 		a.circuitBreaker.RecordSuccess()
