@@ -53,8 +53,7 @@ type App struct {
 	endpointsMu sync.RWMutex
 	endpoints   ktk.Endpoints
 
-	sessions       sync.Map
-	sessionMu      sync.Map // per-user *sync.Mutex for atomic read-modify-write
+	sessions       sync.Map // telegramID → *atomic.Pointer[Session]
 	healthServer   *http.Server
 	rateLimiter    *rateLimiter
 	circuitBreaker *circuitBreaker
@@ -76,49 +75,20 @@ type Session struct {
 	lastAccessUnix   int64 // atomic
 }
 
-func (s *Session) clone() *Session {
+func (s *Session) copy() *Session {
 	if s == nil {
 		return nil
 	}
 	c := &Session{
 		Client:           s.Client,
-		Schedule:         make([]ktk.ScheduleDay, len(s.Schedule)),
+		Schedule:         s.Schedule,
 		CurrentIndex:     s.CurrentIndex,
 		WeekStart:        s.WeekStart,
 		WeekSelectOffset: s.WeekSelectOffset,
 		Subgroup:         s.Subgroup,
 		ShowAllSubgroups: s.ShowAllSubgroups,
+		lastAccessUnix:   atomic.LoadInt64(&s.lastAccessUnix),
 	}
-	copy(c.Schedule, s.Schedule)
-
-	for i := range c.Schedule {
-		if len(s.Schedule[i].Subjects) > 0 {
-			c.Schedule[i].Subjects = make([]ktk.ScheduleItem, len(s.Schedule[i].Subjects))
-			copy(c.Schedule[i].Subjects, s.Schedule[i].Subjects)
-		}
-	}
-
-	if s.Halls != nil {
-		c.Halls = make(ktk.LectureHallMap, len(s.Halls))
-		for k, v := range s.Halls {
-			c.Halls[k] = v
-		}
-	}
-
-	if s.CallPresets != nil {
-		c.CallPresets = make(ktk.CallPresetMap, len(s.CallPresets))
-		for k, v := range s.CallPresets {
-			c.CallPresets[k] = v
-		}
-	}
-
-	if s.AbsenceMarks != nil {
-		c.AbsenceMarks = make([]ktk.AbsenceMark, len(s.AbsenceMarks))
-		copy(c.AbsenceMarks, s.AbsenceMarks)
-	}
-
-	c.lastAccessUnix = atomic.LoadInt64(&s.lastAccessUnix)
-
 	return c
 }
 
@@ -170,11 +140,7 @@ func New(cfg config.Config) (*App, error) {
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/health/extended", func(w http.ResponseWriter, r *http.Request) {
-		var activeSessions int
-		app.sessions.Range(func(_, _ any) bool {
-			activeSessions++
-			return true
-		})
+		activeSessions := app.sessionCount()
 
 		totalUsers, _ := app.storage.CountUsers()
 		notifyUsers, _ := app.storage.CountNotifyUsers()
@@ -289,8 +255,9 @@ func (a *App) sessionCleanupLoop(ctx context.Context) {
 func (a *App) cleanupSessions() {
 	now := time.Now()
 	a.sessions.Range(func(key, value any) bool {
-		s := value.(*Session)
-		if now.Sub(s.lastAccess()) > sessionMaxAge {
+		ptr := value.(*atomic.Pointer[Session])
+		s := ptr.Load()
+		if s != nil && now.Sub(s.lastAccess()) > sessionMaxAge {
 			a.sessions.Delete(key)
 		}
 		return true
@@ -317,28 +284,54 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) getSession(telegramID int64) *Session {
-	value, ok := a.sessions.Load(telegramID)
+	ptr, ok := a.sessions.Load(telegramID)
 	if !ok {
 		return nil
 	}
-
-	s := value.(*Session).clone()
+	s := ptr.(*atomic.Pointer[Session]).Load()
+	if s == nil {
+		return nil
+	}
 	s.touchLastAccess()
-	return s
+	return s.copy()
 }
 
 func (a *App) setSession(telegramID int64, session *Session) {
 	if session == nil {
 		return
 	}
-
 	session.touchLastAccess()
-	a.sessions.Store(telegramID, session.clone())
+	ptr, _ := a.sessions.LoadOrStore(telegramID, &atomic.Pointer[Session]{})
+	ptr.(*atomic.Pointer[Session]).Store(session)
 }
 
-func (a *App) userSessionMu(telegramID int64) *sync.Mutex {
-	mu, _ := a.sessionMu.LoadOrStore(telegramID, &sync.Mutex{})
-	return mu.(*sync.Mutex)
+func (a *App) modifySession(telegramID int64, fn func(*Session)) {
+	ptr, ok := a.sessions.Load(telegramID)
+	if !ok {
+		return
+	}
+	p := ptr.(*atomic.Pointer[Session])
+	for {
+		old := p.Load()
+		if old == nil {
+			return
+		}
+		new := old.copy()
+		fn(new)
+		new.touchLastAccess()
+		if p.CompareAndSwap(old, new) {
+			return
+		}
+	}
+}
+
+func (a *App) sessionCount() int {
+	var n int
+	a.sessions.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
 }
 
 func (a *App) cachedEndpoints() ktk.Endpoints {
@@ -452,7 +445,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
-	session, err := a.ensureSession(ctx, *user)
+	session, err := a.ensureSession(ctx, user)
 	if err != nil {
 		a.send(ctx, chatID, "Не удалось авторизоваться: "+err.Error())
 		return
@@ -464,7 +457,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
-	displayDays, currentIndex, err := a.refreshSessionSchedule(ctx, *user, session, targetDate)
+	displayDays, currentIndex, err := a.refreshSessionSchedule(ctx, user, session, targetDate)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
 		slog.Error("schedule fetch failed", "chat_id", chatID, "error", err)
@@ -529,14 +522,10 @@ func (a *App) handleSubgroup(ctx context.Context, _ *telegram.Bot, update *model
 		a.send(ctx, user.TelegramID, "Не удалось сохранить подгруппу: "+err.Error())
 		return
 	}
-	mu := a.userSessionMu(user.TelegramID)
-	mu.Lock()
-	if session := a.getSession(user.TelegramID); session != nil {
-		session.Subgroup = subgroup
-		session.ShowAllSubgroups = false
-		a.setSession(user.TelegramID, session)
-	}
-	mu.Unlock()
+	a.modifySession(user.TelegramID, func(s *Session) {
+		s.Subgroup = subgroup
+		s.ShowAllSubgroups = false
+	})
 
 	a.send(ctx, user.TelegramID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
 }
@@ -559,13 +548,9 @@ func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, en
 		a.send(ctx, user.TelegramID, "Не удалось сохранить режим подгрупп: "+err.Error())
 		return
 	}
-	mu := a.userSessionMu(user.TelegramID)
-	mu.Lock()
-	if session := a.getSession(user.TelegramID); session != nil {
-		session.ShowAllSubgroups = enabled
-		a.setSession(user.TelegramID, session)
-	}
-	mu.Unlock()
+	a.modifySession(user.TelegramID, func(s *Session) {
+		s.ShowAllSubgroups = enabled
+	})
 
 	if enabled {
 		a.send(ctx, user.TelegramID, "Теперь показываю обе подгруппы.\nНапиши /schedule")
@@ -595,11 +580,7 @@ func (a *App) handleStats(ctx context.Context, _ *telegram.Bot, update *models.U
 	totalUsers, _ := a.storage.CountUsers()
 	notifyUsers, _ := a.storage.CountNotifyUsers()
 
-	var activeSessions int
-	a.sessions.Range(func(_, _ any) bool {
-		activeSessions++
-		return true
-	})
+	activeSessions := a.sessionCount()
 
 	uptime := time.Since(a.startedAt).Round(time.Second)
 
@@ -744,10 +725,6 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 
 	chatID := message.Chat.ID
-	mu := a.userSessionMu(chatID)
-	mu.Lock()
-	defer mu.Unlock()
-
 	session := a.getSession(chatID)
 	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
 		user, err := a.storage.GetUser(chatID)
@@ -760,7 +737,7 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 			return
 		}
 
-		session, err = a.ensureSession(ctx, *user)
+		session, err = a.ensureSession(ctx, user)
 		if err != nil {
 			slog.Error("session recovery failed", "chat_id", chatID, "error", err)
 			a.send(ctx, chatID, "Не удалось восстановить сессию. Попробуй /login.")
@@ -959,7 +936,7 @@ func (a *App) handleDefault(ctx context.Context, _ *telegram.Bot, update *models
 	a.send(ctx, update.Message.Chat.ID, "Неизвестная команда. Напиши /start")
 }
 
-func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, error) {
+func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, error) {
 	if session := a.getSession(user.TelegramID); session != nil && session.Client != nil {
 		session.Subgroup = user.Subgroup
 		session.ShowAllSubgroups = user.ShowAllSubgroups
@@ -1015,8 +992,8 @@ func (a *App) ensureSession(ctx context.Context, user storage.User) (*Session, e
 	return session, nil
 }
 
-func (a *App) migrateLegacyPassword(user storage.User) {
-	if err := a.storage.SaveUser(user); err != nil {
+func (a *App) migrateLegacyPassword(user *storage.User) {
+	if err := a.storage.SaveUser(*user); err != nil {
 		slog.Error("legacy password migration", "error", err)
 	}
 }
@@ -1054,7 +1031,7 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 	return client, nil
 }
 
-func (a *App) refreshSessionSchedule(ctx context.Context, user storage.User, session *Session, targetDate time.Time) ([]ktk.ScheduleDay, int, error) {
+func (a *App) refreshSessionSchedule(ctx context.Context, user *storage.User, session *Session, targetDate time.Time) ([]ktk.ScheduleDay, int, error) {
 	weekStart := ktk.WeekStart(targetDate, a.location)
 	days, err := a.loadSchedule(ctx, session.Client, user.GroupID, weekStart)
 	if err != nil {
@@ -1098,7 +1075,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 		return
 	}
 
-	days, _, err := a.refreshSessionSchedule(loadCtx, *user, session, targetDate)
+	days, _, err := a.refreshSessionSchedule(loadCtx, user, session, targetDate)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1240,21 +1217,17 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(u storage.User) {
+		go func(u *storage.User) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			a.sendDailyScheduleToUser(ctx, u)
-		}(user)
+		}(&user)
 	}
 
 	wg.Wait()
 }
 
-func (a *App) sendDailyScheduleToUser(ctx context.Context, user storage.User) {
-	mu := a.userSessionMu(user.TelegramID)
-	mu.Lock()
-	defer mu.Unlock()
-
+func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 	session, err := a.ensureSession(ctx, user)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()

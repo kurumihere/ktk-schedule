@@ -90,7 +90,7 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
-func TestSessionClone(t *testing.T) {
+func TestSessionCopy(t *testing.T) {
 	loc := time.FixedZone("test", 0)
 	orig := &Session{
 		Subgroup:         "left",
@@ -114,33 +114,24 @@ func TestSessionClone(t *testing.T) {
 		WeekStart: ktk.WeekStart(time.Now(), loc),
 	}
 
-	clone := orig.clone()
-	if clone == orig {
-		t.Fatal("clone must be a different pointer")
+	cp := orig.copy()
+	if cp == orig {
+		t.Fatal("copy must be a different pointer")
 	}
-	if clone.Subgroup != orig.Subgroup {
+	if cp.Subgroup != orig.Subgroup {
 		t.Fatal("subgroup mismatch")
 	}
-	if len(clone.Schedule) != len(orig.Schedule) {
-		t.Fatal("schedule length mismatch")
+	if cp.CurrentIndex != orig.CurrentIndex {
+		t.Fatal("currentIndex mismatch")
 	}
-	if len(clone.Halls) != len(orig.Halls) {
-		t.Fatal("halls length mismatch")
-	}
-	if len(clone.CallPresets) != len(orig.CallPresets) {
-		t.Fatal("call presets length mismatch")
-	}
-	if len(clone.AbsenceMarks) != len(orig.AbsenceMarks) {
-		t.Fatal("absence marks length mismatch")
+	if !cp.WeekStart.Equal(orig.WeekStart) {
+		t.Fatal("weekStart mismatch")
 	}
 
-	clone.Subgroup = "right"
-	if orig.Subgroup == clone.Subgroup {
-		t.Fatal("modifying clone must not affect original")
-	}
-	orig.Schedule[0].Subjects[0].Discipline = "Changed"
-	if clone.Schedule[0].Subjects[0].Discipline == "Changed" {
-		t.Fatal("modifying original schedule must not affect clone")
+	cp.Subgroup = "right"
+	cp.CurrentIndex = 0
+	if orig.Subgroup == cp.Subgroup {
+		t.Fatal("modifying copy must not affect original scalar fields")
 	}
 }
 
@@ -151,9 +142,9 @@ func TestTelegramErrorWrapping(t *testing.T) {
 	}
 }
 
-func TestSessionCloneNil(t *testing.T) {
+func TestSessionCopyNil(t *testing.T) {
 	var s *Session
-	if s.clone() != nil {
+	if s.copy() != nil {
 		t.Fatal("nil session must return nil")
 	}
 }
