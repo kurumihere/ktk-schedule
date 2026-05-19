@@ -15,28 +15,20 @@ const (
 )
 
 func sendMessageWithRetry(ctx context.Context, bot *telegram.Bot, params *telegram.SendMessageParams) error {
-	var lastErr error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			if !handleRateLimit(ctx, lastErr) {
-				return lastErr
-			}
-		}
-
+	return withRetry(ctx, func() error {
 		_, err := bot.SendMessage(ctx, params)
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-		if !isRateLimited(err) {
-			return err
-		}
-	}
-	return lastErr
+		return err
+	})
 }
 
 func copyMessageWithRetry(ctx context.Context, bot *telegram.Bot, params *telegram.CopyMessageParams) error {
+	return withRetry(ctx, func() error {
+		_, err := bot.CopyMessage(ctx, params)
+		return err
+	})
+}
+
+func withRetry(ctx context.Context, fn func() error) error {
 	var lastErr error
 	for attempt := range maxRetries {
 		if attempt > 0 {
@@ -45,14 +37,12 @@ func copyMessageWithRetry(ctx context.Context, bot *telegram.Bot, params *telegr
 			}
 		}
 
-		_, err := bot.CopyMessage(ctx, params)
-		if err == nil {
+		if err := fn(); err == nil {
 			return nil
-		}
-
-		lastErr = err
-		if !isRateLimited(err) {
+		} else if !isRateLimited(err) {
 			return err
+		} else {
+			lastErr = err
 		}
 	}
 	return lastErr
