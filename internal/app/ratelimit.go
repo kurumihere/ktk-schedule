@@ -32,13 +32,13 @@ func (r *rateLimiter) allow(key int64) bool {
 
 	last, ok := r.values[key]
 	now := time.Now()
-	r.values[key] = now
 
-	if !ok {
-		return true
+	if ok && now.Sub(last) < scheduleCooldown {
+		return false
 	}
 
-	return now.Sub(last) >= scheduleCooldown
+	r.values[key] = now
+	return true
 }
 
 func (r *rateLimiter) Close() {
