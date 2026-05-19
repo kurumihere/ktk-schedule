@@ -169,3 +169,49 @@ func TestCommandArgsSpaces(t *testing.T) {
 		t.Error("expected empty result for trailing spaces")
 	}
 }
+
+func TestCircuitBreaker(t *testing.T) {
+	cb := newCircuitBreaker(3, 100*time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		if !cb.Allow() {
+			t.Errorf("expected allowed on iteration %d", i)
+		}
+		cb.RecordFailure()
+	}
+
+	if cb.Allow() {
+		t.Error("expected circuit breaker to be open after threshold failures")
+	}
+
+	cb.RecordSuccess()
+	if !cb.Allow() {
+		t.Error("expected circuit breaker to be closed after success")
+	}
+}
+
+func TestCircuitBreakerHalfOpen(t *testing.T) {
+	cb := newCircuitBreaker(2, 50*time.Millisecond)
+
+	cb.RecordFailure()
+	cb.RecordFailure()
+
+	if cb.Allow() {
+		t.Error("expected circuit breaker to be open")
+	}
+
+	time.Sleep(60 * time.Millisecond)
+
+	if !cb.Allow() {
+		t.Error("expected circuit breaker to transition to half-open after timeout")
+	}
+
+	if cb.State() != stateHalfOpen {
+		t.Errorf("expected state half-open, got %s", cb.State())
+	}
+
+	cb.RecordSuccess()
+	if cb.State() != stateClosed {
+		t.Errorf("expected state closed after half-open success, got %s", cb.State())
+	}
+}

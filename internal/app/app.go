@@ -54,6 +54,7 @@ type App struct {
 	sessions       sync.Map
 	healthServer   *http.Server
 	rateLimiter    *rateLimiter
+	circuitBreaker *circuitBreaker
 	stopCh         chan struct{}
 	startedAt      time.Time
 	activeHandlers sync.WaitGroup
@@ -155,9 +156,10 @@ func New(cfg config.Config) (*App, error) {
 			CallPresetPath:  cfg.KTKCallPresetPath,
 			BranchID:        cfg.KTKBranchID,
 		},
-		rateLimiter: newRateLimiter(),
-		stopCh:      make(chan struct{}),
-		startedAt:   time.Now(),
+		rateLimiter:    newRateLimiter(),
+		circuitBreaker: newCircuitBreaker(5, 30*time.Second),
+		stopCh:         make(chan struct{}),
+		startedAt:      time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -457,9 +459,11 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 
 	displayDays, currentIndex, err := a.refreshSessionSchedule(ctx, *user, session, targetDate)
 	if err != nil {
+		a.circuitBreaker.RecordFailure()
 		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
 		return
 	}
+	a.circuitBreaker.RecordSuccess()
 	if len(displayDays) == 0 {
 		a.send(ctx, chatID, "Расписание пустое. Попробуй позже.")
 		return
@@ -1061,8 +1065,15 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 	loadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	if !a.circuitBreaker.Allow() {
+		slog.Warn("circuit breaker open, rejecting schedule load", "chat_id", chatID)
+		a.send(ctx, chatID, "Сервер расписания временно недоступен. Попробуй через минуту.")
+		return
+	}
+
 	days, _, err := a.refreshSessionSchedule(loadCtx, *user, session, targetDate)
 	if err != nil {
+		a.circuitBreaker.RecordFailure()
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("schedule load timeout for callback", "chat_id", chatID)
 			a.send(ctx, chatID, "Расписание загружается слишком долго. Попробуй ещё раз.")
@@ -1071,6 +1082,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 		a.send(ctx, chatID, "Не удалось получить расписание: "+err.Error())
 		return
 	}
+	a.circuitBreaker.RecordSuccess()
 	if len(days) == 0 {
 		a.send(ctx, chatID, "Расписание пустое. Попробуй другую неделю.")
 		return
@@ -1185,6 +1197,11 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		return
 	}
 
+	if !a.circuitBreaker.Allow() {
+		slog.Warn("circuit breaker open, skipping daily notifications")
+		return
+	}
+
 	for i, user := range users {
 		if i > 0 {
 			select {
@@ -1194,17 +1211,25 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 			}
 		}
 
+		if !a.circuitBreaker.Allow() {
+			slog.Warn("circuit breaker opened during daily notifications")
+			break
+		}
+
 		session, err := a.ensureSession(ctx, user)
 		if err != nil {
+			a.circuitBreaker.RecordFailure()
 			a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание: "+err.Error())
 			continue
 		}
 
 		displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
 		if err != nil {
+			a.circuitBreaker.RecordFailure()
 			a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание: "+err.Error())
 			continue
 		}
+		a.circuitBreaker.RecordSuccess()
 		if len(displayDays) == 0 {
 			a.send(ctx, user.TelegramID, "Доброе утро. Расписание на сегодня не найдено.")
 			continue
