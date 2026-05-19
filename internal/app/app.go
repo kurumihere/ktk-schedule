@@ -81,7 +81,7 @@ func (s *Session) copy() *Session {
 	}
 	c := &Session{
 		Client:           s.Client,
-		Schedule:         s.Schedule,
+		Schedule:         make([]ktk.ScheduleDay, len(s.Schedule)),
 		CurrentIndex:     s.CurrentIndex,
 		WeekStart:        s.WeekStart,
 		WeekSelectOffset: s.WeekSelectOffset,
@@ -89,6 +89,34 @@ func (s *Session) copy() *Session {
 		ShowAllSubgroups: s.ShowAllSubgroups,
 		lastAccessUnix:   atomic.LoadInt64(&s.lastAccessUnix),
 	}
+	copy(c.Schedule, s.Schedule)
+
+	for i := range c.Schedule {
+		if len(s.Schedule[i].Subjects) > 0 {
+			c.Schedule[i].Subjects = make([]ktk.ScheduleItem, len(s.Schedule[i].Subjects))
+			copy(c.Schedule[i].Subjects, s.Schedule[i].Subjects)
+		}
+	}
+
+	if s.Halls != nil {
+		c.Halls = make(ktk.LectureHallMap, len(s.Halls))
+		for k, v := range s.Halls {
+			c.Halls[k] = v
+		}
+	}
+
+	if s.CallPresets != nil {
+		c.CallPresets = make(ktk.CallPresetMap, len(s.CallPresets))
+		for k, v := range s.CallPresets {
+			c.CallPresets[k] = v
+		}
+	}
+
+	if s.AbsenceMarks != nil {
+		c.AbsenceMarks = make([]ktk.AbsenceMark, len(s.AbsenceMarks))
+		copy(c.AbsenceMarks, s.AbsenceMarks)
+	}
+
 	return c
 }
 
