@@ -41,6 +41,7 @@ const (
 	sessionMaxAge          = 30 * time.Minute
 	sessionCleanupInterval = 10 * time.Minute
 	notifyConcurrency      = 5
+	announceConcurrency    = 10
 )
 
 type App struct {
@@ -192,9 +193,10 @@ func New(cfg config.Config) (*App, error) {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	app.healthServer = &http.Server{
-		Addr:        ":" + cfg.HealthPort,
-		Handler:     mux,
-		ReadTimeout: 5 * time.Second,
+		Addr:         ":" + cfg.HealthPort,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
 	}
 
 	bot, err := telegram.New(
@@ -680,43 +682,51 @@ func (a *App) handleAnnounce(ctx context.Context, bot *telegram.Bot, update *mod
 }
 
 func (a *App) broadcastAnnouncement(ctx context.Context, bot *telegram.Bot, recipients []int64, message *models.Message, text string) (int, int) {
-	sent := 0
-	failed := 0
-	ticker := time.NewTicker(announceSendDelay)
-	defer ticker.Stop()
+	var sent atomic.Int64
+	var failed atomic.Int64
 
-	for i, recipient := range recipients {
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return sent, failed + len(recipients) - i
-			case <-ticker.C:
+	sem := make(chan struct{}, announceConcurrency)
+	var wg sync.WaitGroup
+
+	for _, recipient := range recipients {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return int(sent.Load()), int(failed.Load())
+		default:
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(id int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			var err error
+			if text != "" {
+				err = sendMessageWithRetry(ctx, bot, &telegram.SendMessageParams{
+					ChatID: id,
+					Text:   text,
+				})
+			} else {
+				err = copyMessageWithRetry(ctx, bot, &telegram.CopyMessageParams{
+					ChatID:     id,
+					FromChatID: message.Chat.ID,
+					MessageID:  message.ReplyToMessage.ID,
+				})
 			}
-		}
 
-		var err error
-		if text != "" {
-			err = sendMessageWithRetry(ctx, bot, &telegram.SendMessageParams{
-				ChatID: recipient,
-				Text:   text,
-			})
-		} else {
-			err = copyMessageWithRetry(ctx, bot, &telegram.CopyMessageParams{
-				ChatID:     recipient,
-				FromChatID: message.Chat.ID,
-				MessageID:  message.ReplyToMessage.ID,
-			})
-		}
-
-		if err != nil {
-			failed++
-			slog.Error("announcement delivery", "chat_id", recipient, "error", err)
-			continue
-		}
-		sent++
+			if err != nil {
+				failed.Add(1)
+				slog.Error("announcement delivery", "chat_id", id, "error", err)
+			} else {
+				sent.Add(1)
+			}
+		}(recipient)
 	}
 
-	return sent, failed
+	wg.Wait()
+	return int(sent.Load()), int(failed.Load())
 }
 
 func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *models.Update) {
@@ -1241,6 +1251,10 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 }
 
 func (a *App) sendDailyScheduleToUser(ctx context.Context, user storage.User) {
+	mu := a.userSessionMu(user.TelegramID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	session, err := a.ensureSession(ctx, user)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
