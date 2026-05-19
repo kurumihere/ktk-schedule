@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -204,5 +205,118 @@ func TestCircuitBreakerHalfOpen(t *testing.T) {
 	cb.RecordSuccess()
 	if cb.State() != stateClosed {
 		t.Errorf("expected state closed after half-open success, got %s", cb.State())
+	}
+}
+
+func TestFormatUptime(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Minute, "30мин"},
+		{90 * time.Minute, "1ч 30мин"},
+		{25 * time.Hour, "1д 1ч 0мин"},
+		{49 * time.Hour, "2д 1ч 0мин"},
+	}
+	for _, tt := range tests {
+		got := formatUptime(tt.d)
+		if got != tt.want {
+			t.Errorf("formatUptime(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
+func TestExtractTelegramDescription(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Bad Request, message is not modified", "message is not modified"},
+		{"Bad Request, invalid chat id", "invalid chat id"},
+		{"simple error", "simple error"},
+	}
+	for _, tt := range tests {
+		got := extractTelegramDescription(errors.New(tt.input))
+		if got != tt.want {
+			t.Errorf("extractTelegramDescription(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestSessionAtomicPointer(t *testing.T) {
+	app := &App{}
+	app.setSession(1, &Session{Subgroup: "left", CurrentIndex: 0})
+
+	s := app.getSession(1)
+	if s == nil || s.Subgroup != "left" {
+		t.Fatal("expected session with subgroup left")
+	}
+
+	app.modifySession(1, func(s *Session) {
+		s.Subgroup = "right"
+		s.CurrentIndex = 5
+	})
+
+	s = app.getSession(1)
+	if s == nil || s.Subgroup != "right" || s.CurrentIndex != 5 {
+		t.Fatalf("expected subgroup right and index 5, got %s and %d", s.Subgroup, s.CurrentIndex)
+	}
+
+	app.modifySession(999, func(s *Session) {
+		s.Subgroup = "should-not-exist"
+	})
+	if app.getSession(999) != nil {
+		t.Fatal("modifySession on non-existent session must not create one")
+	}
+}
+
+func TestSessionConcurrentAccess(t *testing.T) {
+	app := &App{}
+	app.setSession(1, &Session{Subgroup: "left", CurrentIndex: 0})
+
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func(n int) {
+			for j := 0; j < 100; j++ {
+				app.modifySession(1, func(s *Session) {
+					s.CurrentIndex++
+				})
+				s := app.getSession(1)
+				if s == nil {
+					t.Error("session disappeared")
+					return
+				}
+			}
+			done <- struct{}{}
+		}(i)
+	}
+
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	s := app.getSession(1)
+	if s == nil || s.CurrentIndex != 1000 {
+		t.Errorf("expected index 1000, got %d", s.CurrentIndex)
+	}
+}
+
+func TestSessionCleanup(t *testing.T) {
+	app := &App{}
+	app.setSession(1, &Session{Subgroup: "left"})
+
+	if app.sessionCount() != 1 {
+		t.Fatal("expected 1 session")
+	}
+
+	app.sessions.Range(func(key, value any) bool {
+		ptr := value.(*atomic.Pointer[Session])
+		ptr.Store(&Session{lastAccessUnix: time.Now().Add(-1 * time.Hour).Unix()})
+		return true
+	})
+
+	app.cleanupSessions()
+	if app.sessionCount() != 0 {
+		t.Fatal("expected 0 sessions after cleanup")
 	}
 }
