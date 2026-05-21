@@ -13,7 +13,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /out/ktk-schedule \
     ./cmd/bot
 
-FROM alpine:3.21
+FROM alpine:3.22
 
 RUN apk add --no-cache tzdata curl su-exec
 

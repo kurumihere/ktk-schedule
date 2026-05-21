@@ -98,6 +98,7 @@ type FormatOptions struct {
 	ShowSubgroupLabels bool
 	CallPresets        CallPresetMap
 	AbsenceMarks       []AbsenceMark
+	AbsenceByDigit     map[int]string
 	Loc                *time.Location
 	Now                time.Time
 }
@@ -840,11 +841,11 @@ func formatDuration(d time.Duration) string {
 func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options FormatOptions) string {
 	var b strings.Builder
 
+	label := FormatDate(day.Date)
 	if day.Today {
-		b.WriteString("📅 Сегодня — " + FormatDate(day.Date) + "\n\n")
-	} else {
-		b.WriteString("📅 " + FormatDate(day.Date) + "\n\n")
+		label = "Сегодня — " + label
 	}
+	b.WriteString("📅 " + label + "\n\n")
 
 	if len(day.Subjects) == 0 && day.MaxPair == 0 {
 		b.WriteString("Пар нет.")
@@ -1001,7 +1002,7 @@ func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHal
 
 	if !MarkIsGradeModifier(subject.Mark) && subject.Mark != 0 {
 		b.WriteString("📊 Отметка: ")
-		b.WriteString(FormatMark(subject.Mark, options.AbsenceMarks))
+		b.WriteString(FormatMarkWithMap(subject.Mark, options.AbsenceByDigit))
 		b.WriteByte('\n')
 	}
 
@@ -1145,13 +1146,16 @@ func isTransient(err error) bool {
 }
 
 func FormatMark(value int, absenceMarks []AbsenceMark) string {
+	m := make(map[int]string, len(absenceMarks))
+	for _, am := range absenceMarks {
+		m[am.Digit] = am.Caption
+	}
+	return FormatMarkWithMap(value, m)
+}
+
+func FormatMarkWithMap(value int, absenceByDigit map[int]string) string {
 	if symbol, ok := markSymbols[value]; ok {
 		return symbol
-	}
-
-	absenceByDigit := make(map[int]string, len(absenceMarks))
-	for _, am := range absenceMarks {
-		absenceByDigit[am.Digit] = am.Caption
 	}
 
 	if reason, ok := absenceByDigit[value]; ok {

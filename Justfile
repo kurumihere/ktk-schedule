@@ -28,7 +28,13 @@ docker-down:
 docker-logs:
     docker compose logs -f
 
-check: fmt vet test build
+env-check:
+    @if [ -f .env ]; then \
+      grep -q '^BOT_TOKEN=' .env || { echo "error: BOT_TOKEN not set in .env"; exit 1; }; \
+      grep -q '^CREDENTIALS_SECRET=' .env || { echo "error: CREDENTIALS_SECRET not set in .env"; exit 1; }; \
+    fi
+
+check: env-check fmt vet test build
 
 clean:
     rm -f ktk-schedule ktk-schedule.db *.log
