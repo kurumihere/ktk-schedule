@@ -1,0 +1,46 @@
+run:
+  go: "1.26"
+  timeout: 2m
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - whitespace
+    - misspell
+    - gocritic
+
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - (io.Closer).Close
+      - (net/http.Response).Body.Close
+      - (database/sql).Rows.Close
+      - (*database/sql.Rows).Close
+      - (*database/sql.DB).Close
+      - (*ktk-schedule/internal/storage.Storage).Close
+      - fmt.Fprint
+      - fmt.Fprintf
+      - fmt.Fprintln
+      - (*net/http.Server).ListenAndServe
+      - (net/http.Server).ListenAndServe
+      - encoding/json.Unmarshal
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+    disabled-checks:
+      - hugeParam
+      - rangeValCopy
+      - exitAfterDefer
+  misspell:
+    locale: US
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
