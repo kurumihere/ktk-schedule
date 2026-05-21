@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +42,9 @@ type App struct {
 	sessions       sync.Map // telegramID → *atomic.Pointer[Session]
 	healthServer   *http.Server
 	rateLimiter    *rateLimiter
+	loginLimiter   *rateLimiter
 	circuitBreaker *circuitBreaker
+	scheduleCache  *scheduleCache
 	startedAt      time.Time
 	activeHandlers sync.WaitGroup
 
@@ -78,7 +81,9 @@ func New(cfg config.Config) (*App, error) {
 			BranchID:        cfg.KTKBranchID,
 		},
 		rateLimiter:    newRateLimiter(),
+		loginLimiter:   newLoginRateLimiter(),
 		circuitBreaker: newCircuitBreaker(5, 30*time.Second),
+		scheduleCache:  newScheduleCache(),
 		startedAt:      time.Now(),
 	}
 
@@ -106,6 +111,9 @@ func New(cfg config.Config) (*App, error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
+		http.DefaultServeMux.ServeHTTP(w, r)
 	})
 	app.healthServer = &http.Server{
 		Addr:         ":" + cfg.HealthPort,
@@ -137,6 +145,7 @@ func New(cfg config.Config) (*App, error) {
 
 func (a *App) Close() {
 	a.rateLimiter.Close()
+	a.loginLimiter.Close()
 
 	if a.botCancel != nil {
 		a.botCancel()

@@ -194,6 +194,11 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 }
 
 func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int, weekStart time.Time) ([]ktk.ScheduleDay, error) {
+	weekKey := weekStart.In(a.location).Format(time.DateOnly)
+	if days, ok := a.scheduleCache.get(groupID, weekKey); ok {
+		return days, nil
+	}
+
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -201,6 +206,7 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	days, err := client.GetSchedule(requestCtx, groupID, weekMillis)
 	if err == nil {
 		a.cacheEndpoints(client.Endpoints())
+		a.scheduleCache.set(groupID, weekKey, days)
 	}
 	return days, err
 }

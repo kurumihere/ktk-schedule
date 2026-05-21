@@ -1,0 +1,15 @@
+.git/
+.gitea/
+.githooks/
+.golangci.yml
+.env
+*.db
+*.log
+ktk-schedule
+tmp/
+backups/
+.air.toml
+Justfile
+LICENSE
+README.md
+.gitea/

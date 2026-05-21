@@ -57,12 +57,6 @@ func (a *App) runDailyScheduleOnce(ctx context.Context) {
 }
 
 func (a *App) sendDailySchedules(ctx context.Context) {
-	users, err := a.storage.ListNotifyUsers()
-	if err != nil {
-		slog.Error("list notify users", "error", err)
-		return
-	}
-
 	if !a.circuitBreaker.Allow() {
 		slog.Warn("circuit breaker open, skipping daily notifications")
 		return
@@ -70,23 +64,34 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 
 	sem := make(chan struct{}, notifyConcurrency)
 	var wg sync.WaitGroup
+	stopped := false
 
-	for _, user := range users {
+	err := a.storage.ForEachNotifyUser(func(u *storage.User) error {
 		if !a.circuitBreaker.Allow() {
 			slog.Warn("circuit breaker opened during daily notifications")
-			break
+			stopped = true
+			return nil
 		}
 
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(u *storage.User) {
+		go func(user storage.User) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			a.sendDailyScheduleToUser(ctx, u)
-		}(&user)
+			a.sendDailyScheduleToUser(ctx, &user)
+		}(*u)
+
+		return nil
+	})
+	if err != nil {
+		slog.Error("iterate notify users", "error", err)
 	}
 
 	wg.Wait()
+
+	if stopped {
+		slog.Warn("daily notifications stopped early due to circuit breaker")
+	}
 }
 
 func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {

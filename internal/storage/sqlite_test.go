@@ -198,3 +198,141 @@ func rawStoredPassword(t *testing.T, store *Storage, telegramID int64) string {
 	}
 	return password
 }
+
+func TestListNotifyUsersReturnsOnlyEnabled(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	for _, u := range []User{
+		{TelegramID: 1, Login: "a", Password: "p", GroupID: 1, Notify: true, Subgroup: "left"},
+		{TelegramID: 2, Login: "b", Password: "p", GroupID: 2, Notify: false, Subgroup: "left"},
+		{TelegramID: 3, Login: "c", Password: "p", GroupID: 3, Notify: true, Subgroup: "right"},
+	} {
+		if err := store.SaveUser(u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	users, err := store.ListNotifyUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 notify users, got %d", len(users))
+	}
+	for _, u := range users {
+		if !u.Notify {
+			t.Fatalf("user %d has notify=false", u.TelegramID)
+		}
+	}
+}
+
+func TestCountUsersAndNotifyUsers(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	for _, u := range []User{
+		{TelegramID: 10, Login: "a", Password: "p", GroupID: 1, Notify: true, Subgroup: "left"},
+		{TelegramID: 20, Login: "b", Password: "p", GroupID: 2, Notify: false, Subgroup: "left"},
+		{TelegramID: 30, Login: "c", Password: "p", GroupID: 3, Notify: true, Subgroup: "right"},
+		{TelegramID: 40, Login: "d", Password: "p", GroupID: 4, Notify: false, Subgroup: "left"},
+	} {
+		if err := store.SaveUser(u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	total, err := store.CountUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Fatalf("expected 4 total users, got %d", total)
+	}
+
+	notify, err := store.CountNotifyUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if notify != 2 {
+		t.Fatalf("expected 2 notify users, got %d", notify)
+	}
+}
+
+func TestSetNotify(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	user := User{TelegramID: 100, Login: "a", Password: "p", GroupID: 1, Notify: false, Subgroup: "left"}
+	if err := store.SaveUser(user); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetNotify(100, true); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := store.GetUser(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.Notify {
+		t.Fatal("notify was not enabled")
+	}
+
+	if err := store.SetNotify(100, false); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err = store.GetUser(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Notify {
+		t.Fatal("notify was not disabled")
+	}
+}
+
+func TestGetUserReturnsNilForUnknown(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	user, err := store.GetUser(99999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user != nil {
+		t.Fatal("expected nil for unknown user")
+	}
+}
+
+func TestSaveUserUpsertsExisting(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	user := User{TelegramID: 500, Login: "old", Password: "p1", GroupID: 1, Subgroup: "left"}
+	if err := store.SaveUser(user); err != nil {
+		t.Fatal(err)
+	}
+
+	user.Login = "new"
+	user.GroupID = 2
+	user.Subgroup = "right"
+	if err := store.SaveUser(user); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := store.GetUser(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Login != "new" {
+		t.Fatalf("expected login 'new', got %q", saved.Login)
+	}
+	if saved.GroupID != 2 {
+		t.Fatalf("expected group 2, got %d", saved.GroupID)
+	}
+	if saved.Subgroup != "right" {
+		t.Fatalf("expected subgroup 'right', got %q", saved.Subgroup)
+	}
+}

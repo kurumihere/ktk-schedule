@@ -175,3 +175,46 @@ func TestAllSubjectsRemoteReturnsFalseForEmptyDay(t *testing.T) {
 		t.Fatal("empty day has no subjects, expected false")
 	}
 }
+
+func FuzzParseScheduleDate(f *testing.F) {
+	loc := time.FixedZone("test", 5*60*60)
+	now := time.Date(2026, 4, 30, 15, 0, 0, 0, loc)
+
+	f.Add("01.09")
+	f.Add("2026-09-01")
+	f.Add("31.12.2026")
+	f.Add("1.1.2026")
+	f.Add("")
+	f.Add("32.13")
+	f.Add("not-a-date")
+	f.Add("2026-02-29")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		_, _ = ParseScheduleDate(input, now, loc)
+	})
+}
+
+func FuzzNormalizeSubgroup(f *testing.F) {
+	f.Add("left")
+	f.Add("right")
+	f.Add("1")
+	f.Add("2")
+	f.Add("первая")
+	f.Add("вторая")
+	f.Add("общая")
+	f.Add("both")
+	f.Add("LEFT")
+	f.Add("  left  ")
+	f.Add("1подгруппа")
+	f.Add("подгруппа_2")
+	f.Add("middle")
+	f.Add("common")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		result := normalizeSubgroup(input)
+		if result == "" && input != "" {
+			t.Fatalf("normalizeSubgroup returned empty for %q", input)
+		}
+	})
+}

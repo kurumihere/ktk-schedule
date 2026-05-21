@@ -164,17 +164,24 @@ func (s *Storage) GetUser(telegramID int64) (*User, error) {
 }
 
 func (s *Storage) ListNotifyUsers() ([]User, error) {
+	var users []User
+	err := s.ForEachNotifyUser(func(u *User) error {
+		users = append(users, *u)
+		return nil
+	})
+	return users, err
+}
+
+func (s *Storage) ForEachNotifyUser(fn func(*User) error) error {
 	rows, err := s.db.Query(`
 	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups
 	FROM users
 	WHERE notify = 1;
 	`)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-
-	var users []User
 
 	for rows.Next() {
 		var user User
@@ -183,22 +190,25 @@ func (s *Storage) ListNotifyUsers() ([]User, error) {
 		var password string
 
 		if err := rows.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups); err != nil {
-			return nil, err
+			return err
 		}
 
 		password, legacy, err := s.decodePassword(password)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		user.Password = password
 		user.PasswordLegacy = legacy
 		user.Notify = notify == 1
 		user.ShowAllSubgroups = showAllSubgroups == 1
-		users = append(users, user)
+
+		if err := fn(&user); err != nil {
+			return err
+		}
 	}
 
-	return users, rows.Err()
+	return rows.Err()
 }
 
 func (s *Storage) ListUserIDs() ([]int64, error) {

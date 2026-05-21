@@ -75,6 +75,11 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 	}
 
 	chatID := update.Message.Chat.ID
+	if !a.loginLimiter.allow(chatID) {
+		a.send(ctx, chatID, "Слишком много попыток входа. Подожди немного.")
+		return
+	}
+
 	args := strings.Fields(commandArgs(update.Message.Text))
 	if len(args) != 2 {
 		a.send(ctx, chatID, "Используй:\n/login логин пароль")
@@ -206,6 +211,8 @@ func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.U
 		a.send(ctx, user.TelegramID, "Не удалось сохранить группу: "+err.Error())
 		return
 	}
+
+	a.scheduleCache.invalidate(user.GroupID)
 
 	a.send(ctx, user.TelegramID, fmt.Sprintf("Группа изменена на %d.\nТеперь напиши /schedule", groupID))
 }
