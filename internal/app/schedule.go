@@ -187,7 +187,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 	if targetDate.In(a.location).Format(time.DateOnly) == time.Now().In(a.location).Format(time.DateOnly) {
 		isSchoolDay := ktk.IsSchoolDay(days, targetDate, a.location)
-		isNonSchoolDay := isSchoolDay && len(days) > 0 && ktk.IsNonSchoolDay(days[0])
+		isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(days[ktk.FindDateIndex(days, targetDate, a.location)])
 
 		if !isSchoolDay || isNonSchoolDay {
 			if user != nil {
