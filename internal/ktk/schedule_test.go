@@ -176,6 +176,34 @@ func TestAllSubjectsRemoteReturnsFalseForEmptyDay(t *testing.T) {
 	}
 }
 
+func TestPairTypeLabel(t *testing.T) {
+	tests := []struct {
+		pt    int
+		want  string
+		match string
+	}{
+		{1, "", "Лекция"},
+		{2, "", "Практическая"},
+		{3, "", "Лабораторная"},
+		{4, "", "Дистант"},
+		{5, "", "Консультация"},
+		{6, "", "Экзамен"},
+		{7, "", "Диф. зачёт"},
+		{9, "", "Самостоятельная работа"},
+		{0, "", ""},
+		{8, "", ""},
+	}
+	for _, tc := range tests {
+		label := pairTypeLabel(tc.pt)
+		if tc.match != "" && !strings.Contains(label, tc.match) {
+			t.Fatalf("pairTypeLabel(%d) = %q, want containing %q", tc.pt, label, tc.match)
+		}
+		if label != tc.want && tc.match == "" {
+			t.Fatalf("pairTypeLabel(%d) = %q, want %q", tc.pt, label, tc.want)
+		}
+	}
+}
+
 func FuzzParseScheduleDate(f *testing.F) {
 	loc := time.FixedZone("test", 5*60*60)
 	now := time.Date(2026, 4, 30, 15, 0, 0, 0, loc)

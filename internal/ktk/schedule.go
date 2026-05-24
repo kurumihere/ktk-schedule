@@ -15,9 +15,39 @@ import (
 )
 
 const (
-	pairTypeIndependentWork = 9
+	pairTypeLecture         = 1
+	pairTypePractice        = 2
+	pairTypeLab             = 3
 	pairTypeDistance        = 4
+	pairTypeConsult         = 5
+	pairTypeExam            = 6
+	pairTypeDiffCredit      = 7
+	pairTypeIndependentWork = 9
 )
+
+func pairTypeLabel(pt int) string {
+	switch pt {
+	case pairTypeLecture:
+		return "📚 Лекция"
+	case pairTypePractice:
+		return "🔬 Практическая"
+	case pairTypeLab:
+		return "🧪 Лабораторная"
+	case pairTypeDistance:
+		return "💻 Дистант"
+	case pairTypeConsult:
+		return "💬 Консультация"
+	case pairTypeExam:
+		return "📝 Экзамен"
+	case pairTypeDiffCredit:
+		return "📋 Диф. зачёт"
+	case pairTypeIndependentWork:
+		return "📘 Самостоятельная работа"
+	default:
+		return ""
+	}
+}
+
 const maxResponseBodyBytes = 4 << 20
 const maxDebugScheduleItemBytes = 4096
 
@@ -1001,8 +1031,9 @@ func writeTiming(b *strings.Builder, subject ScheduleItem, preset CallPreset, is
 }
 
 func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHallMap, options FormatOptions) {
-	if subject.ExtendedData.PairType == pairTypeIndependentWork {
-		b.WriteString("📘 Тип: Самостоятельная работа\n")
+	if label := pairTypeLabel(subject.ExtendedData.PairType); label != "" {
+		b.WriteString(label)
+		b.WriteByte('\n')
 	}
 
 	writeAppraisal(b, subject)
