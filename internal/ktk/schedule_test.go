@@ -176,30 +176,48 @@ func TestAllSubjectsRemoteReturnsFalseForEmptyDay(t *testing.T) {
 	}
 }
 
+func TestLectureTypeLabel(t *testing.T) {
+	tests := []struct {
+		pt    int
+		match string
+	}{
+		{1, "Лекция"},
+		{3, "Экзамен"},
+		{5, "Практическая"},
+		{9, "Самостоятельная работа"},
+		{0, ""},
+		{2, ""},
+	}
+	for _, tc := range tests {
+		label := lectureTypeLabel(tc.pt)
+		if tc.match != "" && !strings.Contains(label, tc.match) {
+			t.Fatalf("lectureTypeLabel(%d) = %q, want containing %q", tc.pt, label, tc.match)
+		}
+		if label != "" && tc.match == "" {
+			t.Fatalf("lectureTypeLabel(%d) = %q, want empty", tc.pt, label)
+		}
+	}
+}
+
 func TestPairTypeLabel(t *testing.T) {
 	tests := []struct {
 		pt    int
-		want  string
 		match string
 	}{
-		{1, "", "Лекция"},
-		{2, "", "Практическая"},
-		{3, "", "Лабораторная"},
-		{4, "", "Дистант"},
-		{5, "", "Консультация"},
-		{6, "", "Экзамен"},
-		{7, "", "Диф. зачёт"},
-		{9, "", "Самостоятельная работа"},
-		{0, "", ""},
-		{8, "", ""},
+		{3, "Экзамен"},
+		{4, "Дистант"},
+		{5, "Практическая"},
+		{9, "Самостоятельная работа"},
+		{0, ""},
+		{1, ""},
 	}
 	for _, tc := range tests {
 		label := pairTypeLabel(tc.pt)
 		if tc.match != "" && !strings.Contains(label, tc.match) {
 			t.Fatalf("pairTypeLabel(%d) = %q, want containing %q", tc.pt, label, tc.match)
 		}
-		if label != tc.want && tc.match == "" {
-			t.Fatalf("pairTypeLabel(%d) = %q, want %q", tc.pt, label, tc.want)
+		if label != "" && tc.match == "" {
+			t.Fatalf("pairTypeLabel(%d) = %q, want empty", tc.pt, label)
 		}
 	}
 }

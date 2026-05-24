@@ -15,32 +15,33 @@ import (
 )
 
 const (
-	pairTypeLecture         = 1
-	pairTypePractice        = 2
-	pairTypeLab             = 3
 	pairTypeDistance        = 4
-	pairTypeConsult         = 5
-	pairTypeExam            = 6
-	pairTypeDiffCredit      = 7
 	pairTypeIndependentWork = 9
 )
 
+func lectureTypeLabel(pt int) string {
+	switch pt {
+	case 1:
+		return "📚 Лекция"
+	case 3:
+		return "📝 Экзамен"
+	case 5:
+		return "🔬 Практическая"
+	case pairTypeIndependentWork:
+		return "📘 Самостоятельная работа"
+	default:
+		return ""
+	}
+}
+
 func pairTypeLabel(pt int) string {
 	switch pt {
-	case pairTypeLecture:
-		return "📚 Лекция"
-	case pairTypePractice:
-		return "🔬 Практическая"
-	case pairTypeLab:
-		return "🧪 Лабораторная"
 	case pairTypeDistance:
 		return "💻 Дистант"
-	case pairTypeConsult:
-		return "💬 Консультация"
-	case pairTypeExam:
+	case 3:
 		return "📝 Экзамен"
-	case pairTypeDiffCredit:
-		return "📋 Диф. зачёт"
+	case 5:
+		return "🔬 Практическая"
 	case pairTypeIndependentWork:
 		return "📘 Самостоятельная работа"
 	default:
@@ -93,6 +94,7 @@ type ScheduleItem struct {
 	ExtraData struct {
 		LectureTheme    string `json:"LectureTheme"`
 		LectureHomework string `json:"LectureHomework"`
+		LectureType     int    `json:"LectureType"`
 		Homework        struct {
 			Task     *string `json:"Task"`
 			Deadline *string `json:"Deadline"`
@@ -1031,7 +1033,10 @@ func writeTiming(b *strings.Builder, subject ScheduleItem, preset CallPreset, is
 }
 
 func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHallMap, options FormatOptions) {
-	if label := pairTypeLabel(subject.ExtendedData.PairType); label != "" {
+	if label := lectureTypeLabel(subject.ExtraData.LectureType); label != "" {
+		b.WriteString(label)
+		b.WriteByte('\n')
+	} else if label := pairTypeLabel(subject.ExtendedData.PairType); label != "" {
 		b.WriteString(label)
 		b.WriteByte('\n')
 	}
