@@ -179,11 +179,17 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
-	if !ktk.IsSchoolDay(displayDays, targetDate, a.location) {
+	isSchoolDay := ktk.IsSchoolDay(displayDays, targetDate, a.location)
+	isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(displayDays[currentIndex])
+
+	if !isSchoolDay || isNonSchoolDay {
+		a.switchToNextWeekSchedule(ctx, session, user.GroupID, targetDate)
+		a.setSession(chatID, session)
+
 		a.sendMessage(ctx, &telegram.SendMessageParams{
 			ChatID:      chatID,
 			Text:        "📅 " + targetDate.In(a.location).Format("02.01.2006") + "\n\nПар нет. Сегодня не учебный день.",
-			ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location),
+			ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
 		})
 		return
 	}
@@ -548,18 +554,31 @@ func (a *App) handleCallbackNext(session *Session) {
 }
 
 func (a *App) handleCallbackToday(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) bool {
-	todayWeekStart := ktk.WeekStart(time.Now(), a.location)
+	now := time.Now()
+	todayWeekStart := ktk.WeekStart(now, a.location)
 	if !session.WeekStart.Equal(todayWeekStart) {
-		a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, time.Now())
+		a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, now)
 		return false
 	}
-	if !ktk.IsSchoolDay(session.Schedule, time.Now(), a.location) {
-		session.CurrentIndex = a.todayIndex(session.Schedule)
+
+	todayIdx := a.todayIndex(session.Schedule)
+	isSchoolDay := ktk.IsSchoolDay(session.Schedule, now, a.location)
+
+	if !isSchoolDay || ktk.IsNonSchoolDay(session.Schedule[todayIdx]) {
+		user, err := a.storage.GetUser(chatID)
+		switched := false
+		if err == nil && user != nil {
+			switched = a.switchToNextWeekSchedule(ctx, session, user.GroupID, now)
+		}
+		if !switched {
+			session.CurrentIndex = todayIdx
+		}
 		a.setSession(chatID, session)
-		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, time.Now())
+		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, now)
 		return false
 	}
-	session.CurrentIndex = a.todayIndex(session.Schedule)
+
+	session.CurrentIndex = todayIdx
 	return true
 }
 

@@ -733,6 +733,13 @@ func AllSubjectsRemote(day ScheduleDay) bool {
 	return true
 }
 
+func IsNonSchoolDay(day ScheduleDay) bool {
+	if len(day.Subjects) == 0 {
+		return true
+	}
+	return AllSubjectsRemote(day)
+}
+
 func FilterScheduleDays(days []ScheduleDay, subgroup string, showAll bool) []ScheduleDay {
 	if showAll {
 		return days
