@@ -2,13 +2,13 @@
 
 set -e
 
-echo "→ go fmt ./..."
+echo "-> go fmt ./..."
 staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
 if [ -n "$staged" ]; then
     echo "$staged" | xargs gofmt -l -w
     echo "$staged" | xargs -r git add
 fi
 
-echo "→ go vet ./..."
+echo "-> go vet ./..."
 go vet ./...
-echo "✓ pre-commit checks passed"
+echo "(Success) pre-commit checks passed"

@@ -98,7 +98,7 @@ just setup       # pre-commit hook
 just setup-air   # установить air
 just setup-lint  # установить golangci-lint
 just dev         # hot-reload
-just check       # fmt → vet → test → build
+just check       # fmt -> vet -> test -> build
 just lint        # golangci-lint
 just docker      # docker compose up --build -d
 ```
