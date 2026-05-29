@@ -251,6 +251,7 @@ func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
 		CallPresets:        session.CallPresets,
 		AbsenceMarks:       session.AbsenceMarks,
 		AbsenceByDigit:     buildAbsenceByDigit(session.AbsenceMarks),
+		PairTypes:          session.PairTypes,
 		Loc:                a.location,
 		Now:                time.Now(),
 	})

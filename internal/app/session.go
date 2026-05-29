@@ -14,6 +14,7 @@ type Session struct {
 	Halls            ktk.LectureHallMap
 	CallPresets      ktk.CallPresetMap
 	AbsenceMarks     []ktk.AbsenceMark
+	PairTypes        ktk.PairTypeMap
 	CurrentIndex     int
 	WeekStart        time.Time
 	WeekSelectOffset int
@@ -62,6 +63,13 @@ func (s *Session) copy() *Session {
 	if s.AbsenceMarks != nil {
 		c.AbsenceMarks = make([]ktk.AbsenceMark, len(s.AbsenceMarks))
 		copy(c.AbsenceMarks, s.AbsenceMarks)
+	}
+
+	if s.PairTypes != nil {
+		c.PairTypes = make(ktk.PairTypeMap, len(s.PairTypes))
+		for k, v := range s.PairTypes {
+			c.PairTypes[k] = v
+		}
 	}
 
 	return c

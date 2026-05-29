@@ -8,6 +8,7 @@ type Endpoints struct {
 	LectureHallPath string
 	CallPresetPath  string
 	AbsenceMarkPath string
+	PairTypePath    string
 	BranchID        string
 }
 
@@ -33,6 +34,9 @@ func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	if strings.TrimSpace(e.AbsenceMarkPath) == "" {
 		e.AbsenceMarkPath = fallback.AbsenceMarkPath
 	}
+	if strings.TrimSpace(e.PairTypePath) == "" {
+		e.PairTypePath = fallback.PairTypePath
+	}
 	if strings.TrimSpace(e.BranchID) == "" {
 		e.BranchID = fallback.BranchID
 	}
@@ -42,6 +46,7 @@ func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	e.LectureHallPath = normalizeEndpointPath(e.LectureHallPath)
 	e.CallPresetPath = normalizeEndpointPath(e.CallPresetPath)
 	e.AbsenceMarkPath = normalizeEndpointPath(e.AbsenceMarkPath)
+	e.PairTypePath = normalizeEndpointPath(e.PairTypePath)
 	e.BranchID = strings.TrimSpace(e.BranchID)
 	return e
 }

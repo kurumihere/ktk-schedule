@@ -124,12 +124,14 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 
 	callPresets := a.loadCallPresets(ctx, client)
 	absenceMarks := a.loadAbsenceMarks(ctx, client)
+	pairTypes := a.loadPairTypes(ctx, client)
 
 	a.setSession(chatID, &Session{
 		Client:           client,
 		Halls:            halls,
 		CallPresets:      callPresets,
 		AbsenceMarks:     absenceMarks,
+		PairTypes:        pairTypes,
 		CurrentIndex:     0,
 		Subgroup:         user.Subgroup,
 		ShowAllSubgroups: user.ShowAllSubgroups,

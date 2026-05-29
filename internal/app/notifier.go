@@ -119,7 +119,7 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 		return
 	}
 
-	if ktk.AllSubjectsRemote(displayDays[index]) {
+	if ktk.IsNonSchoolDay(displayDays[index]) {
 		return
 	}
 

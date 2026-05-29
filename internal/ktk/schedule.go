@@ -14,36 +14,27 @@ import (
 	"time"
 )
 
-const (
-	pairTypeDistance        = 4
-	pairTypeIndependentWork = 9
-)
-
-func lectureTypeLabel(pt int) string {
-	switch pt {
-	case 1:
-		return "📚 Лекция"
-	case 3:
-		return "📝 Экзамен"
-	case 5:
-		return "🔬 Практическая"
-	case pairTypeIndependentWork:
-		return "📘 Самостоятельная работа"
-	default:
-		return ""
+func pairTypeName(pt int, pairTypes PairTypeMap) string {
+	if p, ok := pairTypes[pt]; ok {
+		return pairTypeEmoji(p.BillingType) + p.Name
 	}
+	return ""
 }
 
-func pairTypeLabel(pt int) string {
-	switch pt {
-	case pairTypeDistance:
-		return "💻 Дистант"
-	case 3:
-		return "📝 Экзамен"
-	case 5:
-		return "🔬 Практическая"
-	case pairTypeIndependentWork:
-		return "📘 Самостоятельная работа"
+func pairTypeEmoji(billingType string) string {
+	switch billingType {
+	case "Theoretical":
+		return "📚 "
+	case "Practice":
+		return "🔬 "
+	case "IndependentWork":
+		return "📘 "
+	case "Certification":
+		return "📝 "
+	case "Consultation":
+		return "💬 "
+	case "CourseWork":
+		return "📄 "
 	default:
 		return ""
 	}
@@ -131,6 +122,7 @@ type FormatOptions struct {
 	CallPresets        CallPresetMap
 	AbsenceMarks       []AbsenceMark
 	AbsenceByDigit     map[int]string
+	PairTypes          PairTypeMap
 	Loc                *time.Location
 	Now                time.Time
 }
@@ -153,6 +145,16 @@ type AbsenceMark struct {
 	Caption string `json:"Caption"`
 	Digit   int    `json:"Digit"`
 }
+
+type PairType struct {
+	ID          int    `json:"ID"`
+	Name        string `json:"Name"`
+	ShortName   string `json:"ShortName"`
+	Code        int    `json:"Code"`
+	BillingType string `json:"BillingType"`
+}
+
+type PairTypeMap map[int]PairType
 
 const (
 	markGradePlus  = 128
@@ -399,6 +401,58 @@ func (c *Client) GetAbsenceMarks(ctx context.Context) ([]AbsenceMark, error) {
 	}
 
 	return c.getAbsenceMarks(ctx, path)
+}
+
+func (c *Client) GetPairTypes(ctx context.Context) (PairTypeMap, error) {
+	endpoint := c.endpointSnapshot()
+	path := endpoint.PairTypePath
+	if path == "" {
+		return nil, nil
+	}
+
+	var types []PairType
+	err := retryGet(ctx, 3, func(retryCtx context.Context) error {
+		requestURL, err := c.resolveURL(path)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, _ := readLimitedBody(resp)
+
+		if resp.StatusCode != http.StatusOK {
+			return endpointError{operation: "pair-type", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+		}
+
+		var result []PairType
+		if err := json.Unmarshal(body, &result); err != nil {
+			return endpointError{operation: "pair-type", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+		}
+		types = result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	m := make(PairTypeMap, len(types))
+	for _, pt := range types {
+		m[pt.ID] = pt
+	}
+	return m, nil
 }
 
 func (c *Client) getAbsenceMarks(ctx context.Context, path string) ([]AbsenceMark, error) {
@@ -697,6 +751,18 @@ func IsSchoolDay(days []ScheduleDay, now time.Time, loc *time.Location) bool {
 	return false
 }
 
+func IsNonSchoolDay(day ScheduleDay) bool {
+	if len(day.Subjects) == 0 {
+		return true
+	}
+	for _, s := range day.Subjects {
+		if s.ExtendedData.PairType != 9 && s.ExtraData.LectureType != 9 {
+			return false
+		}
+	}
+	return true
+}
+
 func FindDateIndex(days []ScheduleDay, now time.Time, loc *time.Location) int {
 	if loc == nil {
 		loc = time.Local
@@ -747,29 +813,6 @@ func SubgroupLabel(value string) string {
 	default:
 		return "подгруппа не выбрана"
 	}
-}
-
-func IsRemotePair(s ScheduleItem) bool {
-	return s.ExtendedData.PairType == pairTypeDistance || s.ExtendedData.PairType == pairTypeIndependentWork
-}
-
-func AllSubjectsRemote(day ScheduleDay) bool {
-	if len(day.Subjects) == 0 {
-		return false
-	}
-	for _, s := range day.Subjects {
-		if !IsRemotePair(s) {
-			return false
-		}
-	}
-	return true
-}
-
-func IsNonSchoolDay(day ScheduleDay) bool {
-	if len(day.Subjects) == 0 {
-		return true
-	}
-	return AllSubjectsRemote(day)
 }
 
 func FilterScheduleDays(days []ScheduleDay, subgroup string, showAll bool) []ScheduleDay {
@@ -1033,10 +1076,10 @@ func writeTiming(b *strings.Builder, subject ScheduleItem, preset CallPreset, is
 }
 
 func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHallMap, options FormatOptions) {
-	if label := lectureTypeLabel(subject.ExtraData.LectureType); label != "" {
+	if label := pairTypeName(subject.ExtraData.LectureType, options.PairTypes); label != "" {
 		b.WriteString(label)
 		b.WriteByte('\n')
-	} else if label := pairTypeLabel(subject.ExtendedData.PairType); label != "" {
+	} else if label := pairTypeName(subject.ExtendedData.PairType, options.PairTypes); label != "" {
 		b.WriteString(label)
 		b.WriteByte('\n')
 	}

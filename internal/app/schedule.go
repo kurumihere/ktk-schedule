@@ -17,6 +17,7 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 		var halls ktk.LectureHallMap
 		var callPresets ktk.CallPresetMap
 		var absenceMarks []ktk.AbsenceMark
+		var pairTypes ktk.PairTypeMap
 
 		if session.Halls == nil {
 			halls, _ = a.loadLectureHalls(ctx, session.Client, user.GroupID)
@@ -29,6 +30,9 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 		}
 		if session.AbsenceMarks == nil {
 			absenceMarks = a.loadAbsenceMarks(ctx, session.Client)
+		}
+		if session.PairTypes == nil {
+			pairTypes = a.loadPairTypes(ctx, session.Client)
 		}
 		if user.PasswordLegacy {
 			a.migrateLegacyPassword(user)
@@ -45,6 +49,9 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 			}
 			if s.AbsenceMarks == nil && absenceMarks != nil {
 				s.AbsenceMarks = absenceMarks
+			}
+			if s.PairTypes == nil && pairTypes != nil {
+				s.PairTypes = pairTypes
 			}
 		})
 
@@ -67,12 +74,14 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 
 	callPresets := a.loadCallPresets(ctx, client)
 	absenceMarks := a.loadAbsenceMarks(ctx, client)
+	pairTypes := a.loadPairTypes(ctx, client)
 
 	session := &Session{
 		Client:           client,
 		Halls:            halls,
 		CallPresets:      callPresets,
 		AbsenceMarks:     absenceMarks,
+		PairTypes:        pairTypes,
 		CurrentIndex:     0,
 		Subgroup:         user.Subgroup,
 		ShowAllSubgroups: user.ShowAllSubgroups,
@@ -187,7 +196,8 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 	if targetDate.In(a.location).Format(time.DateOnly) == time.Now().In(a.location).Format(time.DateOnly) {
 		isSchoolDay := ktk.IsSchoolDay(days, targetDate, a.location)
-		isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(days[ktk.FindDateIndex(days, targetDate, a.location)])
+		dayIdx := ktk.FindDateIndex(days, targetDate, a.location)
+		isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(days[dayIdx])
 
 		if !isSchoolDay || isNonSchoolDay {
 			if user != nil {
@@ -247,6 +257,18 @@ func (a *App) loadCallPresets(ctx context.Context, client *ktk.Client) ktk.CallP
 		return nil
 	}
 	return presets
+}
+
+func (a *App) loadPairTypes(ctx context.Context, client *ktk.Client) ktk.PairTypeMap {
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	types, err := client.GetPairTypes(requestCtx)
+	if err != nil {
+		slog.Warn("pair types load", "error", err)
+		return nil
+	}
+	return types
 }
 
 func (a *App) loadAbsenceMarks(ctx context.Context, client *ktk.Client) []ktk.AbsenceMark {

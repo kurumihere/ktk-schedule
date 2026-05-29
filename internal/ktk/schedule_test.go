@@ -124,101 +124,46 @@ func TestFormatScheduleDayShowsTaskAndWebinarOnly(t *testing.T) {
 	}
 }
 
-func TestAllSubjectsRemote(t *testing.T) {
-	day := ScheduleDay{
-		Date: "2026-05-15T00:00:00Z",
-		Subjects: []ScheduleItem{
-			{Discipline: "Math", ExtendedData: struct {
-				AcademicHour   int    "json:\"AcademicHour\""
-				DisciplineFull string "json:\"DisciplineFull\""
-				PairType       int    "json:\"PairType\""
-			}{PairType: 4}},
-			{Discipline: "PE", ExtendedData: struct {
-				AcademicHour   int    "json:\"AcademicHour\""
-				DisciplineFull string "json:\"DisciplineFull\""
-				PairType       int    "json:\"PairType\""
-			}{PairType: 9}},
-		},
+func TestPairTypeName(t *testing.T) {
+	pairTypes := PairTypeMap{
+		1:  {ID: 1, Name: "Лекция", BillingType: "Theoretical"},
+		3:  {ID: 3, Name: "Экзамен", BillingType: "Certification"},
+		5:  {ID: 5, Name: "Практическое занятие", BillingType: "Practice"},
+		9:  {ID: 9, Name: "Самостоятельная работа", BillingType: "IndependentWork"},
+		10: {ID: 10, Name: "Лабораторная работа", BillingType: "Practice"},
+		11: {ID: 11, Name: "Консультация", BillingType: "Consultation"},
 	}
-	if !AllSubjectsRemote(day) {
-		t.Fatal("all subjects are remote, expected true")
-	}
-}
 
-func TestAllSubjectsRemoteReturnsFalseForInPerson(t *testing.T) {
-	day := ScheduleDay{
-		Date: "2026-05-15T00:00:00Z",
-		Subjects: []ScheduleItem{
-			{Discipline: "Math", ExtendedData: struct {
-				AcademicHour   int    "json:\"AcademicHour\""
-				DisciplineFull string "json:\"DisciplineFull\""
-				PairType       int    "json:\"PairType\""
-			}{PairType: 1}},
-			{Discipline: "PE", ExtendedData: struct {
-				AcademicHour   int    "json:\"AcademicHour\""
-				DisciplineFull string "json:\"DisciplineFull\""
-				PairType       int    "json:\"PairType\""
-			}{PairType: 4}},
-		},
-	}
-	if AllSubjectsRemote(day) {
-		t.Fatal("one subject is in-person, expected false")
-	}
-}
-
-func TestAllSubjectsRemoteReturnsFalseForEmptyDay(t *testing.T) {
-	day := ScheduleDay{
-		Date:     "2026-05-15T00:00:00Z",
-		Subjects: nil,
-	}
-	if AllSubjectsRemote(day) {
-		t.Fatal("empty day has no subjects, expected false")
-	}
-}
-
-func TestLectureTypeLabel(t *testing.T) {
 	tests := []struct {
 		pt    int
 		match string
 	}{
-		{1, "Лекция"},
-		{3, "Экзамен"},
-		{5, "Практическая"},
-		{9, "Самостоятельная работа"},
+		{1, "📚 Лекция"},
+		{3, "📝 Экзамен"},
+		{5, "🔬 Практическое занятие"},
+		{9, "📘 Самостоятельная работа"},
+		{10, "🔬 Лабораторная работа"},
+		{11, "💬 Консультация"},
 		{0, ""},
-		{2, ""},
+		{99, ""},
 	}
 	for _, tc := range tests {
-		label := lectureTypeLabel(tc.pt)
-		if tc.match != "" && !strings.Contains(label, tc.match) {
-			t.Fatalf("lectureTypeLabel(%d) = %q, want containing %q", tc.pt, label, tc.match)
+		label := pairTypeName(tc.pt, pairTypes)
+		if tc.match != "" && label != tc.match {
+			t.Fatalf("pairTypeName(%d) = %q, want %q", tc.pt, label, tc.match)
 		}
 		if label != "" && tc.match == "" {
-			t.Fatalf("lectureTypeLabel(%d) = %q, want empty", tc.pt, label)
+			t.Fatalf("pairTypeName(%d) = %q, want empty", tc.pt, label)
 		}
 	}
 }
 
-func TestPairTypeLabel(t *testing.T) {
-	tests := []struct {
-		pt    int
-		match string
-	}{
-		{3, "Экзамен"},
-		{4, "Дистант"},
-		{5, "Практическая"},
-		{9, "Самостоятельная работа"},
-		{0, ""},
-		{1, ""},
+func TestPairTypeNameEmptyMap(t *testing.T) {
+	if label := pairTypeName(1, nil); label != "" {
+		t.Fatalf("pairTypeName with nil map = %q, want empty", label)
 	}
-	for _, tc := range tests {
-		label := pairTypeLabel(tc.pt)
-		if tc.match != "" && !strings.Contains(label, tc.match) {
-			t.Fatalf("pairTypeLabel(%d) = %q, want containing %q", tc.pt, label, tc.match)
-		}
-		if label != "" && tc.match == "" {
-			t.Fatalf("pairTypeLabel(%d) = %q, want empty", tc.pt, label)
-		}
+	if label := pairTypeName(1, PairTypeMap{}); label != "" {
+		t.Fatalf("pairTypeName with empty map = %q, want empty", label)
 	}
 }
 

@@ -29,6 +29,7 @@ type endpointCandidates struct {
 	schedulePaths    []string
 	lectureHallPaths []string
 	callPresetPaths  []string
+	pairTypePaths    []string
 	branchIDs        []string
 }
 
@@ -97,12 +98,20 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		next.AbsenceMarkPath = DeriveAbsenceMarkPath(next.SchedulePath)
 	}
 
+	for _, p := range candidates.pairTypePaths {
+		if err := c.validatePairTypeEndpoint(ctx, p); err == nil {
+			next.PairTypePath = p
+			break
+		}
+	}
+
 	c.setEndpoints(next)
 	slog.Debug("endpoints refreshed",
 		"schedule_path", next.SchedulePath,
 		"lecture_hall_path", next.LectureHallPath,
 		"call_preset_path", next.CallPresetPath,
 		"absence_mark_path", next.AbsenceMarkPath,
+		"pair_type_path", next.PairTypePath,
 		"branch_id", next.BranchID,
 	)
 	return nil
@@ -237,6 +246,31 @@ func (c *Client) validateLectureHallEndpoint(ctx context.Context, path, branchID
 	return nil
 }
 
+func (c *Client) validatePairTypeEndpoint(ctx context.Context, path string) error {
+	requestURL, err := c.resolveURL(path)
+	if err != nil {
+		return err
+	}
+
+	body, statusCode, status, err := c.getJSON(ctx, requestURL)
+	if err != nil {
+		return err
+	}
+	if statusCode != http.StatusOK {
+		return endpointError{operation: "pair-type endpoint validation", statusCode: statusCode, status: status, body: string(body)}
+	}
+
+	var types []PairType
+	if err := json.Unmarshal(body, &types); err != nil {
+		return fmt.Errorf("validate pair-type endpoint: %w", err)
+	}
+	if len(types) == 0 {
+		return fmt.Errorf("validate pair-type endpoint: empty types")
+	}
+
+	return nil
+}
+
 func (c *Client) validateCallPresetEndpoint(ctx context.Context, path string) error {
 	requestURL, err := c.resolveURL(path)
 	if err != nil {
@@ -289,6 +323,10 @@ func (c *endpointCandidates) addFromText(text string) {
 		}
 		if strings.Contains(match, "/call-preset") {
 			c.callPresetPaths = appendUnique(c.callPresetPaths, match)
+			continue
+		}
+		if strings.Contains(match, "/pair-type") {
+			c.pairTypePaths = appendUnique(c.pairTypePaths, match)
 			continue
 		}
 		c.schedulePaths = appendUnique(c.schedulePaths, match)
