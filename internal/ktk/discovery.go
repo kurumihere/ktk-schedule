@@ -23,6 +23,8 @@ var (
 		regexp.MustCompile(`Branch(?:%3[Dd]|=)([A-Za-z0-9_-]+)`),
 		regexp.MustCompile(`Branch["']?\s*[:=]\s*["']([A-Za-z0-9_-]+)["']`),
 	}
+	fileHashPattern     = regexp.MustCompile(`/v[0-9]+/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)/user-file`)
+	homeworkHashPattern = regexp.MustCompile(`/v[0-9]+/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)/homework/check`)
 )
 
 type endpointCandidates struct {
@@ -30,6 +32,8 @@ type endpointCandidates struct {
 	lectureHallPaths []string
 	callPresetPaths  []string
 	pairTypePaths    []string
+	fileHashes       []string
+	homeworkHashes   []string
 	branchIDs        []string
 }
 
@@ -37,15 +41,20 @@ var fallbackScheduleHashes = []string{
 	"f88efc44efafbd74",
 }
 
-func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis int64) error {
+func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis int64, teacherHash ...string) error {
 	candidates, err := c.discoverEndpointCandidates(ctx)
 	if err != nil {
 		return err
 	}
 
+	tHash := ""
+	if len(teacherHash) > 0 {
+		tHash = teacherHash[0]
+	}
+
 	next := c.endpointSnapshot()
 
-	bestPath, foundGrades, _ := c.pickScheduleEndpoint(ctx, candidates.schedulePaths, groupID, weekMillis)
+	bestPath, foundGrades, _ := c.pickScheduleEndpoint(ctx, candidates.schedulePaths, groupID, tHash, weekMillis)
 	if bestPath == "" {
 		fallbackBase := next.CallPresetPath
 		if fallbackBase == "" && len(candidates.schedulePaths) > 0 {
@@ -54,7 +63,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		if base := trimLastSegment(fallbackBase); base != "" {
 			for _, hash := range fallbackScheduleHashes {
 				fallbackPath := path.Join(base, hash)
-				if fp, fg, _ := c.pickScheduleEndpoint(ctx, []string{fallbackPath}, groupID, weekMillis); fp != "" {
+				if fp, fg, _ := c.pickScheduleEndpoint(ctx, []string{fallbackPath}, groupID, tHash, weekMillis); fp != "" {
 					bestPath = fp
 					foundGrades = fg
 					slog.Debug("fallback schedule endpoint", "path", fp, "has_grades", fg)
@@ -105,22 +114,32 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		}
 	}
 
+	if next.FileHash == "" && len(candidates.fileHashes) > 0 {
+		next.FileHash = candidates.fileHashes[0]
+	}
+	if next.HomeworkHash == "" && len(candidates.homeworkHashes) > 0 {
+		next.HomeworkHash = candidates.homeworkHashes[0]
+	}
+
 	c.setEndpoints(next)
 	slog.Debug("endpoints refreshed",
 		"schedule_path", next.SchedulePath,
 		"lecture_hall_path", next.LectureHallPath,
+		"lecture_hall_path", next.LectureHallPath,
 		"call_preset_path", next.CallPresetPath,
 		"absence_mark_path", next.AbsenceMarkPath,
 		"pair_type_path", next.PairTypePath,
+		"file_hash", next.FileHash,
+		"homework_hash", next.HomeworkHash,
 		"branch_id", next.BranchID,
 	)
 	return nil
 }
 
-func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, groupID int, weekMillis int64) (bestPath string, hasGrades bool, bestCount int) {
+func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, groupID int, teacherHash string, weekMillis int64) (bestPath string, hasGrades bool, bestCount int) {
 	bestCount = -1
 	for _, p := range paths {
-		days, raw, err := c.validateScheduleEndpoint(ctx, p, groupID, weekMillis)
+		days, raw, err := c.validateScheduleEndpoint(ctx, p, groupID, teacherHash, weekMillis)
 		if err != nil {
 			continue
 		}
@@ -199,8 +218,8 @@ func (c *Client) fetchText(ctx context.Context, requestURL string) (string, erro
 	return string(body), nil
 }
 
-func (c *Client) validateScheduleEndpoint(ctx context.Context, path string, groupID int, weekMillis int64) ([]ScheduleDay, []byte, error) {
-	requestURL, err := c.buildScheduleURL(path, groupID, weekMillis)
+func (c *Client) validateScheduleEndpoint(ctx context.Context, path string, groupID int, teacherHash string, weekMillis int64) ([]ScheduleDay, []byte, error) {
+	requestURL, err := c.buildScheduleURL(path, groupID, teacherHash, weekMillis)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -214,8 +233,15 @@ func (c *Client) validateScheduleEndpoint(ctx context.Context, path string, grou
 	}
 
 	var days []ScheduleDay
-	if err := json.Unmarshal(body, &days); err != nil {
-		return nil, nil, fmt.Errorf("validate schedule endpoint: %w", err)
+	if err := json.Unmarshal(body, &days); err != nil || len(days) == 0 || days[0].Date == "" {
+		var wrapper []scheduleV3Wrapper
+		if uerr := json.Unmarshal(body, &wrapper); uerr != nil || len(wrapper) == 0 {
+			if err != nil {
+				return nil, nil, fmt.Errorf("validate schedule endpoint: %w", err)
+			}
+			return nil, nil, fmt.Errorf("validate schedule endpoint: empty schedule")
+		}
+		days = convertV3Schedule(wrapper)
 	}
 	if len(days) == 0 {
 		return nil, nil, fmt.Errorf("validate schedule endpoint: empty schedule")
@@ -330,6 +356,18 @@ func (c *endpointCandidates) addFromText(text string) {
 			continue
 		}
 		c.schedulePaths = appendUnique(c.schedulePaths, match)
+	}
+
+	for _, match := range fileHashPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) == 2 {
+			c.fileHashes = appendUnique(c.fileHashes, match[1])
+		}
+	}
+
+	for _, match := range homeworkHashPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) == 2 {
+			c.homeworkHashes = appendUnique(c.homeworkHashes, match[1])
+		}
 	}
 
 	for _, pattern := range branchPatterns {

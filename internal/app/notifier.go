@@ -124,10 +124,11 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 	}
 
 	text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
+	fileCount := a.fileCountForDay(ctx, displayDays[index], session)
 	if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{
 		ChatID:      user.TelegramID,
 		Text:        text,
-		ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location, fileCount),
 	}); err != nil {
 		slog.Error("daily schedule delivery", "chat_id", user.TelegramID, "error", err)
 	}

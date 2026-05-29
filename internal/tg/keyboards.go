@@ -19,7 +19,7 @@ func callbackDataOrPanic(format string, args ...any) string {
 	return data
 }
 
-func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.Time, loc *time.Location) *models.InlineKeyboardMarkup {
+func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.Time, loc *time.Location, fileCount int) *models.InlineKeyboardMarkup {
 	if weekStart.IsZero() {
 		weekStart = ktk.WeekStart(time.Now(), loc)
 	}
@@ -47,6 +47,13 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.T
 		{Text: "Сегодня", CallbackData: "schedule:today"},
 		{Text: nextText, CallbackData: "schedule:next"},
 	})
+
+	if fileCount > 0 {
+		label := fmt.Sprintf("📎 Скачать файлы (%d)", fileCount)
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: label, CallbackData: "schedule:download"},
+		})
+	}
 
 	for i, day := range days {
 		label := ktk.ShortDayLabel(day)

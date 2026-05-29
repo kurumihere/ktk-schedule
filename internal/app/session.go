@@ -15,11 +15,13 @@ type Session struct {
 	CallPresets      ktk.CallPresetMap
 	AbsenceMarks     []ktk.AbsenceMark
 	PairTypes        ktk.PairTypeMap
+	homeworkCache    map[int]int
 	CurrentIndex     int
 	WeekStart        time.Time
 	WeekSelectOffset int
 	Subgroup         string
 	ShowAllSubgroups bool
+	TeacherHash      string
 	lastAccessUnix   int64 // atomic
 }
 
@@ -69,6 +71,13 @@ func (s *Session) copy() *Session {
 		c.PairTypes = make(ktk.PairTypeMap, len(s.PairTypes))
 		for k, v := range s.PairTypes {
 			c.PairTypes[k] = v
+		}
+	}
+
+	if s.homeworkCache != nil {
+		c.homeworkCache = make(map[int]int, len(s.homeworkCache))
+		for k, v := range s.homeworkCache {
+			c.homeworkCache[k] = v
 		}
 	}
 

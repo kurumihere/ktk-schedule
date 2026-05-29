@@ -25,6 +25,7 @@ type User struct {
 	Notify           bool
 	Subgroup         string
 	ShowAllSubgroups bool
+	TeacherHash      string
 
 	PasswordLegacy bool
 }
@@ -78,6 +79,9 @@ func (s *Storage) init() error {
 	if err := s.addColumnIfMissing("users", "show_all_subgroups", "show_all_subgroups INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing("users", "teacher_hash", "teacher_hash TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_notify ON users (notify)`); err != nil {
 		slog.Warn("failed to create notify index", "error", err)
@@ -92,15 +96,16 @@ func (s *Storage) SaveUser(user User) error {
 	}
 
 	_, err = s.db.Exec(`
-	INSERT INTO users (telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO users (telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups, teacher_hash)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(telegram_id) DO UPDATE SET
 		login = excluded.login,
 		password = excluded.password,
 		group_id = excluded.group_id,
 		subgroup = excluded.subgroup,
-		show_all_subgroups = excluded.show_all_subgroups;
-	`, user.TelegramID, user.Login, password, user.GroupID, boolToInt(user.Notify), user.Subgroup, boolToInt(user.ShowAllSubgroups))
+		show_all_subgroups = excluded.show_all_subgroups,
+		teacher_hash = excluded.teacher_hash;
+	`, user.TelegramID, user.Login, password, user.GroupID, boolToInt(user.Notify), user.Subgroup, boolToInt(user.ShowAllSubgroups), user.TeacherHash)
 
 	return err
 }
@@ -135,7 +140,7 @@ func (s *Storage) SetShowAllSubgroups(telegramID int64, enabled bool) error {
 
 func (s *Storage) GetUser(telegramID int64) (*User, error) {
 	row := s.db.QueryRow(`
-	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups
+	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups, teacher_hash
 	FROM users
 	WHERE telegram_id = ?;
 	`, telegramID)
@@ -145,7 +150,7 @@ func (s *Storage) GetUser(telegramID int64) (*User, error) {
 	var showAllSubgroups int
 	var password string
 
-	err := row.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups)
+	err := row.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups, &user.TeacherHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -174,7 +179,7 @@ func (s *Storage) ListNotifyUsers() ([]User, error) {
 
 func (s *Storage) ForEachNotifyUser(fn func(*User) error) error {
 	rows, err := s.db.Query(`
-	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups
+	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups, teacher_hash
 	FROM users
 	WHERE notify = 1;
 	`)
@@ -189,7 +194,7 @@ func (s *Storage) ForEachNotifyUser(fn func(*User) error) error {
 		var showAllSubgroups int
 		var password string
 
-		if err := rows.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups); err != nil {
+		if err := rows.Scan(&user.TelegramID, &user.Login, &password, &user.GroupID, &notify, &user.Subgroup, &showAllSubgroups, &user.TeacherHash); err != nil {
 			return err
 		}
 

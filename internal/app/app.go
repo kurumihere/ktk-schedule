@@ -246,15 +246,168 @@ func (a *App) todayIndex(days []ktk.ScheduleDay) int {
 }
 
 func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
+	var fileNames map[int]string
+	var studentFiles map[int]int
+
+	if session.TeacherHash == "" {
+		fileNames = a.fetchFileNames(session, day)
+		studentFiles = a.fetchStudentFiles(session, day)
+	}
+
+	if fileNames == nil && len(studentFiles) > 0 {
+		fileNames = make(map[int]string, len(studentFiles))
+	}
+	for _, fileID := range studentFiles {
+		if _, ok := fileNames[fileID]; !ok {
+			meta, err := session.Client.GetDocumentMetadata(context.Background(), fileID)
+			if err == nil {
+				fileNames[meta.ID] = meta.Caption
+			}
+		}
+	}
+
 	return ktk.FormatScheduleDayWithOptions(day, session.Halls, ktk.FormatOptions{
 		ShowSubgroupLabels: session.ShowAllSubgroups,
 		CallPresets:        session.CallPresets,
 		AbsenceMarks:       session.AbsenceMarks,
 		AbsenceByDigit:     buildAbsenceByDigit(session.AbsenceMarks),
 		PairTypes:          session.PairTypes,
+		FileNames:          fileNames,
+		StudentFiles:       studentFiles,
 		Loc:                a.location,
 		Now:                time.Now(),
+		IsTeacher:          session.TeacherHash != "",
 	})
+}
+
+func (a *App) fetchStudentFiles(session *Session, day ktk.ScheduleDay) map[int]int {
+	if session.Client == nil {
+		return nil
+	}
+
+	result := make(map[int]int)
+	for _, s := range day.Subjects {
+		if s.ExtraData.Sheet == 0 {
+			continue
+		}
+		if session.homeworkCache != nil {
+			if fileID, ok := session.homeworkCache[s.ExtraData.Sheet]; ok {
+				if fileID != 0 {
+					result[s.ExtraData.Sheet] = fileID
+				}
+				continue
+			}
+		}
+		sub, err := session.Client.GetHomeworkSubmission(context.Background(), s.ExtraData.Sheet)
+		if err != nil {
+			slog.Debug("fetch homework submission", "sheet", s.ExtraData.Sheet, "error", err)
+			continue
+		}
+		if session.homeworkCache == nil {
+			session.homeworkCache = make(map[int]int)
+		}
+		if sub.FileID != nil {
+			session.homeworkCache[s.ExtraData.Sheet] = *sub.FileID
+			result[s.ExtraData.Sheet] = *sub.FileID
+		} else {
+			session.homeworkCache[s.ExtraData.Sheet] = 0
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func (a *App) fetchFileNames(session *Session, day ktk.ScheduleDay) map[int]string {
+	if session.Client == nil {
+		return nil
+	}
+
+	var docIDs []int
+	seen := make(map[int]bool)
+	for _, s := range day.Subjects {
+		for _, id := range s.ExtraData.Homework.Files {
+			if !seen[id] {
+				seen[id] = true
+				docIDs = append(docIDs, id)
+			}
+		}
+	}
+	if len(docIDs) == 0 {
+		return nil
+	}
+
+	type result struct {
+		id   int
+		name string
+	}
+
+	results := make(chan result, len(docIDs))
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+
+	for _, id := range docIDs {
+		wg.Add(1)
+		go func(docID int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			meta, err := session.Client.GetDocumentMetadata(context.Background(), docID)
+			if err != nil {
+				slog.Debug("fetch file name", "doc_id", docID, "error", err)
+				return
+			}
+			results <- result{meta.ID, meta.Caption}
+		}(id)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	names := make(map[int]string, len(docIDs))
+	for r := range results {
+		names[r.id] = r.name
+	}
+	return names
+}
+
+func (a *App) fileCountForDay(ctx context.Context, day ktk.ScheduleDay, session *Session) int {
+	if session.TeacherHash != "" {
+		return 0
+	}
+	var count int
+	for _, s := range day.Subjects {
+		count += len(s.ExtraData.Homework.Files)
+		if s.ExtraData.Sheet == 0 {
+			continue
+		}
+		if session.homeworkCache != nil {
+			if fileID, ok := session.homeworkCache[s.ExtraData.Sheet]; ok {
+				if fileID != 0 {
+					count++
+				}
+				continue
+			}
+		}
+		sub, err := session.Client.GetHomeworkSubmission(ctx, s.ExtraData.Sheet)
+		if err != nil {
+			slog.Debug("file count homework check", "sheet", s.ExtraData.Sheet, "error", err)
+			continue
+		}
+		if session.homeworkCache == nil {
+			session.homeworkCache = make(map[int]int)
+		}
+		if sub.FileID != nil {
+			session.homeworkCache[s.ExtraData.Sheet] = *sub.FileID
+			count++
+		} else {
+			session.homeworkCache[s.ExtraData.Sheet] = 0
+		}
+	}
+	return count
 }
 
 func buildAbsenceByDigit(marks []ktk.AbsenceMark) map[int]string {

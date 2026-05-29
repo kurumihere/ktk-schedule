@@ -16,7 +16,7 @@ func TestCallbackDataLength(t *testing.T) {
 	}
 	weekStart := time.Date(2026, 5, 11, 0, 0, 0, 0, loc)
 
-	kb := ScheduleKeyboard(days, 0, weekStart, loc)
+	kb := ScheduleKeyboard(days, 0, weekStart, loc, 0)
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
 			if len(btn.CallbackData) > maxCallbackData {

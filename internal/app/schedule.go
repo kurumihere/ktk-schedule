@@ -41,6 +41,7 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 		a.modifySession(user.TelegramID, func(s *Session) {
 			s.Subgroup = user.Subgroup
 			s.ShowAllSubgroups = user.ShowAllSubgroups
+			s.TeacherHash = user.TeacherHash
 			if s.Halls == nil && halls != nil {
 				s.Halls = halls
 			}
@@ -69,6 +70,8 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
 	if err != nil {
 		slog.Warn("lecture halls load", "error", err)
+	}
+	if halls == nil {
 		halls = make(ktk.LectureHallMap)
 	}
 
@@ -85,6 +88,7 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 		CurrentIndex:     0,
 		Subgroup:         user.Subgroup,
 		ShowAllSubgroups: user.ShowAllSubgroups,
+		TeacherHash:      user.TeacherHash,
 	}
 
 	a.setSession(user.TelegramID, session)
@@ -116,12 +120,13 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 		return nil, err
 	}
 
+	teacherHash := client.TeacherHash()
 	weekMillis := ktk.WeekStartMillis(time.Now(), a.location)
-	if hasScheduleEndpoint(endpoints) {
+	if hasScheduleEndpoint(endpoints) && teacherHash == "" {
 		return client, nil
 	}
 
-	if err := client.RefreshEndpoints(requestCtx, groupID, weekMillis); err != nil {
+	if err := client.RefreshEndpoints(requestCtx, groupID, weekMillis, teacherHash); err != nil {
 		slog.Warn("endpoint discovery", "error", err)
 		return client, nil
 	}
@@ -132,12 +137,15 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 
 func (a *App) refreshSessionSchedule(ctx context.Context, user *storage.User, session *Session, targetDate time.Time) ([]ktk.ScheduleDay, int, error) {
 	weekStart := ktk.WeekStart(targetDate, a.location)
-	days, err := a.loadSchedule(ctx, session.Client, user.GroupID, weekStart)
+	days, err := a.loadSchedule(ctx, session.Client, user.GroupID, session.TeacherHash, weekStart)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+	displayDays := days
+	if user.TeacherHash == "" {
+		displayDays = ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+	}
 	if len(displayDays) == 0 {
 		return displayDays, 0, nil
 	}
@@ -149,6 +157,7 @@ func (a *App) refreshSessionSchedule(ctx context.Context, user *storage.User, se
 	session.WeekSelectOffset = 0
 	session.Subgroup = user.Subgroup
 	session.ShowAllSubgroups = user.ShowAllSubgroups
+	session.TeacherHash = user.TeacherHash
 	a.setSession(user.TelegramID, session)
 
 	return displayDays, currentIndex, nil
@@ -214,11 +223,14 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, groupID int, targetDate time.Time) bool {
 	nextWeekStart := ktk.WeekStart(targetDate, a.location).AddDate(0, 0, 7)
-	nextDays, err := a.loadSchedule(ctx, session.Client, groupID, nextWeekStart)
+	nextDays, err := a.loadSchedule(ctx, session.Client, groupID, session.TeacherHash, nextWeekStart)
 	if err != nil || len(nextDays) == 0 {
 		return false
 	}
-	nextDisplay := ktk.FilterScheduleDays(nextDays, session.Subgroup, session.ShowAllSubgroups)
+	nextDisplay := nextDays
+	if session.TeacherHash == "" {
+		nextDisplay = ktk.FilterScheduleDays(nextDays, session.Subgroup, session.ShowAllSubgroups)
+	}
 	if len(nextDisplay) == 0 {
 		return false
 	}
@@ -229,9 +241,9 @@ func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, gr
 	return true
 }
 
-func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int, weekStart time.Time) ([]ktk.ScheduleDay, error) {
+func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int, teacherHash string, weekStart time.Time) ([]ktk.ScheduleDay, error) {
 	weekKey := weekStart.In(a.location).Format(time.DateOnly)
-	if days, ok := a.scheduleCache.get(groupID, weekKey); ok {
+	if days, ok := a.scheduleCache.get(groupID, weekKey, teacherHash); ok {
 		return days, nil
 	}
 
@@ -239,10 +251,16 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	defer cancel()
 
 	weekMillis := ktk.WeekStartMillis(weekStart, a.location)
-	days, err := client.GetSchedule(requestCtx, groupID, weekMillis)
+	var days []ktk.ScheduleDay
+	var err error
+	if teacherHash != "" {
+		days, err = client.GetTeacherSchedule(requestCtx, teacherHash, weekMillis)
+	} else {
+		days, err = client.GetSchedule(requestCtx, groupID, weekMillis)
+	}
 	if err == nil {
 		a.cacheEndpoints(client.Endpoints())
-		a.scheduleCache.set(groupID, weekKey, days)
+		a.scheduleCache.set(groupID, weekKey, teacherHash, days)
 	}
 	return days, err
 }

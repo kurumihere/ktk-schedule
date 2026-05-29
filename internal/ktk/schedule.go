@@ -40,7 +40,10 @@ func pairTypeEmoji(billingType string) string {
 	}
 }
 
-const maxResponseBodyBytes = 4 << 20
+const (
+	maxResponseBodyBytes = 4 << 20
+	maxDownloadBodyBytes = 50 << 20
+)
 const maxDebugScheduleItemBytes = 4096
 
 var shortWeekdayNames = [...]string{"Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"}
@@ -77,6 +80,8 @@ type ScheduleItem struct {
 	Pair         int    `json:"Pair"`
 	Subgroup     string `json:"Subgroup"`
 	Teacher      string `json:"Teacher"`
+	Group        string `json:"Group"`
+	CallPreset   int    `json:"CallPreset"`
 	ExtendedData struct {
 		AcademicHour   int    `json:"AcademicHour"`
 		DisciplineFull string `json:"DisciplineFull"`
@@ -86,12 +91,32 @@ type ScheduleItem struct {
 		LectureTheme    string `json:"LectureTheme"`
 		LectureHomework string `json:"LectureHomework"`
 		LectureType     int    `json:"LectureType"`
+		Sheet           int    `json:"Sheet"`
 		Homework        struct {
-			Task     *string `json:"Task"`
-			Deadline *string `json:"Deadline"`
-			Webinar  *string `json:"Webinar"`
+			Task       *string `json:"Task"`
+			Deadline   *string `json:"Deadline"`
+			Webinar    *string `json:"Webinar"`
+			Files      []int   `json:"Files"`
+			LockUpload *bool   `json:"LockUpload"`
 		} `json:"Homework"`
 	} `json:"ExtraData"`
+}
+
+type scheduleV3Wrapper struct {
+	Branch  string  `json:"Branch"`
+	DayList []dayV3 `json:"DayList"`
+	MaxPair int     `json:"MaxPair"`
+}
+
+type dayV3 struct {
+	Date  string   `json:"Date"`
+	Pairs []pairV3 `json:"Pairs"`
+	Today bool     `json:"Today"`
+}
+
+type pairV3 struct {
+	Number    int                       `json:"Number"`
+	Subgroups map[string][]ScheduleItem `json:"Subgroups"`
 }
 
 type CallSetItem struct {
@@ -123,8 +148,11 @@ type FormatOptions struct {
 	AbsenceMarks       []AbsenceMark
 	AbsenceByDigit     map[int]string
 	PairTypes          PairTypeMap
+	FileNames          map[int]string
+	StudentFiles       map[int]int
 	Loc                *time.Location
 	Now                time.Time
+	IsTeacher          bool
 }
 
 type lectureHallResponse struct {
@@ -178,14 +206,15 @@ var markSymbols = map[int]string{
 }
 
 func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
-	if c.endpointSnapshot().SchedulePath == "" {
+	endpoint := c.endpointSnapshot()
+	if endpoint.SchedulePath == "" {
 		if err := c.RefreshEndpoints(ctx, groupID, weekMillis); err != nil {
 			return nil, err
 		}
-		return c.getSchedule(ctx, groupID, weekMillis)
+		return c.getSchedule(ctx, c.endpointSnapshot().SchedulePath, groupID, "", weekMillis)
 	}
 
-	days, err := c.getSchedule(ctx, groupID, weekMillis)
+	days, err := c.getSchedule(ctx, endpoint.SchedulePath, groupID, "", weekMillis)
 	if err == nil {
 		return days, nil
 	}
@@ -197,12 +226,83 @@ func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64)
 		return nil, fmt.Errorf("%w; endpoint refresh failed: %v", err, refreshErr)
 	}
 
-	return c.getSchedule(ctx, groupID, weekMillis)
+	return c.getSchedule(ctx, c.endpointSnapshot().SchedulePath, groupID, "", weekMillis)
 }
 
-func (c *Client) getSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
+func (c *Client) GetTeacherSchedule(ctx context.Context, teacherHash string, weekMillis int64) ([]ScheduleDay, error) {
+	if c.teacherScheduleHash != "" {
+		endpoint := c.endpointSnapshot()
+		basePath := trimLastSegment(endpoint.SchedulePath)
+		if basePath == "" {
+			basePath = trimLastSegment(endpoint.CallPresetPath)
+		}
+		if basePath != "" {
+			teacherPath := basePath + "/" + c.teacherScheduleHash
+			days, err := c.getSchedule(ctx, teacherPath, 0, teacherHash, weekMillis)
+			if err == nil {
+				c.setSchedulePath(teacherPath)
+				return days, nil
+			}
+		}
+	}
+
 	endpoint := c.endpointSnapshot()
-	requestURL, err := c.buildScheduleURL(endpoint.SchedulePath, groupID, weekMillis)
+	path := endpoint.SchedulePath
+	if path != "" {
+		days, err := c.getSchedule(ctx, path, 0, teacherHash, weekMillis)
+		if err == nil {
+			return days, nil
+		}
+	}
+
+	if err := c.RefreshEndpoints(ctx, 0, weekMillis, teacherHash); err != nil {
+		return nil, err
+	}
+	path = c.endpointSnapshot().SchedulePath
+	if path == "" {
+		return nil, fmt.Errorf("teacher schedule endpoint not found")
+	}
+
+	return c.getSchedule(ctx, path, 0, teacherHash, weekMillis)
+}
+
+func convertV3Schedule(wrapper []scheduleV3Wrapper) []ScheduleDay {
+	if len(wrapper) == 0 {
+		return nil
+	}
+	w := wrapper[0]
+	days := make([]ScheduleDay, 0, len(w.DayList))
+	for _, d := range w.DayList {
+		day := ScheduleDay{
+			Date:    d.Date,
+			Today:   d.Today,
+			MaxPair: w.MaxPair,
+		}
+		var callPreset int
+		for _, p := range d.Pairs {
+			for subgroupKey, items := range p.Subgroups {
+				for _, item := range items {
+					s := item
+					s.Pair = p.Number
+					s.Subgroup = subgroupKey
+					if callPreset == 0 && s.CallPreset != 0 {
+						callPreset = s.CallPreset
+					}
+					day.Subjects = append(day.Subjects, s)
+				}
+			}
+		}
+		day.CallPreset = callPreset
+		days = append(days, day)
+	}
+	if days == nil {
+		return []ScheduleDay{}
+	}
+	return days
+}
+
+func (c *Client) getSchedule(ctx context.Context, path string, groupID int, teacherHash string, weekMillis int64) ([]ScheduleDay, error) {
+	requestURL, err := c.buildScheduleURL(path, groupID, teacherHash, weekMillis)
 	if err != nil {
 		return nil, err
 	}
@@ -233,8 +333,15 @@ func (c *Client) getSchedule(ctx context.Context, groupID int, weekMillis int64)
 		}
 
 		var result []ScheduleDay
-		if err := json.Unmarshal(body, &result); err != nil {
-			return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+		if err := json.Unmarshal(body, &result); err != nil || len(result) == 0 || result[0].Date == "" {
+			var wrapper []scheduleV3Wrapper
+			if uerr := json.Unmarshal(body, &wrapper); uerr != nil || len(wrapper) == 0 {
+				if err != nil {
+					return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
+				}
+				return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: fmt.Errorf("empty schedule")}
+			}
+			result = convertV3Schedule(wrapper)
 		}
 		days = result
 		return nil
@@ -493,7 +600,215 @@ func (c *Client) getAbsenceMarks(ctx context.Context, path string) ([]AbsenceMar
 	return marks, err
 }
 
-func (c *Client) buildScheduleURL(path string, groupID int, weekMillis int64) (string, error) {
+type DocumentMetadata struct {
+	ID      int    `json:"ID"`
+	Caption string `json:"Caption"`
+	Icon    string `json:"Icon"`
+}
+
+type HomeworkSubmission struct {
+	FileID     *int    `json:"FileID"`
+	Text       *string `json:"Text"`
+	UploadDate *string `json:"UploadDate"`
+}
+
+type fileOpenResponse struct {
+	Link    string `json:"Link"`
+	Caption string `json:"Caption"`
+}
+
+func (c *Client) fileBasePath() (string, error) {
+	endpoint := c.endpointSnapshot()
+	if endpoint.FileHash == "" {
+		return "", fmt.Errorf("file endpoint hash not discovered")
+	}
+	wsID := extractWorkspaceID(endpoint.SchedulePath)
+	if wsID == "" {
+		return "", fmt.Errorf("workspace id not found in schedule path")
+	}
+	return c.baseURL + "/v0/" + wsID + "/" + endpoint.FileHash + "/", nil
+}
+
+func (c *Client) workspaceFileURL(path string) (string, error) {
+	if strings.HasPrefix(path, "/") {
+		base := strings.TrimRight(c.baseURL, "/")
+		return base + path, nil
+	}
+	return path, nil
+}
+
+func extractWorkspaceID(schedulePath string) string {
+	parts := strings.Split(strings.Trim(schedulePath, "/"), "/")
+	if len(parts) >= 2 && len(parts[1]) == 16 {
+		return parts[1]
+	}
+	return ""
+}
+
+func (c *Client) GetDocumentMetadata(ctx context.Context, docID int) (*DocumentMetadata, error) {
+	base, err := c.fileBasePath()
+	if err != nil {
+		return nil, err
+	}
+
+	idURL := base + "id?ID=" + strconv.Itoa(docID)
+	var meta DocumentMetadata
+	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, idURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json,*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, _ := readLimitedBody(resp)
+		if resp.StatusCode != http.StatusOK {
+			return endpointError{operation: "document metadata", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+		}
+
+		return json.Unmarshal(body, &meta)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+func (c *Client) DownloadFile(ctx context.Context, link string) ([]byte, error) {
+	absURL, err := c.workspaceFileURL(link)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, absURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", c.baseURL+"/")
+	req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := readDownloadBody(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, endpointError{operation: "file download", statusCode: resp.StatusCode, status: resp.Status}
+	}
+	return body, nil
+}
+
+func readDownloadBody(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(resp.Body, maxDownloadBodyBytes))
+}
+
+func (c *Client) GetFileLink(ctx context.Context, docID int) (link string, caption string, err error) {
+	base, err := c.fileBasePath()
+	if err != nil {
+		return "", "", err
+	}
+
+	openURL := base + "open?ID=" + strconv.Itoa(docID)
+	var resp fileOpenResponse
+	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, openURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json,*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		r, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer r.Body.Close()
+
+		body, _ := readLimitedBody(r)
+		if r.StatusCode != http.StatusOK {
+			return endpointError{operation: "file open", statusCode: r.StatusCode, status: r.Status, body: string(body)}
+		}
+
+		return json.Unmarshal(body, &resp)
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	absLink, err := c.workspaceFileURL(resp.Link)
+	if err != nil {
+		return "", "", err
+	}
+	return absLink, resp.Caption, nil
+}
+
+func (c *Client) homeworkCheckBasePath() (string, error) {
+	endpoint := c.endpointSnapshot()
+	if endpoint.HomeworkHash == "" {
+		return "", fmt.Errorf("homework endpoint hash not discovered")
+	}
+	wsID := extractWorkspaceID(endpoint.SchedulePath)
+	if wsID == "" {
+		return "", fmt.Errorf("workspace id not found in schedule path")
+	}
+	return c.baseURL + "/v0/" + wsID + "/" + endpoint.HomeworkHash + "/", nil
+}
+
+func (c *Client) GetHomeworkSubmission(ctx context.Context, sheetID int) (*HomeworkSubmission, error) {
+	base, err := c.homeworkCheckBasePath()
+	if err != nil {
+		return nil, err
+	}
+
+	checkURL := base + "homework/check?JournalID=" + strconv.Itoa(sheetID)
+	var sub HomeworkSubmission
+	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
+		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, checkURL, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json,*/*")
+		req.Header.Set("Referer", c.baseURL+"/")
+		req.Header.Set("User-Agent", "ktk-schedule/1.0")
+
+		r, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer r.Body.Close()
+
+		body, _ := readLimitedBody(r)
+		if r.StatusCode != http.StatusOK {
+			return endpointError{operation: "homework check", statusCode: r.StatusCode, status: r.Status, body: string(body)}
+		}
+
+		return json.Unmarshal(body, &sub)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
+func educationYear(now time.Time) int {
+	year := now.Year()
+	if now.Month() < time.September {
+		return year - 1
+	}
+	return year
+}
+
+func (c *Client) buildScheduleURL(path string, groupID int, teacherHash string, weekMillis int64) (string, error) {
 	requestURL, err := c.resolveURL(path)
 	if err != nil {
 		return "", err
@@ -505,8 +820,19 @@ func (c *Client) buildScheduleURL(path string, groupID int, weekMillis int64) (s
 	}
 
 	query := parsedURL.Query()
-	query.Set("Teacher", "")
-	query.Set("Group", strconv.Itoa(groupID))
+	if teacherHash != "" {
+		if c.teacherScheduleHash != "" && strings.Contains(path, c.teacherScheduleHash) {
+			query.Set("Teacher", "")
+			query.Set("Group", "")
+		} else {
+			query.Set("Teacher", teacherHash)
+			query.Set("Group", "")
+		}
+		query.Set("Year", strconv.Itoa(educationYear(time.Now())))
+	} else {
+		query.Set("Teacher", "")
+		query.Set("Group", strconv.Itoa(groupID))
+	}
 	query.Set("Week", strconv.FormatInt(weekMillis, 10))
 	parsedURL.RawQuery = query.Encode()
 
@@ -1084,16 +1410,26 @@ func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHal
 		b.WriteByte('\n')
 	}
 
-	writeAppraisal(b, subject)
+	if options.IsTeacher {
+		if subject.Group != "" {
+			b.WriteString("👥 Группа: " + subject.Group + "\n")
+		}
+	} else {
+		writeAppraisal(b, subject)
 
-	if !MarkIsGradeModifier(subject.Mark) && subject.Mark != 0 {
-		b.WriteString("📊 Отметка: ")
-		b.WriteString(FormatMarkWithMap(subject.Mark, options.AbsenceByDigit))
-		b.WriteByte('\n')
-	}
+		if !MarkIsGradeModifier(subject.Mark) && subject.Mark != 0 {
+			b.WriteString("📊 Отметка: ")
+			b.WriteString(FormatMarkWithMap(subject.Mark, options.AbsenceByDigit))
+			b.WriteByte('\n')
+		}
 
-	if subject.Teacher != "" {
-		b.WriteString("👤 " + subject.Teacher + "\n")
+		if subject.Teacher != "" {
+			b.WriteString("👤 " + subject.Teacher + "\n")
+		}
+
+		if subject.Group != "" {
+			b.WriteString("👥 Группа: " + subject.Group + "\n")
+		}
 	}
 
 	b.WriteString("🏫 Кабинет: " + FormatLectureHall(subject.LectureHall, halls) + "\n")
@@ -1104,6 +1440,39 @@ func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHal
 
 	if subject.ExtraData.Homework.Webinar != nil && strings.TrimSpace(*subject.ExtraData.Homework.Webinar) != "" {
 		b.WriteString("Вебинар: " + strings.TrimSpace(*subject.ExtraData.Homework.Webinar) + "\n")
+	}
+
+	if n := len(subject.ExtraData.Homework.Files); n > 0 {
+		b.WriteString("📎 ")
+		b.WriteString(strconv.Itoa(n))
+		switch {
+		case n%10 == 1 && n%100 != 11:
+			b.WriteString(" файл")
+		case n%10 >= 2 && n%10 <= 4 && (n%100 < 10 || n%100 >= 20):
+			b.WriteString(" файла")
+		default:
+			b.WriteString(" файлов")
+		}
+
+		showNames := n <= 20
+		for _, id := range subject.ExtraData.Homework.Files {
+			if name, ok := options.FileNames[id]; ok && showNames {
+				b.WriteString("\n  \u2022 ")
+				b.WriteString(name)
+			}
+		}
+		b.WriteByte('\n')
+	}
+
+	if !options.IsTeacher {
+		if studentFileID, ok := options.StudentFiles[subject.ExtraData.Sheet]; ok {
+			b.WriteString("📤 1 файл (моя работа)\n")
+			if name, ok := options.FileNames[studentFileID]; ok {
+				b.WriteString("  \u2022 ")
+				b.WriteString(name)
+				b.WriteByte('\n')
+			}
+		}
 	}
 
 	b.WriteByte('\n')

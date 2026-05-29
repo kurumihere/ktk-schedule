@@ -9,6 +9,8 @@ type Endpoints struct {
 	CallPresetPath  string
 	AbsenceMarkPath string
 	PairTypePath    string
+	FileHash        string
+	HomeworkHash    string
 	BranchID        string
 }
 
@@ -39,6 +41,12 @@ func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	}
 	if strings.TrimSpace(e.BranchID) == "" {
 		e.BranchID = fallback.BranchID
+	}
+	if strings.TrimSpace(e.FileHash) == "" {
+		e.FileHash = fallback.FileHash
+	}
+	if strings.TrimSpace(e.HomeworkHash) == "" {
+		e.HomeworkHash = fallback.HomeworkHash
 	}
 
 	e.SignInPath = normalizeEndpointPath(e.SignInPath)

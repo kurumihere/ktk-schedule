@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -110,11 +111,14 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 		return
 	}
 	user.Subgroup = clientSubgroupOrDefault(client, a.cfg.DefaultSubgroup)
+	user.TeacherHash = client.TeacherHash()
 
 	if err := a.storage.SaveUser(user); err != nil {
 		a.send(ctx, chatID, "Не удалось сохранить пользователя: "+err.Error())
 		return
 	}
+
+	teacher := user.TeacherHash != ""
 
 	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
 	if err != nil {
@@ -135,9 +139,14 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 		CurrentIndex:     0,
 		Subgroup:         user.Subgroup,
 		ShowAllSubgroups: user.ShowAllSubgroups,
+		TeacherHash:      user.TeacherHash,
 	})
 
-	a.send(ctx, chatID, fmt.Sprintf("Авторизация успешна.\nГруппа: %d\nПодгруппа: %s\n\nТеперь напиши /schedule", user.GroupID, ktk.SubgroupLabel(user.Subgroup)))
+	if teacher {
+		a.send(ctx, chatID, "Авторизация успешна (преподаватель).\n\nТеперь напиши /schedule")
+	} else {
+		a.send(ctx, chatID, fmt.Sprintf("Авторизация успешна.\nГруппа: %d\nПодгруппа: %s\n\nТеперь напиши /schedule", user.GroupID, ktk.SubgroupLabel(user.Subgroup)))
+	}
 }
 
 func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *models.Update) {
@@ -191,15 +200,16 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		a.sendMessage(ctx, &telegram.SendMessageParams{
 			ChatID:      chatID,
 			Text:        "📅 " + targetDate.In(a.location).Format("02.01.2006") + "\n\nПар нет. Сегодня не учебный день.",
-			ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
+			ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0),
 		})
 		return
 	}
 
+	fileCount := a.fileCountForDay(ctx, displayDays[currentIndex], session)
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
 		Text:        a.formatScheduleDay(displayDays[currentIndex], session),
-		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location, fileCount),
 	})
 }
 
@@ -505,6 +515,9 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		if !a.handleCallbackDay(data, session) {
 			return
 		}
+	case data == "schedule:download":
+		a.handleCallbackDownload(ctx, bot, chatID, session)
+		return
 	default:
 		return
 	}
@@ -593,17 +606,148 @@ func (a *App) handleCallbackDay(data string, session *Session) bool {
 	return true
 }
 
+func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, chatID int64, session *Session) {
+	if session.CurrentIndex < 0 || session.CurrentIndex >= len(session.Schedule) {
+		return
+	}
+
+	type fileInfo struct {
+		ID      int
+		Caption string
+		Icon    string
+	}
+
+	var infos []fileInfo
+	seen := make(map[int]bool)
+
+	for _, s := range session.Schedule[session.CurrentIndex].Subjects {
+		for _, docID := range s.ExtraData.Homework.Files {
+			if seen[docID] {
+				continue
+			}
+			seen[docID] = true
+			meta, err := session.Client.GetDocumentMetadata(ctx, docID)
+			if err != nil {
+				slog.Error("get file metadata", "doc_id", docID, "error", err)
+				infos = append(infos, fileInfo{ID: docID, Caption: fmt.Sprintf("file_%d", docID)})
+			} else {
+				infos = append(infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
+			}
+		}
+
+		if s.ExtraData.Sheet != 0 {
+			sub, err := session.Client.GetHomeworkSubmission(ctx, s.ExtraData.Sheet)
+			if err != nil {
+				slog.Debug("homework check for download", "sheet", s.ExtraData.Sheet, "error", err)
+			} else if sub.FileID != nil && !seen[*sub.FileID] {
+				seen[*sub.FileID] = true
+				meta, err := session.Client.GetDocumentMetadata(ctx, *sub.FileID)
+				if err != nil {
+					infos = append(infos, fileInfo{ID: *sub.FileID, Caption: fmt.Sprintf("file_%d", *sub.FileID)})
+				} else {
+					infos = append(infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
+				}
+			}
+		}
+	}
+
+	if len(infos) == 0 {
+		a.send(ctx, chatID, "Нет файлов для скачивания.")
+		return
+	}
+
+	var list strings.Builder
+	list.WriteString("📎 Файлы:")
+	for _, fi := range infos {
+		list.WriteByte('\n')
+		list.WriteString(fileIconEmoji(fi.Icon))
+		list.WriteString(" ")
+		list.WriteString(fi.Caption)
+	}
+	a.send(ctx, chatID, list.String())
+
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+
+	for _, fi := range infos {
+		wg.Add(1)
+		go func(id int, name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := a.downloadAndSendFile(ctx, bot, chatID, session.Client, id, name); err != nil {
+				slog.Error("file download", "doc_id", id, "error", err)
+			}
+		}(fi.ID, fi.Caption)
+	}
+
+	wg.Wait()
+}
+
+func fileIconEmoji(icon string) string {
+	switch {
+	case strings.Contains(icon, "pdf"):
+		return "📄"
+	case strings.Contains(icon, "image"):
+		return "🖼"
+	case strings.Contains(icon, "word"):
+		return "📝"
+	case strings.Contains(icon, "excel"):
+		return "📊"
+	case strings.Contains(icon, "powerpoint"):
+		return "📽"
+	case strings.Contains(icon, "archive"):
+		return "📦"
+	default:
+		return "📎"
+	}
+}
+
+func (a *App) downloadAndSendFile(ctx context.Context, bot *telegram.Bot, chatID int64, client *ktk.Client, docID int, fileName string) error {
+	link, caption, err := client.GetFileLink(ctx, docID)
+	if err != nil {
+		a.send(ctx, chatID, fmt.Sprintf("Ошибка: файл %q не удалось получить", fileName))
+		return err
+	}
+
+	data, err := client.DownloadFile(ctx, link)
+	if err != nil {
+		a.send(ctx, chatID, fmt.Sprintf("Ошибка: не удалось скачать %q", fileName))
+		return err
+	}
+
+	finalName := caption
+	if finalName == "" {
+		finalName = fileName
+	}
+
+	_, err = bot.SendDocument(ctx, &telegram.SendDocumentParams{
+		ChatID: chatID,
+		Document: &models.InputFileUpload{
+			Filename: finalName,
+			Data:     bytes.NewReader(data),
+		},
+	})
+	if err != nil {
+		a.send(ctx, chatID, fmt.Sprintf("Ошибка: не удалось отправить %q", fileName))
+		return err
+	}
+
+	return nil
+}
+
 func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
 	if session.CurrentIndex < 0 || session.CurrentIndex >= len(session.Schedule) {
 		return
 	}
 
 	day := session.Schedule[session.CurrentIndex]
+	fileCount := a.fileCountForDay(ctx, day, session)
 	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
 		ChatID:      chatID,
 		MessageID:   messageID,
 		Text:        a.formatScheduleDay(day, session),
-		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
+		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, fileCount),
 	})
 	if err != nil {
 		if isMessageNotModified(err) {
@@ -634,7 +778,7 @@ func (a *App) editNonSchoolDayMessage(ctx context.Context, bot *telegram.Bot, ch
 		ChatID:      chatID,
 		MessageID:   messageID,
 		Text:        text,
-		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location),
+		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0),
 	})
 	if err != nil && !isMessageNotModified(err) {
 		slog.Error("edit message", "chat_id", chatID, "error", err)
