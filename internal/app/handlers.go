@@ -70,12 +70,14 @@ func (a *App) handleMyID(ctx context.Context, _ *telegram.Bot, update *models.Up
 	a.send(ctx, update.Message.Chat.ID, fmt.Sprintf("Telegram ID: %d", telegramSenderID(update.Message)))
 }
 
-func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
 	}
 
 	chatID := update.Message.Chat.ID
+	a.deleteUserMessage(ctx, bot, update.Message)
+
 	if !a.loginLimiter.allow(chatID) {
 		a.send(ctx, chatID, "Слишком много попыток входа. Подожди немного.")
 		return
@@ -146,6 +148,18 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 		a.send(ctx, chatID, "Авторизация успешна (преподаватель).\n\nТеперь напиши /schedule")
 	} else {
 		a.send(ctx, chatID, fmt.Sprintf("Авторизация успешна.\nГруппа: %d\nПодгруппа: %s\n\nТеперь напиши /schedule", user.GroupID, ktk.SubgroupLabel(user.Subgroup)))
+	}
+}
+
+func (a *App) deleteUserMessage(ctx context.Context, bot *telegram.Bot, message *models.Message) {
+	if bot == nil || message == nil {
+		return
+	}
+	if _, err := bot.DeleteMessage(ctx, &telegram.DeleteMessageParams{
+		ChatID:    message.Chat.ID,
+		MessageID: message.ID,
+	}); err != nil {
+		slog.Warn("delete user message", "chat_id", message.Chat.ID, "message_id", message.ID, "error", err)
 	}
 }
 
