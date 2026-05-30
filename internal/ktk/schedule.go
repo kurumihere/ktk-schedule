@@ -1556,18 +1556,12 @@ func FormatLectureHall(id int, halls LectureHallMap) string {
 }
 
 func ShortDayLabel(day ScheduleDay) string {
-	date := FormatShortDate(day.Date)
-
-	if day.Today {
-		return "Сегодня " + date
-	}
-
-	parsed, err := time.Parse(time.RFC3339, day.Date)
+	parsed, err := parseDateValue(day.Date)
 	if err != nil {
-		return date
+		return FormatShortDate(day.Date)
 	}
 
-	return shortWeekdayNames[parsed.Weekday()] + " " + date
+	return shortWeekdayNames[parsed.Weekday()] + " " + parsed.Format("02.01")
 }
 
 func FormatDate(value string) string {
@@ -1579,11 +1573,19 @@ func FormatDate(value string) string {
 }
 
 func FormatShortDate(value string) string {
-	t, err := time.Parse(time.RFC3339, value)
+	t, err := parseDateValue(value)
 	if err != nil {
 		return strings.TrimSuffix(value, "T00:00:00Z")
 	}
 	return t.Format("02.01")
+}
+
+func parseDateValue(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.DateOnly, value)
 }
 
 func retryGet(ctx context.Context, maxAttempts int, fn func(context.Context) error) error {

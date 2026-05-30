@@ -96,6 +96,13 @@ func TestWeekLabelForAcademicYearStart(t *testing.T) {
 	}
 }
 
+func TestShortDayLabelFormatsDateOnly(t *testing.T) {
+	got := ShortDayLabel(ScheduleDay{Date: "2026-05-25", Today: true})
+	if got != "Пн 25.05" {
+		t.Fatalf("unexpected short day label: %q", got)
+	}
+}
+
 func TestBuildScheduleURLLeavesTeacherEmptyForTeacherSchedulePath(t *testing.T) {
 	client, err := NewClient("https://example.com")
 	if err != nil {
