@@ -90,6 +90,18 @@ func TestSyncTeacherHashUpdatesUser(t *testing.T) {
 	}
 }
 
+func TestHasScheduledSubjects(t *testing.T) {
+	if hasScheduledSubjects(nil) {
+		t.Fatal("nil schedule must not have subjects")
+	}
+	if hasScheduledSubjects([]ktk.ScheduleDay{{Date: "2026-05-25", MaxPair: 8}}) {
+		t.Fatal("max-pair-only schedule must not have subjects")
+	}
+	if !hasScheduledSubjects([]ktk.ScheduleDay{{Date: "2026-05-25", Subjects: []ktk.ScheduleItem{{Discipline: "Math", Pair: 1}}}}) {
+		t.Fatal("schedule with subject must be detected")
+	}
+}
+
 func TestRateLimiter(t *testing.T) {
 	rl := newRateLimiter()
 	if !rl.allow(1) {
@@ -310,6 +322,23 @@ func TestSessionConcurrentAccess(t *testing.T) {
 	s := app.getSession(1)
 	if s == nil || s.CurrentIndex != 1000 {
 		t.Errorf("expected index 1000, got %d", s.CurrentIndex)
+	}
+}
+
+func TestHandleCallbackNextFromNoSelectedDay(t *testing.T) {
+	app := &App{}
+	session := &Session{
+		CurrentIndex: -1,
+		Schedule: []ktk.ScheduleDay{
+			{Date: "2026-06-01", Subjects: []ktk.ScheduleItem{{Discipline: "Math", Pair: 1}}},
+			{Date: "2026-06-02", Subjects: []ktk.ScheduleItem{{Discipline: "Physics", Pair: 1}}},
+		},
+	}
+
+	app.handleCallbackNext(session)
+
+	if session.CurrentIndex != 0 {
+		t.Fatalf("expected first day after next from no selection, got %d", session.CurrentIndex)
 	}
 }
 

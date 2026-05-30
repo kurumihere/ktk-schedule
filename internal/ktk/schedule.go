@@ -1301,25 +1301,30 @@ func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options
 		preset = options.CallPresets[day.CallPreset]
 	}
 
-	subjectsByPair := make(map[int]ScheduleItem, len(day.Subjects))
+	subjectsByPair := make(map[int][]ScheduleItem, len(day.Subjects))
+	lastSubjectPair := 0
 	for _, s := range day.Subjects {
-		subjectsByPair[s.Pair] = s
+		if s.Pair < 1 {
+			continue
+		}
+		subjectsByPair[s.Pair] = append(subjectsByPair[s.Pair], s)
+		if s.Pair > lastSubjectPair {
+			lastSubjectPair = s.Pair
+		}
 	}
 
-	maxPair := day.MaxPair
-	if maxPair < 1 {
-		maxPair = len(subjectsByPair)
-	}
-	if maxPair == 0 {
+	if lastSubjectPair == 0 {
 		b.WriteString("Пар нет.")
 		return b.String()
 	}
 
-	for p := 1; p <= maxPair; p++ {
-		if s, ok := subjectsByPair[p]; ok {
-			writeSubjectHeader(&b, s, preset, options)
-			writeTiming(&b, s, preset, day.Today, now)
-			writeSubjectBody(&b, s, halls, options)
+	for p := 1; p <= lastSubjectPair; p++ {
+		if subjects, ok := subjectsByPair[p]; ok {
+			for _, s := range subjects {
+				writeSubjectHeader(&b, s, preset, options)
+				writeTiming(&b, s, preset, day.Today, now)
+				writeSubjectBody(&b, s, halls, options)
+			}
 		} else {
 			writeEmptyPair(&b, p, preset)
 		}

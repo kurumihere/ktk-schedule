@@ -213,7 +213,16 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 	}
 	a.circuitBreaker.RecordSuccess()
 	if len(days) == 0 {
-		a.send(ctx, chatID, "Расписание пустое. Попробуй другую неделю.")
+		weekStart := ktk.WeekStart(targetDate, a.location)
+		session.Schedule = nil
+		session.CurrentIndex = 0
+		session.WeekStart = weekStart
+		session.WeekSelectOffset = 0
+		session.Subgroup = user.Subgroup
+		session.ShowAllSubgroups = user.ShowAllSubgroups
+		session.TeacherHash = user.TeacherHash
+		a.setSession(chatID, session)
+		a.editEmptyWeekMessage(ctx, bot, chatID, messageID, session)
 		return
 	}
 
@@ -227,7 +236,9 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 		if !isSchoolDay || isNonSchoolDay {
 			if user != nil {
-				a.switchToNextWeekSchedule(loadCtx, session, user.GroupID, user.TeacherHash, targetDate)
+				if a.switchToNextWeekSchedule(loadCtx, session, user.GroupID, user.TeacherHash, targetDate) && !isSchoolDay {
+					session.CurrentIndex = -1
+				}
 				a.setSession(chatID, session)
 			}
 			a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, targetDate)
@@ -277,9 +288,20 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	}
 	if err == nil {
 		a.cacheEndpoints(client.Endpoints())
-		a.scheduleCache.set(groupID, weekKey, teacherHash, days)
+		if hasScheduledSubjects(days) {
+			a.scheduleCache.set(groupID, weekKey, teacherHash, days)
+		}
 	}
 	return days, err
+}
+
+func hasScheduledSubjects(days []ktk.ScheduleDay) bool {
+	for _, day := range days {
+		if len(day.Subjects) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) loadCallPresets(ctx context.Context, client *ktk.Client) ktk.CallPresetMap {

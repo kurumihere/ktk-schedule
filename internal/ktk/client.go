@@ -136,32 +136,8 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 		slog.Debug("subgroup detected", "subgroup", subgroup)
 		c.subgroup = subgroup
 	}
-	if teacherHash := extractTeacherHash(body); teacherHash != "" {
-		slog.Debug("teacher hash detected", "teacher_hash", teacherHash)
-		c.teacherHash = teacherHash
-	}
-	scheduleHash := extractTeacherScheduleHash(body)
-	if scheduleHash != "" {
-		slog.Debug("teacher schedule hash detected", "schedule_hash", scheduleHash)
-		c.teacherScheduleHash = scheduleHash
-	}
 
-	if c.teacherHash == "" {
-		if isTeacherByRole(body) {
-			slog.Debug("teacher role detected, searching for hash")
-			if hash := extractAnyHash(body); hash != "" {
-				slog.Debug("teacher hash extracted via role detection", "hash_prefix", hash[:min(len(hash), 12)])
-				c.teacherHash = hash
-			}
-		}
-	}
-
-	if c.teacherHash == "" && c.teacherScheduleHash != "" {
-		slog.Debug("using teacher schedule hash as teacher identifier")
-		c.teacherHash = c.teacherScheduleHash
-	}
-
-	if info, infoBody, err := c.GetAccountInfo(ctx); err == nil && info.IsStudent != nil {
+	if info, _, err := c.GetAccountInfo(ctx); err == nil && info.IsStudent != nil {
 		if *info.IsStudent {
 			slog.Debug("account info detected student")
 			c.teacherHash = ""
@@ -169,13 +145,6 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 			slog.Debug("account info detected teacher")
 			if info.Hash != "" {
 				c.teacherHash = info.Hash
-			} else if teacherHash := extractTeacherHash(infoBody); teacherHash != "" {
-				c.teacherHash = teacherHash
-			}
-			if c.teacherHash == "" {
-				if scheduleHash := extractTeacherScheduleHash(infoBody); scheduleHash != "" {
-					c.teacherHash = scheduleHash
-				}
 			}
 			if c.teacherHash == "" {
 				c.teacherHash = "teacher"
@@ -428,155 +397,4 @@ func subgroupFromValue(value any) string {
 		}
 	}
 	return ""
-}
-
-func extractTeacherHash(body []byte) string {
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
-		return ""
-	}
-	return findTeacherHash(value)
-}
-
-func extractAnyHash(body []byte) string {
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
-		return ""
-	}
-	return findAnyHash(value)
-}
-
-func extractTeacherScheduleHash(body []byte) string {
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
-		return ""
-	}
-	return findTeacherScheduleHash(value)
-}
-
-func findTeacherScheduleHash(value any) string {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, raw := range typed {
-			lowerKey := strings.ToLower(key)
-			if lowerKey == "hash" || lowerKey == "schedulehash" || lowerKey == "schedule_hash" {
-				if s, ok := raw.(string); ok && len(s) >= 10 && len(s) <= 20 {
-					return s
-				}
-			}
-		}
-		for _, raw := range typed {
-			if hash := findTeacherScheduleHash(raw); hash != "" {
-				return hash
-			}
-		}
-	case []any:
-		for _, raw := range typed {
-			if hash := findTeacherScheduleHash(raw); hash != "" {
-				return hash
-			}
-		}
-	}
-	return ""
-}
-
-func findTeacherHash(value any) string {
-	// First pass: look for keys explicitly containing "teacherhash" or "teacher_hash"
-	if hash := findTeacherHashExact(value); hash != "" {
-		return hash
-	}
-	// Second pass: look for any key with "hash" and a long string value
-	if hash := findAnyHash(value); hash != "" {
-		return hash
-	}
-	return ""
-}
-
-func findTeacherHashExact(value any) string {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, raw := range typed {
-			lowerKey := strings.ToLower(key)
-			if strings.Contains(lowerKey, "teacherhash") || strings.Contains(lowerKey, "teacher_hash") {
-				if s, ok := raw.(string); ok && len(s) > 20 {
-					return s
-				}
-			}
-		}
-		for _, raw := range typed {
-			if hash := findTeacherHashExact(raw); hash != "" {
-				return hash
-			}
-		}
-	case []any:
-		for _, raw := range typed {
-			if hash := findTeacherHashExact(raw); hash != "" {
-				return hash
-			}
-		}
-	}
-	return ""
-}
-
-func findAnyHash(value any) string {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, raw := range typed {
-			lowerKey := strings.ToLower(key)
-			if strings.Contains(lowerKey, "hash") || lowerKey == "teacher" {
-				if s, ok := raw.(string); ok && len(s) > 20 {
-					return s
-				}
-			}
-		}
-		for _, raw := range typed {
-			if hash := findAnyHash(raw); hash != "" {
-				return hash
-			}
-		}
-	case []any:
-		for _, raw := range typed {
-			if hash := findAnyHash(raw); hash != "" {
-				return hash
-			}
-		}
-	}
-	return ""
-}
-
-func isTeacherByRole(body []byte) bool {
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
-		return false
-	}
-	return findTeacherRole(value)
-}
-
-func findTeacherRole(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, raw := range typed {
-			lowerKey := strings.ToLower(key)
-			if lowerKey == "role" || lowerKey == "type" || lowerKey == "usertype" || lowerKey == "accounttype" {
-				if s, ok := raw.(string); ok {
-					sl := strings.ToLower(s)
-					if sl == "teacher" || sl == "преподаватель" || sl == "admin" || sl == "администратор" {
-						return true
-					}
-				}
-			}
-		}
-		for _, raw := range typed {
-			if findTeacherRole(raw) {
-				return true
-			}
-		}
-	case []any:
-		for _, raw := range typed {
-			if findTeacherRole(raw) {
-				return true
-			}
-		}
-	}
-	return false
 }

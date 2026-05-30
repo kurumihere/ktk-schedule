@@ -70,12 +70,14 @@ func (a *App) handleMyID(ctx context.Context, _ *telegram.Bot, update *models.Up
 	a.send(ctx, update.Message.Chat.ID, fmt.Sprintf("Telegram ID: %d", telegramSenderID(update.Message)))
 }
 
-func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.Update) {
+func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
 	}
 
 	chatID := update.Message.Chat.ID
+	a.deleteUserMessage(ctx, bot, update.Message)
+
 	if !a.loginLimiter.allow(chatID) {
 		a.send(ctx, chatID, "Слишком много попыток входа. Подожди немного.")
 		return
@@ -149,6 +151,18 @@ func (a *App) handleLogin(ctx context.Context, _ *telegram.Bot, update *models.U
 	}
 }
 
+func (a *App) deleteUserMessage(ctx context.Context, bot *telegram.Bot, message *models.Message) {
+	if bot == nil || message == nil {
+		return
+	}
+	if _, err := bot.DeleteMessage(ctx, &telegram.DeleteMessageParams{
+		ChatID:    message.Chat.ID,
+		MessageID: message.ID,
+	}); err != nil {
+		slog.Warn("delete user message", "chat_id", message.Chat.ID, "message_id", message.ID, "error", err)
+	}
+}
+
 func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
@@ -194,7 +208,9 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(displayDays[currentIndex])
 
 	if !isSchoolDay || isNonSchoolDay {
-		a.switchToNextWeekSchedule(ctx, session, user.GroupID, user.TeacherHash, targetDate)
+		if a.switchToNextWeekSchedule(ctx, session, user.GroupID, user.TeacherHash, targetDate) && !isSchoolDay {
+			session.CurrentIndex = -1
+		}
 		a.setSession(chatID, session)
 
 		a.sendMessage(ctx, &telegram.SendMessageParams{
@@ -587,6 +603,8 @@ func (a *App) handleCallbackToday(ctx context.Context, bot *telegram.Bot, chatID
 		}
 		if !switched {
 			session.CurrentIndex = todayIdx
+		} else if !isSchoolDay {
+			session.CurrentIndex = -1
 		}
 		a.setSession(chatID, session)
 		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, now)
@@ -766,6 +784,18 @@ func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chat
 			return
 		}
 		slog.Error("edit week select message", "chat_id", chatID, "error", err)
+	}
+}
+
+func (a *App) editEmptyWeekMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        "На этой неделе нет пар.",
+		ReplyMarkup: tg.ScheduleKeyboard(nil, 0, session.WeekStart, a.location, 0),
+	})
+	if err != nil && !isMessageNotModified(err) {
+		slog.Error("edit empty week message", "chat_id", chatID, "error", err)
 	}
 }
 

@@ -74,6 +74,33 @@ func TestSignInAccountInfoStudentOverridesHashHeuristic(t *testing.T) {
 	}
 }
 
+func TestSignInDoesNotDetectTeacherWithoutAccountInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sign-in":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"TeacherHash":"teacherHashThatWouldLookValid"}`))
+		case "/":
+			_, _ = w.Write([]byte(`<html><body></body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SignIn(context.Background(), "unknown", "password"); err != nil {
+		t.Fatal(err)
+	}
+
+	if client.TeacherHash() != "" {
+		t.Fatalf("teacher must be detected only by account info IsStudent, got hash %q", client.TeacherHash())
+	}
+}
+
 func TestSignInDerivesAccountInfoFromConfiguredSchedulePath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
