@@ -196,12 +196,6 @@ func (c *Client) setEndpoints(endpoints Endpoints) {
 	c.endpoints = endpoints.WithFallback(c.endpoints).WithFallback(DefaultEndpoints())
 }
 
-func (c *Client) setSchedulePath(path string) {
-	c.endpointsMu.Lock()
-	defer c.endpointsMu.Unlock()
-	c.endpoints.SchedulePath = path
-}
-
 func (c *Client) resolveURL(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {

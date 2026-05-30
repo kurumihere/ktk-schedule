@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -37,6 +38,7 @@ func (s *Session) copy() *Session {
 		WeekSelectOffset: s.WeekSelectOffset,
 		Subgroup:         s.Subgroup,
 		ShowAllSubgroups: s.ShowAllSubgroups,
+		TeacherHash:      s.TeacherHash,
 		lastAccessUnix:   atomic.LoadInt64(&s.lastAccessUnix),
 	}
 	copy(c.Schedule, s.Schedule)
@@ -82,6 +84,34 @@ func (s *Session) copy() *Session {
 	}
 
 	return c
+}
+
+// getHomeworkFileID returns the cached file ID for a sheet, or fetches it via API.
+// Returns 0 if no file is attached. The ok result is false only on API error
+// (caller should retry later), true if the cache was updated (even if fileID is 0).
+func (s *Session) getHomeworkFileID(ctx context.Context, sheet int) (fileID int, ok bool) {
+	if s.Client == nil {
+		return 0, false
+	}
+	if s.homeworkCache != nil {
+		if id, cached := s.homeworkCache[sheet]; cached {
+			return id, true
+		}
+	}
+	sub, err := s.Client.GetHomeworkSubmission(ctx, sheet)
+	if err != nil {
+		slog.Debug("homework submission fetch", "sheet", sheet, "error", err)
+		return 0, false
+	}
+	if s.homeworkCache == nil {
+		s.homeworkCache = make(map[int]int)
+	}
+	if sub.FileID != nil {
+		s.homeworkCache[sheet] = *sub.FileID
+		return *sub.FileID, true
+	}
+	s.homeworkCache[sheet] = 0
+	return 0, true
 }
 
 func (s *Session) lastAccess() time.Time {

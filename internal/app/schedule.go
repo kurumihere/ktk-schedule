@@ -210,7 +210,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 		if !isSchoolDay || isNonSchoolDay {
 			if user != nil {
-				a.switchToNextWeekSchedule(loadCtx, session, user.GroupID, targetDate)
+				a.switchToNextWeekSchedule(loadCtx, session, user.GroupID, user.TeacherHash, targetDate)
 				a.setSession(chatID, session)
 			}
 			a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, targetDate)
@@ -221,14 +221,14 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 	a.editScheduleMessage(ctx, bot, chatID, messageID, session)
 }
 
-func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, groupID int, targetDate time.Time) bool {
+func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, groupID int, teacherHash string, targetDate time.Time) bool {
 	nextWeekStart := ktk.WeekStart(targetDate, a.location).AddDate(0, 0, 7)
-	nextDays, err := a.loadSchedule(ctx, session.Client, groupID, session.TeacherHash, nextWeekStart)
+	nextDays, err := a.loadSchedule(ctx, session.Client, groupID, teacherHash, nextWeekStart)
 	if err != nil || len(nextDays) == 0 {
 		return false
 	}
 	nextDisplay := nextDays
-	if session.TeacherHash == "" {
+	if teacherHash == "" {
 		nextDisplay = ktk.FilterScheduleDays(nextDays, session.Subgroup, session.ShowAllSubgroups)
 	}
 	if len(nextDisplay) == 0 {

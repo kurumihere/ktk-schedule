@@ -240,14 +240,12 @@ func (c *Client) GetTeacherSchedule(ctx context.Context, teacherHash string, wee
 			teacherPath := basePath + "/" + c.teacherScheduleHash
 			days, err := c.getSchedule(ctx, teacherPath, 0, teacherHash, weekMillis)
 			if err == nil {
-				c.setSchedulePath(teacherPath)
 				return days, nil
 			}
 		}
 	}
 
-	endpoint := c.endpointSnapshot()
-	path := endpoint.SchedulePath
+	path := c.endpointSnapshot().SchedulePath
 	if path != "" {
 		days, err := c.getSchedule(ctx, path, 0, teacherHash, weekMillis)
 		if err == nil {
@@ -264,6 +262,21 @@ func (c *Client) GetTeacherSchedule(ctx context.Context, teacherHash string, wee
 	}
 
 	return c.getSchedule(ctx, path, 0, teacherHash, weekMillis)
+}
+
+func parseScheduleDays(body []byte) ([]ScheduleDay, error) {
+	var days []ScheduleDay
+	if err := json.Unmarshal(body, &days); err != nil || len(days) == 0 || days[0].Date == "" {
+		var wrapper []scheduleV3Wrapper
+		if uerr := json.Unmarshal(body, &wrapper); uerr != nil || len(wrapper) == 0 {
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("empty schedule")
+		}
+		days = convertV3Schedule(wrapper)
+	}
+	return days, nil
 }
 
 func convertV3Schedule(wrapper []scheduleV3Wrapper) []ScheduleDay {
@@ -332,16 +345,9 @@ func (c *Client) getSchedule(ctx context.Context, path string, groupID int, teac
 			logScheduleDebug(body)
 		}
 
-		var result []ScheduleDay
-		if err := json.Unmarshal(body, &result); err != nil || len(result) == 0 || result[0].Date == "" {
-			var wrapper []scheduleV3Wrapper
-			if uerr := json.Unmarshal(body, &wrapper); uerr != nil || len(wrapper) == 0 {
-				if err != nil {
-					return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: err}
-				}
-				return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: fmt.Errorf("empty schedule")}
-			}
-			result = convertV3Schedule(wrapper)
+		result, parseErr := parseScheduleDays(body)
+		if parseErr != nil {
+			return endpointError{operation: "schedule", statusCode: resp.StatusCode, status: resp.Status, body: string(body), err: parseErr}
 		}
 		days = result
 		return nil
@@ -626,7 +632,8 @@ func (c *Client) fileBasePath() (string, error) {
 	if wsID == "" {
 		return "", fmt.Errorf("workspace id not found in schedule path")
 	}
-	return c.baseURL + "/v0/" + wsID + "/" + endpoint.FileHash + "/", nil
+	version := extractAPIVersion(endpoint.SchedulePath)
+	return c.baseURL + version + wsID + "/" + endpoint.FileHash + "/", nil
 }
 
 func (c *Client) workspaceFileURL(path string) (string, error) {
@@ -637,9 +644,17 @@ func (c *Client) workspaceFileURL(path string) (string, error) {
 	return path, nil
 }
 
+func extractAPIVersion(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) > 0 && strings.HasPrefix(parts[0], "v") {
+		return "/" + parts[0] + "/"
+	}
+	return "/v0/"
+}
+
 func extractWorkspaceID(schedulePath string) string {
 	parts := strings.Split(strings.Trim(schedulePath, "/"), "/")
-	if len(parts) >= 2 && len(parts[1]) == 16 {
+	if len(parts) >= 2 && parts[1] != "" {
 		return parts[1]
 	}
 	return ""
@@ -761,7 +776,8 @@ func (c *Client) homeworkCheckBasePath() (string, error) {
 	if wsID == "" {
 		return "", fmt.Errorf("workspace id not found in schedule path")
 	}
-	return c.baseURL + "/v0/" + wsID + "/" + endpoint.HomeworkHash + "/", nil
+	version := extractAPIVersion(endpoint.SchedulePath)
+	return c.baseURL + version + wsID + "/" + endpoint.HomeworkHash + "/", nil
 }
 
 func (c *Client) GetHomeworkSubmission(ctx context.Context, sheetID int) (*HomeworkSubmission, error) {

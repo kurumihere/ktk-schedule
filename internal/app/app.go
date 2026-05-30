@@ -245,13 +245,22 @@ func (a *App) todayIndex(days []ktk.ScheduleDay) int {
 	return ktk.FindDateIndex(days, time.Now(), a.location)
 }
 
-func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
+func (a *App) formatScheduleDay(ctx context.Context, day ktk.ScheduleDay, session *Session) string {
 	var fileNames map[int]string
-	var studentFiles map[int]int
+	studentFiles := make(map[int]int)
 
 	if session.TeacherHash == "" {
-		fileNames = a.fetchFileNames(session, day)
-		studentFiles = a.fetchStudentFiles(session, day)
+		fileNames = a.fetchFileNames(ctx, session, day)
+		for _, s := range day.Subjects {
+			if s.ExtraData.Sheet != 0 {
+				if fileID, ok := session.getHomeworkFileID(ctx, s.ExtraData.Sheet); ok && fileID != 0 {
+					studentFiles[s.ExtraData.Sheet] = fileID
+				}
+			}
+		}
+		if len(studentFiles) == 0 {
+			studentFiles = nil
+		}
 	}
 
 	if fileNames == nil && len(studentFiles) > 0 {
@@ -259,7 +268,7 @@ func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
 	}
 	for _, fileID := range studentFiles {
 		if _, ok := fileNames[fileID]; !ok {
-			meta, err := session.Client.GetDocumentMetadata(context.Background(), fileID)
+			meta, err := session.Client.GetDocumentMetadata(ctx, fileID)
 			if err == nil {
 				fileNames[meta.ID] = meta.Caption
 			}
@@ -280,46 +289,7 @@ func (a *App) formatScheduleDay(day ktk.ScheduleDay, session *Session) string {
 	})
 }
 
-func (a *App) fetchStudentFiles(session *Session, day ktk.ScheduleDay) map[int]int {
-	if session.Client == nil {
-		return nil
-	}
-
-	result := make(map[int]int)
-	for _, s := range day.Subjects {
-		if s.ExtraData.Sheet == 0 {
-			continue
-		}
-		if session.homeworkCache != nil {
-			if fileID, ok := session.homeworkCache[s.ExtraData.Sheet]; ok {
-				if fileID != 0 {
-					result[s.ExtraData.Sheet] = fileID
-				}
-				continue
-			}
-		}
-		sub, err := session.Client.GetHomeworkSubmission(context.Background(), s.ExtraData.Sheet)
-		if err != nil {
-			slog.Debug("fetch homework submission", "sheet", s.ExtraData.Sheet, "error", err)
-			continue
-		}
-		if session.homeworkCache == nil {
-			session.homeworkCache = make(map[int]int)
-		}
-		if sub.FileID != nil {
-			session.homeworkCache[s.ExtraData.Sheet] = *sub.FileID
-			result[s.ExtraData.Sheet] = *sub.FileID
-		} else {
-			session.homeworkCache[s.ExtraData.Sheet] = 0
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-func (a *App) fetchFileNames(session *Session, day ktk.ScheduleDay) map[int]string {
+func (a *App) fetchFileNames(ctx context.Context, session *Session, day ktk.ScheduleDay) map[int]string {
 	if session.Client == nil {
 		return nil
 	}
@@ -353,7 +323,7 @@ func (a *App) fetchFileNames(session *Session, day ktk.ScheduleDay) map[int]stri
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			meta, err := session.Client.GetDocumentMetadata(context.Background(), docID)
+			meta, err := session.Client.GetDocumentMetadata(ctx, docID)
 			if err != nil {
 				slog.Debug("fetch file name", "doc_id", docID, "error", err)
 				return
@@ -381,30 +351,10 @@ func (a *App) fileCountForDay(ctx context.Context, day ktk.ScheduleDay, session 
 	var count int
 	for _, s := range day.Subjects {
 		count += len(s.ExtraData.Homework.Files)
-		if s.ExtraData.Sheet == 0 {
-			continue
-		}
-		if session.homeworkCache != nil {
-			if fileID, ok := session.homeworkCache[s.ExtraData.Sheet]; ok {
-				if fileID != 0 {
-					count++
-				}
-				continue
+		if s.ExtraData.Sheet != 0 {
+			if fileID, ok := session.getHomeworkFileID(ctx, s.ExtraData.Sheet); ok && fileID != 0 {
+				count++
 			}
-		}
-		sub, err := session.Client.GetHomeworkSubmission(ctx, s.ExtraData.Sheet)
-		if err != nil {
-			slog.Debug("file count homework check", "sheet", s.ExtraData.Sheet, "error", err)
-			continue
-		}
-		if session.homeworkCache == nil {
-			session.homeworkCache = make(map[int]int)
-		}
-		if sub.FileID != nil {
-			session.homeworkCache[s.ExtraData.Sheet] = *sub.FileID
-			count++
-		} else {
-			session.homeworkCache[s.ExtraData.Sheet] = 0
 		}
 	}
 	return count

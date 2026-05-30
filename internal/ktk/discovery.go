@@ -125,7 +125,6 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	slog.Debug("endpoints refreshed",
 		"schedule_path", next.SchedulePath,
 		"lecture_hall_path", next.LectureHallPath,
-		"lecture_hall_path", next.LectureHallPath,
 		"call_preset_path", next.CallPresetPath,
 		"absence_mark_path", next.AbsenceMarkPath,
 		"pair_type_path", next.PairTypePath,
@@ -232,19 +231,9 @@ func (c *Client) validateScheduleEndpoint(ctx context.Context, path string, grou
 		return nil, nil, endpointError{operation: "schedule endpoint validation", statusCode: statusCode, status: status, body: string(body)}
 	}
 
-	var days []ScheduleDay
-	if err := json.Unmarshal(body, &days); err != nil || len(days) == 0 || days[0].Date == "" {
-		var wrapper []scheduleV3Wrapper
-		if uerr := json.Unmarshal(body, &wrapper); uerr != nil || len(wrapper) == 0 {
-			if err != nil {
-				return nil, nil, fmt.Errorf("validate schedule endpoint: %w", err)
-			}
-			return nil, nil, fmt.Errorf("validate schedule endpoint: empty schedule")
-		}
-		days = convertV3Schedule(wrapper)
-	}
-	if len(days) == 0 {
-		return nil, nil, fmt.Errorf("validate schedule endpoint: empty schedule")
+	days, err := parseScheduleDays(body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("validate schedule endpoint: %w", err)
 	}
 
 	return days, body, nil

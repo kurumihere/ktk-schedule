@@ -66,12 +66,17 @@ func (c *scheduleCache) set(groupID int, weekStart string, teacherHash string, d
 	}
 }
 
-func (c *scheduleCache) invalidate(groupID int) {
+func (c *scheduleCache) invalidate(groupID int, teacherHash ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	target := groupID
+	if len(teacherHash) > 0 && teacherHash[0] != "" {
+		target = int(hashString(teacherHash[0]))
+	}
+
 	for key := range c.entries {
-		if key.groupID == groupID {
+		if key.groupID == target {
 			delete(c.entries, key)
 		}
 	}

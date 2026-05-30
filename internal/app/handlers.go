@@ -194,7 +194,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(displayDays[currentIndex])
 
 	if !isSchoolDay || isNonSchoolDay {
-		a.switchToNextWeekSchedule(ctx, session, user.GroupID, targetDate)
+		a.switchToNextWeekSchedule(ctx, session, user.GroupID, user.TeacherHash, targetDate)
 		a.setSession(chatID, session)
 
 		a.sendMessage(ctx, &telegram.SendMessageParams{
@@ -208,7 +208,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	fileCount := a.fileCountForDay(ctx, displayDays[currentIndex], session)
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
-		Text:        a.formatScheduleDay(displayDays[currentIndex], session),
+		Text:        a.formatScheduleDay(ctx, displayDays[currentIndex], session),
 		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location, fileCount),
 	})
 }
@@ -583,7 +583,7 @@ func (a *App) handleCallbackToday(ctx context.Context, bot *telegram.Bot, chatID
 		user, err := a.storage.GetUser(chatID)
 		switched := false
 		if err == nil && user != nil {
-			switched = a.switchToNextWeekSchedule(ctx, session, user.GroupID, now)
+			switched = a.switchToNextWeekSchedule(ctx, session, user.GroupID, user.TeacherHash, now)
 		}
 		if !switched {
 			session.CurrentIndex = todayIdx
@@ -636,14 +636,11 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 		}
 
 		if s.ExtraData.Sheet != 0 {
-			sub, err := session.Client.GetHomeworkSubmission(ctx, s.ExtraData.Sheet)
-			if err != nil {
-				slog.Debug("homework check for download", "sheet", s.ExtraData.Sheet, "error", err)
-			} else if sub.FileID != nil && !seen[*sub.FileID] {
-				seen[*sub.FileID] = true
-				meta, err := session.Client.GetDocumentMetadata(ctx, *sub.FileID)
+			if fileID, ok := session.getHomeworkFileID(ctx, s.ExtraData.Sheet); ok && fileID != 0 && !seen[fileID] {
+				seen[fileID] = true
+				meta, err := session.Client.GetDocumentMetadata(ctx, fileID)
 				if err != nil {
-					infos = append(infos, fileInfo{ID: *sub.FileID, Caption: fmt.Sprintf("file_%d", *sub.FileID)})
+					infos = append(infos, fileInfo{ID: fileID, Caption: fmt.Sprintf("file_%d", fileID)})
 				} else {
 					infos = append(infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
 				}
@@ -746,7 +743,7 @@ func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID
 	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
 		ChatID:      chatID,
 		MessageID:   messageID,
-		Text:        a.formatScheduleDay(day, session),
+		Text:        a.formatScheduleDay(ctx, day, session),
 		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, fileCount),
 	})
 	if err != nil {

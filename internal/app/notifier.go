@@ -123,7 +123,7 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 		return
 	}
 
-	text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(displayDays[index], session)
+	text := "Доброе утро. Расписание на сегодня:\n\n" + a.formatScheduleDay(ctx, displayDays[index], session)
 	fileCount := a.fileCountForDay(ctx, displayDays[index], session)
 	if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{
 		ChatID:      user.TelegramID,
