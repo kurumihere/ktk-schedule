@@ -1,6 +1,7 @@
 package tg
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,28 @@ func TestCallbackDataLength(t *testing.T) {
 			if len(btn.CallbackData) > maxCallbackData {
 				t.Errorf("callback data too long: %s (%d bytes)", btn.CallbackData, len(btn.CallbackData))
 			}
+		}
+	}
+}
+
+func TestScheduleKeyboardNoSelectedDay(t *testing.T) {
+	loc := time.UTC
+	days := []ktk.ScheduleDay{
+		{Date: "2026-06-01", Subjects: []ktk.ScheduleItem{{Discipline: "Math", Pair: 1}}},
+		{Date: "2026-06-02", Subjects: []ktk.ScheduleItem{{Discipline: "Physics", Pair: 1}}},
+	}
+
+	kb := ScheduleKeyboard(days, -1, time.Date(2026, 6, 1, 0, 0, 0, 0, loc), loc, 0)
+
+	if kb.InlineKeyboard[1][0].Text != "⛔" {
+		t.Fatalf("expected previous button to be disabled, got %q", kb.InlineKeyboard[1][0].Text)
+	}
+	if kb.InlineKeyboard[1][2].Text != "➡️" {
+		t.Fatalf("expected next button to stay enabled, got %q", kb.InlineKeyboard[1][2].Text)
+	}
+	for _, row := range kb.InlineKeyboard[2:] {
+		if strings.HasPrefix(row[0].Text, "✅ ") {
+			t.Fatalf("did not expect selected day label, got %q", row[0].Text)
 		}
 	}
 }

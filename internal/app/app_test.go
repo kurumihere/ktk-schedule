@@ -325,6 +325,23 @@ func TestSessionConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestHandleCallbackNextFromNoSelectedDay(t *testing.T) {
+	app := &App{}
+	session := &Session{
+		CurrentIndex: -1,
+		Schedule: []ktk.ScheduleDay{
+			{Date: "2026-06-01", Subjects: []ktk.ScheduleItem{{Discipline: "Math", Pair: 1}}},
+			{Date: "2026-06-02", Subjects: []ktk.ScheduleItem{{Discipline: "Physics", Pair: 1}}},
+		},
+	}
+
+	app.handleCallbackNext(session)
+
+	if session.CurrentIndex != 0 {
+		t.Fatalf("expected first day after next from no selection, got %d", session.CurrentIndex)
+	}
+}
+
 func TestSessionCleanup(t *testing.T) {
 	app := &App{}
 	app.setSession(1, &Session{Subgroup: "left"})

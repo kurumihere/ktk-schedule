@@ -208,7 +208,9 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	isNonSchoolDay := isSchoolDay && ktk.IsNonSchoolDay(displayDays[currentIndex])
 
 	if !isSchoolDay || isNonSchoolDay {
-		a.switchToNextWeekSchedule(ctx, session, user.GroupID, user.TeacherHash, targetDate)
+		if a.switchToNextWeekSchedule(ctx, session, user.GroupID, user.TeacherHash, targetDate) && !isSchoolDay {
+			session.CurrentIndex = -1
+		}
 		a.setSession(chatID, session)
 
 		a.sendMessage(ctx, &telegram.SendMessageParams{
@@ -601,6 +603,8 @@ func (a *App) handleCallbackToday(ctx context.Context, bot *telegram.Bot, chatID
 		}
 		if !switched {
 			session.CurrentIndex = todayIdx
+		} else if !isSchoolDay {
+			session.CurrentIndex = -1
 		}
 		a.setSession(chatID, session)
 		a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, now)

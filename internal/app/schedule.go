@@ -236,7 +236,9 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 		if !isSchoolDay || isNonSchoolDay {
 			if user != nil {
-				a.switchToNextWeekSchedule(loadCtx, session, user.GroupID, user.TeacherHash, targetDate)
+				if a.switchToNextWeekSchedule(loadCtx, session, user.GroupID, user.TeacherHash, targetDate) && !isSchoolDay {
+					session.CurrentIndex = -1
+				}
 				a.setSession(chatID, session)
 			}
 			a.editNonSchoolDayMessage(ctx, bot, chatID, messageID, session, targetDate)
