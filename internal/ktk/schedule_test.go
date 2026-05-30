@@ -162,6 +162,65 @@ func TestFormatScheduleDayShowsTaskAndWebinarOnly(t *testing.T) {
 	}
 }
 
+func TestFormatScheduleDayTrimsTrailingEmptyPairs(t *testing.T) {
+	text := FormatScheduleDay(ScheduleDay{
+		Date:    "2026-05-25T00:00:00Z",
+		MaxPair: 8,
+		Subjects: []ScheduleItem{
+			{Discipline: "Math", Pair: 1},
+			{Discipline: "Physics", Pair: 3},
+		},
+	}, LectureHallMap{})
+
+	if !strings.Contains(text, "2 пара — пусто") {
+		t.Fatalf("middle empty pair must be rendered: %q", text)
+	}
+	if !strings.Contains(text, "3 пара — Physics") {
+		t.Fatalf("last subject pair was not rendered: %q", text)
+	}
+	if strings.Contains(text, "4 пара") || strings.Contains(text, "8 пара") {
+		t.Fatalf("trailing empty pairs must be trimmed: %q", text)
+	}
+}
+
+func TestFormatScheduleDayShowsMultipleSubjectsInSamePair(t *testing.T) {
+	text := FormatScheduleDayWithOptions(ScheduleDay{
+		Date:    "2026-05-29",
+		MaxPair: 8,
+		Subjects: []ScheduleItem{
+			{Discipline: "First discipline", Pair: 1, Group: "269", LectureHall: 147},
+			{Discipline: "Second discipline", Pair: 1, Group: "369", LectureHall: 178},
+		},
+	}, LectureHallMap{}, FormatOptions{IsTeacher: true})
+
+	if !strings.Contains(text, "1 пара — First discipline") {
+		t.Fatalf("first same-pair subject was not rendered: %q", text)
+	}
+	if !strings.Contains(text, "1 пара — Second discipline") {
+		t.Fatalf("second same-pair subject was not rendered: %q", text)
+	}
+	if !strings.Contains(text, "👥 Группа: 269") || !strings.Contains(text, "👥 Группа: 369") {
+		t.Fatalf("same-pair subject groups were not rendered: %q", text)
+	}
+	if strings.Contains(text, "2 пара") || strings.Contains(text, "8 пара") {
+		t.Fatalf("trailing empty pairs must be trimmed: %q", text)
+	}
+}
+
+func TestFormatScheduleDayDoesNotRenderEmptyMaxPairDay(t *testing.T) {
+	text := FormatScheduleDay(ScheduleDay{
+		Date:    "2026-05-25T00:00:00Z",
+		MaxPair: 8,
+	}, LectureHallMap{})
+
+	if !strings.Contains(text, "Пар нет.") {
+		t.Fatalf("empty max-pair day must be rendered as no lessons: %q", text)
+	}
+	if strings.Contains(text, "1 пара") {
+		t.Fatalf("empty max-pair day must not render empty lessons: %q", text)
+	}
+}
+
 func TestPairTypeName(t *testing.T) {
 	pairTypes := PairTypeMap{
 		1:  {ID: 1, Name: "Лекция", BillingType: "Theoretical"},

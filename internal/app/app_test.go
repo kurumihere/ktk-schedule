@@ -90,6 +90,18 @@ func TestSyncTeacherHashUpdatesUser(t *testing.T) {
 	}
 }
 
+func TestHasScheduledSubjects(t *testing.T) {
+	if hasScheduledSubjects(nil) {
+		t.Fatal("nil schedule must not have subjects")
+	}
+	if hasScheduledSubjects([]ktk.ScheduleDay{{Date: "2026-05-25", MaxPair: 8}}) {
+		t.Fatal("max-pair-only schedule must not have subjects")
+	}
+	if !hasScheduledSubjects([]ktk.ScheduleDay{{Date: "2026-05-25", Subjects: []ktk.ScheduleItem{{Discipline: "Math", Pair: 1}}}}) {
+		t.Fatal("schedule with subject must be detected")
+	}
+}
+
 func TestRateLimiter(t *testing.T) {
 	rl := newRateLimiter()
 	if !rl.allow(1) {

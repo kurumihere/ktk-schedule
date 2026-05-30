@@ -769,6 +769,18 @@ func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chat
 	}
 }
 
+func (a *App) editEmptyWeekMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        "На этой неделе нет пар.",
+		ReplyMarkup: tg.ScheduleKeyboard(nil, 0, session.WeekStart, a.location, 0),
+	})
+	if err != nil && !isMessageNotModified(err) {
+		slog.Error("edit empty week message", "chat_id", chatID, "error", err)
+	}
+}
+
 func (a *App) editNonSchoolDayMessage(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session, date time.Time) {
 	text := "📅 " + date.In(a.location).Format("02.01.2006") + "\n\nПар нет. Сегодня не учебный день."
 	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
