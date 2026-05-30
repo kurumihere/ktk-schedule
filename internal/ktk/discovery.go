@@ -28,6 +28,7 @@ var (
 )
 
 type endpointCandidates struct {
+	infoPaths        []string
 	schedulePaths    []string
 	lectureHallPaths []string
 	callPresetPaths  []string
@@ -51,10 +52,15 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	if len(teacherHash) > 0 {
 		tHash = teacherHash[0]
 	}
+	isTeacher := tHash != ""
 
 	next := c.endpointSnapshot()
 
-	bestPath, foundGrades, _ := c.pickScheduleEndpoint(ctx, candidates.schedulePaths, groupID, tHash, weekMillis)
+	if next.InfoPath == "" && len(candidates.infoPaths) > 0 {
+		next.InfoPath = candidates.infoPaths[0]
+	}
+
+	bestPath, foundGrades, _ := c.pickScheduleEndpoint(ctx, candidates.schedulePaths, groupID, tHash, weekMillis, !isTeacher)
 	if bestPath == "" {
 		fallbackBase := next.CallPresetPath
 		if fallbackBase == "" && len(candidates.schedulePaths) > 0 {
@@ -63,7 +69,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		if base := trimLastSegment(fallbackBase); base != "" {
 			for _, hash := range fallbackScheduleHashes {
 				fallbackPath := path.Join(base, hash)
-				if fp, fg, _ := c.pickScheduleEndpoint(ctx, []string{fallbackPath}, groupID, tHash, weekMillis); fp != "" {
+				if fp, fg, _ := c.pickScheduleEndpoint(ctx, []string{fallbackPath}, groupID, tHash, weekMillis, !isTeacher); fp != "" {
 					bestPath = fp
 					foundGrades = fg
 					slog.Debug("fallback schedule endpoint", "path", fp, "has_grades", fg)
@@ -78,7 +84,10 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	}
 
 	next.SchedulePath = bestPath
-	if !foundGrades {
+	if next.InfoPath == "" {
+		next.InfoPath = DeriveInfoPath(next.SchedulePath)
+	}
+	if !isTeacher && !foundGrades {
 		slog.Warn("no schedule endpoint with grades found, grades will be unavailable")
 	}
 
@@ -124,6 +133,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	c.setEndpoints(next)
 	slog.Debug("endpoints refreshed",
 		"schedule_path", next.SchedulePath,
+		"info_path", next.InfoPath,
 		"lecture_hall_path", next.LectureHallPath,
 		"call_preset_path", next.CallPresetPath,
 		"absence_mark_path", next.AbsenceMarkPath,
@@ -135,7 +145,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	return nil
 }
 
-func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, groupID int, teacherHash string, weekMillis int64) (bestPath string, hasGrades bool, bestCount int) {
+func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, groupID int, teacherHash string, weekMillis int64, preferGrades bool) (bestPath string, hasGrades bool, bestCount int) {
 	bestCount = -1
 	for _, p := range paths {
 		days, raw, err := c.validateScheduleEndpoint(ctx, p, groupID, teacherHash, weekMillis)
@@ -143,11 +153,11 @@ func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, group
 			continue
 		}
 		pathHasGrades := scheduleHasGrades(raw)
-		if !pathHasGrades && hasGrades {
+		if preferGrades && !pathHasGrades && hasGrades {
 			continue
 		}
 		subjectCount := countSubjects(days)
-		if pathHasGrades || subjectCount > bestCount {
+		if (preferGrades && pathHasGrades && !hasGrades) || subjectCount > bestCount {
 			bestPath = p
 			bestCount = subjectCount
 			hasGrades = hasGrades || pathHasGrades
@@ -332,6 +342,10 @@ func (c *Client) getJSON(ctx context.Context, requestURL string) ([]byte, int, s
 
 func (c *endpointCandidates) addFromText(text string) {
 	for _, match := range apiPathPattern.FindAllString(text, -1) {
+		if strings.HasSuffix(match, "/info") {
+			c.infoPaths = appendUnique(c.infoPaths, match)
+			continue
+		}
 		if strings.Contains(match, "/lecture-hall") {
 			c.lectureHallPaths = appendUnique(c.lectureHallPaths, match)
 			continue

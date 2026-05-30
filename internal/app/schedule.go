@@ -14,6 +14,8 @@ import (
 
 func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, error) {
 	if session := a.getSession(user.TelegramID); session != nil && session.Client != nil {
+		a.syncTeacherHash(user, session.Client.TeacherHash())
+
 		var halls ktk.LectureHallMap
 		var callPresets ktk.CallPresetMap
 		var absenceMarks []ktk.AbsenceMark
@@ -66,6 +68,7 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 	if user.PasswordLegacy {
 		a.migrateLegacyPassword(user)
 	}
+	a.syncTeacherHash(user, client.TeacherHash())
 
 	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
 	if err != nil {
@@ -93,6 +96,20 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 
 	a.setSession(user.TelegramID, session)
 	return session, nil
+}
+
+func (a *App) syncTeacherHash(user *storage.User, teacherHash string) {
+	if user == nil || teacherHash == "" || user.TeacherHash == teacherHash {
+		return
+	}
+
+	user.TeacherHash = teacherHash
+	if a.storage == nil {
+		return
+	}
+	if err := a.storage.SetTeacherHash(user.TelegramID, teacherHash); err != nil {
+		slog.Warn("teacher hash save", "telegram_id", user.TelegramID, "error", err)
+	}
 }
 
 func (a *App) migrateLegacyPassword(user *storage.User) {

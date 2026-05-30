@@ -128,3 +128,44 @@ func TestCallPresetDiscoveredFromWorkspaceAssets(t *testing.T) {
 		t.Fatalf("expected discovered call-preset path, got: %s", endpoints.CallPresetPath)
 	}
 }
+
+func TestTeacherScheduleEndpointDoesNotRequireGrades(t *testing.T) {
+	const weekMillis int64 = 1777240800000
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`
+				const emptyScheduleWithGrades = "/v0/root/tenant/student-grades-schedule";
+				const teacherSchedule = "/v0/root/tenant/teacher-schedule";
+			`))
+		case "/v0/root/tenant/student-grades-schedule":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[{"Appraisal":5,"Discipline":"Old","LectureHall":1,"Pair":1}]}]`))
+		case "/v0/root/tenant/teacher-schedule":
+			if r.URL.Query().Get("Teacher") != "teacher-hash" || r.URL.Query().Get("Group") != "" {
+				http.Error(w, "bad teacher schedule query", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[{"Discipline":"Math","Group":"269","LectureHall":42,"Pair":1},{"Discipline":"PE","Group":"270","LectureHall":43,"Pair":2}]}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.RefreshEndpoints(context.Background(), 0, weekMillis, "teacher-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if client.Endpoints().SchedulePath != "/v0/root/tenant/teacher-schedule" {
+		t.Fatalf("unexpected schedule path: %s", client.Endpoints().SchedulePath)
+	}
+}

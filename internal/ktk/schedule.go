@@ -837,7 +837,7 @@ func (c *Client) buildScheduleURL(path string, groupID int, teacherHash string, 
 
 	query := parsedURL.Query()
 	if teacherHash != "" {
-		if c.teacherScheduleHash != "" && strings.Contains(path, c.teacherScheduleHash) {
+		if c.isTeacherSchedulePath(path) {
 			query.Set("Teacher", "")
 			query.Set("Group", "")
 		} else {
@@ -853,6 +853,18 @@ func (c *Client) buildScheduleURL(path string, groupID int, teacherHash string, 
 	parsedURL.RawQuery = query.Encode()
 
 	return parsedURL.String(), nil
+}
+
+func (c *Client) isTeacherSchedulePath(path string) bool {
+	if c.teacherScheduleHash != "" && strings.Contains(path, c.teacherScheduleHash) {
+		return true
+	}
+	for _, hash := range fallbackScheduleHashes {
+		if strings.Contains(path, hash) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) buildLectureHallURL(path, branchID string) (string, error) {

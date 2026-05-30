@@ -144,6 +144,33 @@ func TestSubgroupSettings(t *testing.T) {
 	}
 }
 
+func TestSetTeacherHash(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	user := User{
+		TelegramID: 150,
+		Login:      "teacher",
+		Password:   "teacher-password",
+		GroupID:    269,
+		Subgroup:   "left",
+	}
+	if err := store.SaveUser(user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTeacherHash(user.TelegramID, "teacher-hash-123"); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := store.GetUser(user.TelegramID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.TeacherHash != "teacher-hash-123" {
+		t.Fatalf("unexpected teacher hash: %q", saved.TeacherHash)
+	}
+}
+
 func TestListUserIDs(t *testing.T) {
 	store := newTestStorage(t)
 	defer store.Close()

@@ -112,9 +112,11 @@ func New(cfg config.Config) (*App, error) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	})
-	mux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
-		http.DefaultServeMux.ServeHTTP(w, r)
-	})
+	if cfg.PprofEnabled {
+		mux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
+			http.DefaultServeMux.ServeHTTP(w, r)
+		})
+	}
 	app.healthServer = &http.Server{
 		Addr:         ":" + cfg.HealthPort,
 		Handler:      mux,

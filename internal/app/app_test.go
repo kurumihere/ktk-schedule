@@ -12,6 +12,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"ktk-schedule/internal/ktk"
+	"ktk-schedule/internal/storage"
 )
 
 func TestCommandArgs(t *testing.T) {
@@ -75,6 +76,17 @@ func TestClientSubgroupOrDefault(t *testing.T) {
 
 	if got := clientSubgroupOrDefault(nil, "invalid"); got != "left" {
 		t.Errorf("expected left fallback, got %s", got)
+	}
+}
+
+func TestSyncTeacherHashUpdatesUser(t *testing.T) {
+	app := &App{}
+	user := &storage.User{TelegramID: 42}
+
+	app.syncTeacherHash(user, "teacher-hash")
+
+	if user.TeacherHash != "teacher-hash" {
+		t.Fatalf("unexpected teacher hash: %q", user.TeacherHash)
 	}
 }
 

@@ -1,9 +1,13 @@
 package ktk
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 type Endpoints struct {
 	SignInPath      string
+	InfoPath        string
 	SchedulePath    string
 	LectureHallPath string
 	CallPresetPath  string
@@ -23,6 +27,9 @@ func DefaultEndpoints() Endpoints {
 func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	if strings.TrimSpace(e.SignInPath) == "" {
 		e.SignInPath = fallback.SignInPath
+	}
+	if strings.TrimSpace(e.InfoPath) == "" {
+		e.InfoPath = fallback.InfoPath
 	}
 	if strings.TrimSpace(e.SchedulePath) == "" {
 		e.SchedulePath = fallback.SchedulePath
@@ -50,6 +57,7 @@ func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	}
 
 	e.SignInPath = normalizeEndpointPath(e.SignInPath)
+	e.InfoPath = normalizeEndpointPath(e.InfoPath)
 	e.SchedulePath = normalizeEndpointPath(e.SchedulePath)
 	e.LectureHallPath = normalizeEndpointPath(e.LectureHallPath)
 	e.CallPresetPath = normalizeEndpointPath(e.CallPresetPath)
@@ -68,6 +76,21 @@ func DeriveCallPresetPath(schedulePath string) string {
 		return ""
 	}
 	return schedulePath[:i] + "/call-preset"
+}
+
+func DeriveInfoPath(schedulePath string) string {
+	if strings.TrimSpace(schedulePath) == "" {
+		return ""
+	}
+	parsedURL, err := url.Parse(schedulePath)
+	if err == nil && parsedURL.Path != "" {
+		schedulePath = parsedURL.Path
+	}
+	i := strings.LastIndex(strings.TrimRight(schedulePath, "/"), "/")
+	if i < 0 {
+		return ""
+	}
+	return schedulePath[:i] + "/info"
 }
 
 func DeriveAbsenceMarkPath(schedulePath string) string {

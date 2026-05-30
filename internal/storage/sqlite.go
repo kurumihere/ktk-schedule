@@ -138,6 +138,13 @@ func (s *Storage) SetShowAllSubgroups(telegramID int64, enabled bool) error {
 	return err
 }
 
+func (s *Storage) SetTeacherHash(telegramID int64, teacherHash string) error {
+	_, err := s.db.Exec(`
+	UPDATE users SET teacher_hash = ? WHERE telegram_id = ?;
+	`, teacherHash, telegramID)
+	return err
+}
+
 func (s *Storage) GetUser(telegramID int64) (*User, error) {
 	row := s.db.QueryRow(`
 	SELECT telegram_id, login, password, group_id, notify, subgroup, show_all_subgroups, teacher_hash

@@ -29,6 +29,7 @@ type Config struct {
 	Timezone           string
 	LogLevel           slog.Level
 	HealthPort         string
+	PprofEnabled       bool
 }
 
 func Load() (Config, error) {
@@ -39,6 +40,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	debugSchedule, err := getenvBool("KTK_DEBUG_SCHEDULE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	pprofEnabled, err := getenvBool("PPROF_ENABLED", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -71,6 +76,7 @@ func Load() (Config, error) {
 		OwnerTelegramID:    ownerTelegramID,
 		NotifyTime:         getenv("NOTIFY_TIME", "07:30"),
 		Timezone:           getenv("TIMEZONE", "Asia/Yekaterinburg"),
+		PprofEnabled:       pprofEnabled,
 	}
 
 	if cfg.BotToken == "" {
