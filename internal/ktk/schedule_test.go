@@ -162,6 +162,90 @@ func TestFormatScheduleDayShowsTaskAndWebinarOnly(t *testing.T) {
 	}
 }
 
+func TestParseScheduleDaysCollectsHomeworkFilesFromChangedShapes(t *testing.T) {
+	body := []byte(`[
+		{
+			"Date": "2026-04-30T00:00:00Z",
+			"Subjects": [
+				{
+					"Discipline": "Math",
+					"Pair": 1,
+					"ExtraData": {
+						"Homework": {
+							"Files": [
+								{"ID": 101, "Caption": "task.pdf"},
+								{"FileID": "102"},
+								{"Document": {"ID": 103}}
+							],
+							"FileID": 104,
+							"Documents": [{"DocumentID": 105}],
+							"Attachments": [{"File": {"ID": 106}}]
+						}
+					}
+				}
+			]
+		}
+	]`)
+
+	days, err := parseScheduleDays(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := days[0].Subjects[0].ExtraData.Homework.Files
+	want := []int{101, 102, 103, 104, 105, 106}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected file IDs: got %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected file IDs: got %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestParseScheduleDaysKeepsNumericHomeworkFiles(t *testing.T) {
+	body := []byte(`[
+		{
+			"Date": "2026-04-30T00:00:00Z",
+			"Subjects": [
+				{
+					"Discipline": "Math",
+					"Pair": 1,
+					"ExtraData": {
+						"Homework": {
+							"Files": [101, 102, 101]
+						}
+					}
+				}
+			]
+		}
+	]`)
+
+	days, err := parseScheduleDays(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := days[0].Subjects[0].ExtraData.Homework.Files
+	if len(got) != 2 || got[0] != 101 || got[1] != 102 {
+		t.Fatalf("unexpected file IDs: %#v", got)
+	}
+}
+
+func TestHomeworkSubmissionAcceptsChangedFileShapes(t *testing.T) {
+	var sub HomeworkSubmission
+	if err := sub.UnmarshalJSON([]byte(`{"File":{"ID":"321"},"Text":"done","UploadDate":"2026-04-30"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if sub.FileID == nil || *sub.FileID != 321 {
+		t.Fatalf("unexpected file ID: %#v", sub.FileID)
+	}
+	if sub.Text == nil || *sub.Text != "done" {
+		t.Fatalf("text was not preserved: %#v", sub.Text)
+	}
+}
+
 func TestFormatScheduleDayTrimsTrailingEmptyPairs(t *testing.T) {
 	text := FormatScheduleDay(ScheduleDay{
 		Date:    "2026-05-25T00:00:00Z",

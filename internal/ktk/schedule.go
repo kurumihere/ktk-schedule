@@ -1,6 +1,7 @@
 package ktk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,33 +74,145 @@ type ScheduleDay struct {
 }
 
 type ScheduleItem struct {
-	Appraisal    int    `json:"Appraisal"`
-	Discipline   string `json:"Discipline"`
-	LectureHall  int    `json:"LectureHall"`
-	Mark         int    `json:"Mark"`
-	Pair         int    `json:"Pair"`
-	Subgroup     string `json:"Subgroup"`
-	Teacher      string `json:"Teacher"`
-	Group        string `json:"Group"`
-	CallPreset   int    `json:"CallPreset"`
-	ExtendedData struct {
-		AcademicHour   int    `json:"AcademicHour"`
-		DisciplineFull string `json:"DisciplineFull"`
-		PairType       int    `json:"PairType"`
-	} `json:"ExtendedData"`
-	ExtraData struct {
-		LectureTheme    string `json:"LectureTheme"`
-		LectureHomework string `json:"LectureHomework"`
-		LectureType     int    `json:"LectureType"`
-		Sheet           int    `json:"Sheet"`
-		Homework        struct {
-			Task       *string `json:"Task"`
-			Deadline   *string `json:"Deadline"`
-			Webinar    *string `json:"Webinar"`
-			Files      []int   `json:"Files"`
-			LockUpload *bool   `json:"LockUpload"`
-		} `json:"Homework"`
-	} `json:"ExtraData"`
+	Appraisal    int                  `json:"Appraisal"`
+	Discipline   string               `json:"Discipline"`
+	LectureHall  int                  `json:"LectureHall"`
+	Mark         int                  `json:"Mark"`
+	Pair         int                  `json:"Pair"`
+	Subgroup     string               `json:"Subgroup"`
+	Teacher      string               `json:"Teacher"`
+	Group        string               `json:"Group"`
+	CallPreset   int                  `json:"CallPreset"`
+	ExtendedData ScheduleExtendedData `json:"ExtendedData"`
+	ExtraData    ScheduleExtraData    `json:"ExtraData"`
+}
+
+type ScheduleExtendedData struct {
+	AcademicHour   int    `json:"AcademicHour"`
+	DisciplineFull string `json:"DisciplineFull"`
+	PairType       int    `json:"PairType"`
+}
+
+type ScheduleExtraData struct {
+	LectureTheme    string   `json:"LectureTheme"`
+	LectureHomework string   `json:"LectureHomework"`
+	LectureType     int      `json:"LectureType"`
+	Sheet           int      `json:"Sheet"`
+	Homework        Homework `json:"Homework"`
+}
+
+type Homework struct {
+	Task       *string `json:"Task"`
+	Deadline   *string `json:"Deadline"`
+	Webinar    *string `json:"Webinar"`
+	Files      []int   `json:"Files"`
+	LockUpload *bool   `json:"LockUpload"`
+}
+
+func (h *Homework) UnmarshalJSON(data []byte) error {
+	type homeworkJSON struct {
+		Task        *string         `json:"Task"`
+		Deadline    *string         `json:"Deadline"`
+		Webinar     *string         `json:"Webinar"`
+		Files       json.RawMessage `json:"Files"`
+		FileIDs     json.RawMessage `json:"FileIDs"`
+		Documents   json.RawMessage `json:"Documents"`
+		Attachments json.RawMessage `json:"Attachments"`
+		File        json.RawMessage `json:"File"`
+		Document    json.RawMessage `json:"Document"`
+		FileID      json.RawMessage `json:"FileID"`
+		DocumentID  json.RawMessage `json:"DocumentID"`
+		LockUpload  *bool           `json:"LockUpload"`
+	}
+
+	var raw homeworkJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	h.Task = raw.Task
+	h.Deadline = raw.Deadline
+	h.Webinar = raw.Webinar
+	h.LockUpload = raw.LockUpload
+
+	var ids []int
+	for _, part := range []json.RawMessage{
+		raw.Files,
+		raw.FileIDs,
+		raw.FileID,
+		raw.DocumentID,
+		raw.File,
+		raw.Document,
+		raw.Documents,
+		raw.Attachments,
+	} {
+		ids = appendFileIDs(ids, part)
+	}
+	h.Files = uniquePositiveInts(ids)
+	return nil
+}
+
+func appendFileIDs(dst []int, raw json.RawMessage) []int {
+	if len(raw) == 0 || string(raw) == "null" {
+		return dst
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return dst
+	}
+	return appendFileIDsFromValue(dst, value)
+}
+
+func appendFileIDsFromValue(dst []int, value any) []int {
+	switch v := value.(type) {
+	case []any:
+		for _, item := range v {
+			dst = appendFileIDsFromValue(dst, item)
+		}
+	case map[string]any:
+		for _, key := range []string{"ID", "Id", "id", "FileID", "fileID", "fileId", "DocumentID", "documentID", "documentId", "DocID", "docID", "UserFileID"} {
+			if rawID, ok := v[key]; ok {
+				dst = appendFileIDsFromValue(dst, rawID)
+			}
+		}
+		for _, key := range []string{"File", "file", "Document", "document", "Attachment", "attachment", "UserFile", "userFile"} {
+			if nested, ok := v[key]; ok {
+				dst = appendFileIDsFromValue(dst, nested)
+			}
+		}
+	case json.Number:
+		if n, err := v.Int64(); err == nil && n > 0 {
+			dst = append(dst, int(n))
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			dst = append(dst, n)
+		}
+	case float64:
+		if v > 0 && v == float64(int(v)) {
+			dst = append(dst, int(v))
+		}
+	}
+	return dst
+}
+
+func uniquePositiveInts(values []int) []int {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]int, 0, len(values))
+	seen := make(map[int]bool, len(values))
+	for _, value := range values {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 type scheduleV3Wrapper struct {
@@ -616,6 +729,36 @@ type HomeworkSubmission struct {
 	FileID     *int    `json:"FileID"`
 	Text       *string `json:"Text"`
 	UploadDate *string `json:"UploadDate"`
+}
+
+func (s *HomeworkSubmission) UnmarshalJSON(data []byte) error {
+	type submissionJSON struct {
+		FileID     json.RawMessage `json:"FileID"`
+		File       json.RawMessage `json:"File"`
+		Files      json.RawMessage `json:"Files"`
+		Document   json.RawMessage `json:"Document"`
+		DocumentID json.RawMessage `json:"DocumentID"`
+		Text       *string         `json:"Text"`
+		UploadDate *string         `json:"UploadDate"`
+	}
+
+	var raw submissionJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	s.Text = raw.Text
+	s.UploadDate = raw.UploadDate
+	ids := make([]int, 0, 1)
+	for _, part := range []json.RawMessage{raw.FileID, raw.File, raw.Files, raw.Document, raw.DocumentID} {
+		ids = appendFileIDs(ids, part)
+	}
+	ids = uniquePositiveInts(ids)
+	if len(ids) > 0 {
+		id := ids[0]
+		s.FileID = &id
+	}
+	return nil
 }
 
 type fileOpenResponse struct {
