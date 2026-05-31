@@ -10,7 +10,7 @@
   <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-storage-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite"/></a>
   <a href="https://forgejo.org"><img src="https://img.shields.io/badge/Forgejo%20CI-passing-2ea44f?style=for-the-badge&logo=forgejo&logoColor=white" alt="CI"/></a>
   <br/>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue?style=for-the-badge" alt="License"/></a>
+  <a href="https://git.kurumi.world/kurumi/ktk-schedule/src/branch/master/LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue?style=for-the-badge" alt="License"/></a>
   <a href="https://code.forgejo.org/forgejo/runner"><img src="https://img.shields.io/badge/CD-auto--deploy-2ea44f?style=for-the-badge" alt="CD"/></a>
 </p>
 
