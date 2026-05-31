@@ -26,21 +26,21 @@
 
 ## Русский
 
-`ktk-schedule` - это Telegram-бот для расписания КТК. Он работает через workspace: пользователь входит по своему логину и паролю, а бот показывает расписание, оценки, отметки посещаемости, файлы из домашки и отправленные работы.
+`ktk-schedule` - Telegram-бот для просмотра расписания КТК через workspace. После авторизации бот показывает расписание, оценки, отметки посещаемости, файлы из домашних заданий и отправленные работы.
 
-Я делал его не как “витрину”, а как рабочий бот на каждый день: открыть текущую неделю, быстро переключиться на нужный день, скачать файл от преподавателя, включить утреннее расписание и не думать о том, какой endpoint сейчас снова поменялся на сайте.
+Проект ориентирован на ежедневное использование: просмотр текущей недели, переход к нужному дню, скачивание файлов от преподавателей, утренние уведомления и устойчивость к изменениям workspace endpoint-ов.
 
-### Что умеет
+### Возможности
 
 - Авторизует студентов и преподавателей через workspace.
-- Сам находит актуальные API endpoint-ы из workspace assets.
+- Находит актуальные API endpoint-ы из workspace assets.
 - Показывает расписание на неделю или конкретную дату: `/schedule`, `/schedule 01.09`, `/schedule 2026-09-01`.
 - Поддерживает группы, 1-ю и 2-ю подгруппу, а также режим показа обеих подгрупп сразу.
 - Показывает время пары, длительность, текущий статус и сколько осталось до конца.
 - Выводит оценки `2-5`, модификаторы `+/-`, отметки `Н/О/Б` и причины отсутствий, если они есть.
 - Показывает и скачивает прикреплённые файлы: материалы из домашки и загруженную пользователем работу.
-- Умеет отправлять утренние уведомления с расписанием.
-- Даёт владельцу рассылку через `/announce` и статистику через `/stats`.
+- Отправляет утренние уведомления с расписанием.
+- Поддерживает рассылку владельца через `/announce` и статистику через `/stats`.
 - Хранит пароли зашифрованными в SQLite и удаляет сообщение с `/login` после обработки.
 - Использует cache, retry с backoff, rate limit, circuit breaker и HTTP `/health`.
 
@@ -113,7 +113,7 @@ just check       # env-check + fmt + vet + test + build
 just build       # собрать бинарник ktk-schedule
 ```
 
-### Как устроен проект
+### Структура проекта
 
 | Путь | Что внутри |
 | --- | --- |
@@ -151,21 +151,21 @@ just build       # собрать бинарник ktk-schedule
 🏫 Кабинет: 41
 ```
 
-### Важно
+### Безопасность и ограничения
 
 Пароли пользователей шифруются перед записью в базу. Если поменять `CREDENTIALS_SECRET`, всем пользователям придётся войти заново.
 
-Проект использует сторонний workspace API. Автор не связан с КТК и не отвечает за изменения API, недоступность сервиса или неожиданные изменения формата данных.
+Проект использует сторонний workspace API и может требовать обновлений при изменениях API, недоступности сервиса или изменении формата данных.
 
 ---
 
 ## English
 
-`ktk-schedule` is a Telegram bot for KTK schedules. It works through workspace: a user signs in with their login and password, and the bot shows schedule, grades, attendance marks, homework files, and submitted work.
+`ktk-schedule` is a Telegram bot for viewing KTK schedules through workspace. After sign-in, the bot shows schedule, grades, attendance marks, homework files, and submitted work.
 
-I built it as a daily-use bot, not a demo page: open the current week, jump to the right day, download a teacher's file, enable morning schedule notifications, and avoid caring about which workspace endpoint changed again.
+The project is designed for daily use: viewing the current week, opening a specific day, downloading teacher files, receiving morning notifications, and staying resilient when workspace endpoints change.
 
-### What It Can Do
+### Features
 
 - Signs students and teachers in through workspace.
 - Discovers current API endpoints from workspace assets.
@@ -286,8 +286,8 @@ just build       # build the ktk-schedule binary
 🏫 Кабинет: 41
 ```
 
-### Notes
+### Security and Limitations
 
 User passwords are encrypted before being written to the database. If `CREDENTIALS_SECRET` changes, every user has to sign in again.
 
-This project uses a third-party workspace API. The author is not affiliated with KTK and is not responsible for API changes, downtime, or unexpected data format changes.
+This project uses a third-party workspace API and may require updates when the API changes, the service is unavailable, or the data format changes.
