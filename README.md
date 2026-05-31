@@ -15,8 +15,8 @@
 </p>
 
 <p align="center">
-  Telegram bot for KTK schedule — workspace auth, API autodiscovery, subgroup filtering,
-  pair timing with countdown, grades and attendance marks, daily notifications.
+  Telegram bot for KTK schedule: workspace login, schedule navigation,
+  subgroups, grades, files, and morning notifications.
 </p>
 
 <p align="center">
@@ -26,153 +26,268 @@
 
 ## Русский
 
-Telegram-бот для просмотра расписания КТК через workspace. Логинится по логину/паролю, сам находит актуальные API-адреса, фильтрует по подгруппам, показывает время пар с обратным отсчётом, оценки и отметки о посещаемости.
+`ktk-schedule` - это Telegram-бот для расписания КТК. Он работает через workspace: пользователь входит по своему логину и паролю, а бот показывает расписание, оценки, отметки посещаемости, файлы из домашки и отправленные работы.
 
-### Возможности
+Я делал его не как “витрину”, а как рабочий бот на каждый день: открыть текущую неделю, быстро переключиться на нужный день, скачать файл от преподавателя, включить утреннее расписание и не думать о том, какой endpoint сейчас снова поменялся на сайте.
 
-| Возможность | Описание |
-| --- | --- |
-| Авторизация | Вход по логину и паролю от workspace |
-| Расписание | По датам и неделям с inline-клавиатурой |
-| Группы | Смена через `/group` |
-| Подгруппы | 1-я, 2-я или обе сразу |
-| Время пар | Длительность, диапазон и обратный отсчёт |
-| Оценки и отметки | 2–5 с `+/-`, символы Н/О/Б с причинами |
-| Автопоиск API | Находит endpoint-ы сам, включая запасные с оценками |
-| Уведомления | Ежедневная рассылка по утрам |
-| Объявления | Владелец может разослать сообщение всем |
-| Rate limit | 15 сек кулдаун на `/schedule` |
-| Шифрование | AES-GCM для паролей в SQLite |
-| Health check | HTTP `/health` для Docker |
-| Retry | Exponential backoff при сбоях |
-| Логирование | `log/slog` с уровнями debug/info/warn/error |
-| CI/CD | Forgejo Actions: тесты → сборка → деплой на VDS |
+### Что умеет
+
+- Авторизует студентов и преподавателей через workspace.
+- Сам находит актуальные API endpoint-ы из workspace assets.
+- Показывает расписание на неделю или конкретную дату: `/schedule`, `/schedule 01.09`, `/schedule 2026-09-01`.
+- Поддерживает группы, 1-ю и 2-ю подгруппу, а также режим показа обеих подгрупп сразу.
+- Показывает время пары, длительность, текущий статус и сколько осталось до конца.
+- Выводит оценки `2-5`, модификаторы `+/-`, отметки `Н/О/Б` и причины отсутствий, если они есть.
+- Показывает и скачивает прикреплённые файлы: материалы из домашки и загруженную пользователем работу.
+- Умеет отправлять утренние уведомления с расписанием.
+- Даёт владельцу рассылку через `/announce` и статистику через `/stats`.
+- Хранит пароли зашифрованными в SQLite и удаляет сообщение с `/login` после обработки.
+- Использует cache, retry с backoff, rate limit, circuit breaker и HTTP `/health`.
 
 ### Команды
 
-| Команда | Назначение |
+| Команда | Что делает |
 | --- | --- |
-| `/start` | Список команд |
-| `/my_id` | Твой Telegram ID |
-| `/login логин пароль` | Авторизация |
-| `/schedule [дата]` | Расписание на неделю или дату |
-| `/group 269` | Сменить группу |
-| `/subgroup 1` | Первая подгруппа |
-| `/subgroup 2` | Вторая подгруппа |
-| `/subgroups_on` | Обе подгруппы |
-| `/subgroups_off` | Только свою |
-| `/notify_on` | Включить уведомления |
-| `/notify_off` | Отключить |
-| `/announce текст` | Рассылка (только владелец) |
-| `reply /announce` | Разослать ответное сообщение |
+| `/start` | Показывает список команд |
+| `/my_id` | Показывает твой Telegram ID |
+| `/login логин пароль` | Авторизует в workspace |
+| `/schedule [дата]` | Показывает расписание на неделю или дату |
+| `/group 269` | Меняет группу |
+| `/subgroup 1` / `/subgroup 2` | Меняет подгруппу |
+| `/subgroups_on` / `/subgroups_off` | Показывает обе подгруппы или только выбранную |
+| `/notify_on` / `/notify_off` | Включает или выключает утреннее расписание |
+| `/announce текст` | Рассылает объявление от владельца |
+| `reply /announce` | Рассылает сообщение, на которое был дан ответ |
+| `/stats` | Показывает статистику бота владельцу |
+
+После `/schedule` появляется inline-клавиатура. Через неё можно листать дни, перейти к сегодняшнему дню, переключать недели, открыть выбор недели и скачать все файлы выбранного дня кнопкой `📎 Скачать файлы (N)`.
 
 ### Быстрый старт
 
 ```bash
 cp .env.example .env
-# заполни BOT_TOKEN и CREDENTIALS_SECRET
+# Заполни BOT_TOKEN и CREDENTIALS_SECRET
 go run ./cmd/bot
 ```
 
-### Docker Compose
+Секрет для шифрования можно сгенерировать так:
+
+```bash
+openssl rand -base64 32
+```
+
+### Docker
 
 ```bash
 docker compose up --build -d
 docker compose logs -f ktk-schedule
 ```
 
+В Docker бот использует SQLite и отдаёт `/health`, чтобы контейнер можно было проверять healthcheck-ом.
+
 ### Конфигурация
 
-Все переменные — в `.env.example`. Обязательные: `BOT_TOKEN`, `CREDENTIALS_SECRET`.
+Все переменные описаны в `.env.example`. Для запуска обычно достаточно этих:
 
-```bash
-openssl rand -base64 32  # сгенерировать CREDENTIALS_SECRET
-```
+| Переменная | Зачем нужна |
+| --- | --- |
+| `BOT_TOKEN` | Токен Telegram-бота от `@BotFather` |
+| `CREDENTIALS_SECRET` | Секрет для AES-GCM, минимум 32 символа |
+| `OWNER_TELEGRAM_ID` | Владелец команд `/announce` и `/stats` |
+| `KTK_BASE_URL` | Базовый URL workspace |
+| `DATABASE_PATH` | Путь к SQLite базе |
+| `NOTIFY_TIME` / `TIMEZONE` | Время и часовой пояс уведомлений |
 
 ### Разработка
 
-**Требования:** Go 1.26+, `just`, `air`, `golangci-lint`.
+Нужны Go 1.26+, `just` и `golangci-lint`. Для hot reload используется `air`.
 
 ```bash
-just setup       # pre-commit hook
+just setup       # настроить pre-commit hook
 just setup-air   # установить air
 just setup-lint  # установить golangci-lint
-just dev         # hot-reload
-just check       # fmt -> vet -> test -> build
-just lint        # golangci-lint
-just docker      # docker compose up --build -d
+just dev         # запустить hot reload
+just test        # go test -count=1 ./...
+just lint        # golangci-lint run
+just check       # env-check + fmt + vet + test + build
+just build       # собрать бинарник ktk-schedule
 ```
 
-Pre-commit hook автоматически форматирует код и прогоняет `go vet`.
+### Как устроен проект
 
-### Подгруппы
+| Путь | Что внутри |
+| --- | --- |
+| `cmd/bot` | Точка входа |
+| `internal/app` | Handlers, sessions, notifications, cache, rate limit |
+| `internal/config` | Загрузка и проверка `.env` |
+| `internal/ktk` | Workspace client, autodiscovery, parsing и formatting расписания |
+| `internal/storage` | SQLite-хранилище и миграции |
+| `internal/credentials` | Шифрование паролей |
+| `internal/tg` | Telegram inline-клавиатуры |
+| `.gitea/workflows` | CI/CD |
+| `Justfile` | Команды для разработки |
 
-| API | В боте | Видно |
-| --- | --- | --- |
-| `left` | 1 подгруппа | Первой подгруппе |
-| `right` | 2 подгруппа | Второй подгруппе |
-| `middle` | общая | Всем |
+### Пример сообщения
 
-### Время пар
+```text
+📅 01.06.2026
 
+1 пара [70 мин] — ОП.12 ИКГ
+⏰ 08:00-09:10
+🔬 Практическое занятие
+👤 Бухтоярова Елена Леонидовна
+🏫 Кабинет: 301
+
+2 пара [70 мин] — ОП.02 ДМЭМЛ
+⏰ 09:20-10:30
+📚 Лекция
+👤 Сапожникова Елена Владимировна
+🏫 Кабинет: 41
+
+3 пара [70 мин] — ОП.02 ДМЭМЛ
+⏰ 11:00-12:10
+🔬 Практическое занятие
+👤 Сапожникова Елена Владимировна
+🏫 Кабинет: 41
 ```
-1 пара [90 мин] — Математика
-⏰ 09:00-10:30
-⏳ идёт 15 мин, осталось 75 мин
-```
 
-### Безопасность
+### Важно
 
-Пароли шифруются AES-256-GCM. Смена `CREDENTIALS_SECRET` требует перелогина всех пользователей.
+Пароли пользователей шифруются перед записью в базу. Если поменять `CREDENTIALS_SECRET`, всем пользователям придётся войти заново.
+
+Проект использует сторонний workspace API. Автор не связан с КТК и не отвечает за изменения API, недоступность сервиса или неожиданные изменения формата данных.
 
 ---
 
 ## English
 
-A Telegram bot for KTK schedule. Logs in via workspace, auto-discovers API endpoints, filters by subgroup, shows lesson times with countdown, grades, and attendance marks.
+`ktk-schedule` is a Telegram bot for KTK schedules. It works through workspace: a user signs in with their login and password, and the bot shows schedule, grades, attendance marks, homework files, and submitted work.
 
-### Features
+I built it as a daily-use bot, not a demo page: open the current week, jump to the right day, download a teacher's file, enable morning schedule notifications, and avoid caring about which workspace endpoint changed again.
 
-Sign-in, schedule with inline navigation, group/subgroup switching, pair timing with countdown, grades (2–5 + +/-), attendance marks (Н/О/Б with reasons), API autodiscovery, daily morning notifications, owner announcements, 15s rate limit, AES-GCM encryption, Docker healthcheck, retry with backoff, structured logging, CI/CD with auto-deploy.
+### What It Can Do
+
+- Signs students and teachers in through workspace.
+- Discovers current API endpoints from workspace assets.
+- Shows schedule for a week or a specific date: `/schedule`, `/schedule 01.09`, `/schedule 2026-09-01`.
+- Supports groups, 1st and 2nd subgroups, and a mode that shows both subgroups at once.
+- Shows lesson time, duration, current status, and time left.
+- Shows grades `2-5`, `+/-` modifiers, `Н/О/Б` attendance marks, and absence reasons when available.
+- Shows and downloads attached files: homework materials and the user's submitted work.
+- Sends morning schedule notifications.
+- Gives the owner broadcasts through `/announce` and statistics through `/stats`.
+- Stores passwords encrypted in SQLite and deletes the `/login` message after processing.
+- Uses cache, retry with backoff, rate limit, circuit breaker, and HTTP `/health`.
 
 ### Commands
 
-`/start`, `/my_id`, `/login`, `/schedule`, `/group`, `/subgroup`, `/subgroups_on/off`, `/notify_on/off`, `/announce`.
+| Command | What it does |
+| --- | --- |
+| `/start` | Shows the command list |
+| `/my_id` | Shows your Telegram ID |
+| `/login login password` | Signs in to workspace |
+| `/schedule [date]` | Shows schedule for a week or date |
+| `/group 269` | Changes group |
+| `/subgroup 1` / `/subgroup 2` | Changes subgroup |
+| `/subgroups_on` / `/subgroups_off` | Shows both subgroups or only the selected one |
+| `/notify_on` / `/notify_off` | Enables or disables morning schedule messages |
+| `/announce text` | Sends an owner announcement |
+| `reply /announce` | Broadcasts the replied message |
+| `/stats` | Shows bot statistics to the owner |
+
+After `/schedule`, the bot shows an inline keyboard. It lets you switch days, return to today, switch weeks, open week selection, and download all files for the selected day with `📎 Скачать файлы (N)`.
 
 ### Quick Start
 
 ```bash
 cp .env.example .env
+# Fill BOT_TOKEN and CREDENTIALS_SECRET
 go run ./cmd/bot
 ```
 
-### Development
+Generate an encryption secret:
 
 ```bash
-just setup
-just dev     # hot-reload
-just check   # fmt + vet + test + build
+openssl rand -base64 32
 ```
 
-### Project Structure
+### Docker
 
-| Path | Purpose |
+```bash
+docker compose up --build -d
+docker compose logs -f ktk-schedule
+```
+
+In Docker, the bot uses SQLite and exposes `/health` so the container can be checked by a healthcheck.
+
+### Configuration
+
+All variables are documented in `.env.example`. These are usually enough to start:
+
+| Variable | Why it is needed |
+| --- | --- |
+| `BOT_TOKEN` | Telegram bot token from `@BotFather` |
+| `CREDENTIALS_SECRET` | AES-GCM secret, at least 32 characters |
+| `OWNER_TELEGRAM_ID` | Owner of `/announce` and `/stats` |
+| `KTK_BASE_URL` | Workspace base URL |
+| `DATABASE_PATH` | SQLite database path |
+| `NOTIFY_TIME` / `TIMEZONE` | Notification time and timezone |
+
+### Development
+
+You need Go 1.26+, `just`, and `golangci-lint`. Hot reload uses `air`.
+
+```bash
+just setup       # configure pre-commit hook
+just setup-air   # install air
+just setup-lint  # install golangci-lint
+just dev         # run hot reload
+just test        # go test -count=1 ./...
+just lint        # golangci-lint run
+just check       # env-check + fmt + vet + test + build
+just build       # build the ktk-schedule binary
+```
+
+### Project Layout
+
+| Path | What is inside |
 | --- | --- |
 | `cmd/bot` | Entry point |
-| `internal/app` | Handlers, sessions, notifications, rate limiter |
-| `internal/config` | `.env` loading, validation |
-| `internal/ktk` | Workspace client, discovery, schedule formatting |
-| `internal/storage` | SQLite with WAL mode, migrations |
-| `internal/credentials` | AES-GCM encryption |
-| `internal/tg` | Inline keyboards |
-| `.air.toml` | Hot-reload config |
-| `.golangci.yml` | Linter config |
-| `.githooks/` | Pre-commit hook |
-| `.gitea/workflows/` | CI |
-| `Justfile` | Dev commands |
+| `internal/app` | Handlers, sessions, notifications, cache, rate limit |
+| `internal/config` | `.env` loading and validation |
+| `internal/ktk` | Workspace client, autodiscovery, schedule parsing and formatting |
+| `internal/storage` | SQLite storage and migrations |
+| `internal/credentials` | Password encryption |
+| `internal/tg` | Telegram inline keyboards |
+| `.gitea/workflows` | CI/CD |
+| `Justfile` | Development commands |
 
----
+### Message Example
 
-### ⚠️ Disclaimer
+```text
+📅 01.06.2026
 
-This project uses a third-party API. The author is not affiliated with KTK and is not responsible for API changes, downtime, or data format changes.
+1 пара [70 мин] — ОП.12 ИКГ
+⏰ 08:00-09:10
+🔬 Практическое занятие
+👤 Бухтоярова Елена Леонидовна
+🏫 Кабинет: 301
+
+2 пара [70 мин] — ОП.02 ДМЭМЛ
+⏰ 09:20-10:30
+📚 Лекция
+👤 Сапожникова Елена Владимировна
+🏫 Кабинет: 41
+
+3 пара [70 мин] — ОП.02 ДМЭМЛ
+⏰ 11:00-12:10
+🔬 Практическое занятие
+👤 Сапожникова Елена Владимировна
+🏫 Кабинет: 41
+```
+
+### Notes
+
+User passwords are encrypted before being written to the database. If `CREDENTIALS_SECRET` changes, every user has to sign in again.
+
+This project uses a third-party workspace API. The author is not affiliated with KTK and is not responsible for API changes, downtime, or unexpected data format changes.
