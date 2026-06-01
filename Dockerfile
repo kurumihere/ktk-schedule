@@ -15,14 +15,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM alpine:3.22
 
-RUN apk add --no-cache tzdata curl su-exec
+RUN apk add --no-cache tzdata curl su-exec \
+    && adduser -D -h /app app \
+    && mkdir -p /app/data
 
-RUN adduser -D -h /app app
 WORKDIR /app
 
-COPY --from=builder /out/ktk-schedule /app/ktk-schedule
+COPY --from=builder --chown=app:app /out/ktk-schedule /app/ktk-schedule
 COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN mkdir -p /app/data && chown -R app:app /app && chmod +x /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
