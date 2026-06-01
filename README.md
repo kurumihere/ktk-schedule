@@ -83,7 +83,7 @@ docker compose up --build -d
 docker compose logs -f ktk-schedule
 ```
 
-В Docker бот использует SQLite и отдаёт `/health`, чтобы контейнер можно было проверять healthcheck-ом.
+В Docker бот использует SQLite и отдаёт `/health`, чтобы контейнер можно было проверять healthcheck-ом. По умолчанию health-сервер слушает `127.0.0.1:8080` внутри контейнера.
 
 ### Конфигурация
 
@@ -97,19 +97,25 @@ docker compose logs -f ktk-schedule
 | `KTK_BASE_URL` | Базовый URL workspace |
 | `DATABASE_PATH` | Путь к SQLite базе |
 | `NOTIFY_TIME` / `TIMEZONE` | Время и часовой пояс уведомлений |
+| `HEALTH_ADDR` | Адрес `/health`, по умолчанию `127.0.0.1:8080` |
 
 ### Разработка
 
-Нужны Go 1.26+, `just` и `golangci-lint`. Для hot reload используется `air`.
+Нужны Go 1.26+, `just`, `golangci-lint` и `govulncheck`. Для hot reload используется `air`.
 
 ```bash
 just setup       # настроить pre-commit hook
 just setup-air   # установить air
 just setup-lint  # установить golangci-lint
+just setup-vuln  # установить govulncheck
 just dev         # запустить hot reload
 just test        # go test -count=1 ./...
 just lint        # golangci-lint run
-just check       # env-check + fmt + vet + test + build
+just race        # go test -count=1 -race ./...
+just vuln        # govulncheck ./...
+just backup      # создать backup SQLite из Docker volume
+just check       # env-check + tidy + fmt + vet + lint + test + build
+just ci-check    # tidy + vet + lint + race + vuln + build
 just build       # собрать бинарник ktk-schedule
 ```
 
@@ -154,6 +160,10 @@ just build       # собрать бинарник ktk-schedule
 ### Безопасность и ограничения
 
 Пароли пользователей шифруются перед записью в базу. Если поменять `CREDENTIALS_SECRET`, всем пользователям придётся войти заново.
+
+Не публикуй `HEALTH_ADDR` наружу без firewall или reverse proxy с доступом только для себя. Если включить `PPROF_ENABLED=true`, `/debug/pprof` будет доступен на том же health-сервере.
+
+CI/CD деплой на VDS перед обновлением создаёт сжатый backup SQLite из Docker volume, собирает Docker image с тегом commit SHA, тегирует предыдущий image для rollback и пробует откатиться к нему, если новый контейнер не проходит healthcheck.
 
 Проект использует сторонний workspace API и может требовать обновлений при изменениях API, недоступности сервиса или изменении формата данных.
 
@@ -218,7 +228,7 @@ docker compose up --build -d
 docker compose logs -f ktk-schedule
 ```
 
-In Docker, the bot uses SQLite and exposes `/health` so the container can be checked by a healthcheck.
+In Docker, the bot uses SQLite and exposes `/health` so the container can be checked by a healthcheck. By default, the health server listens on `127.0.0.1:8080` inside the container.
 
 ### Configuration
 
@@ -232,19 +242,25 @@ All variables are documented in `.env.example`. These are usually enough to star
 | `KTK_BASE_URL` | Workspace base URL |
 | `DATABASE_PATH` | SQLite database path |
 | `NOTIFY_TIME` / `TIMEZONE` | Notification time and timezone |
+| `HEALTH_ADDR` | `/health` address, default `127.0.0.1:8080` |
 
 ### Development
 
-You need Go 1.26+, `just`, and `golangci-lint`. Hot reload uses `air`.
+You need Go 1.26+, `just`, `golangci-lint`, and `govulncheck`. Hot reload uses `air`.
 
 ```bash
 just setup       # configure pre-commit hook
 just setup-air   # install air
 just setup-lint  # install golangci-lint
+just setup-vuln  # install govulncheck
 just dev         # run hot reload
 just test        # go test -count=1 ./...
 just lint        # golangci-lint run
-just check       # env-check + fmt + vet + test + build
+just race        # go test -count=1 -race ./...
+just vuln        # govulncheck ./...
+just backup      # create a SQLite backup from the Docker volume
+just check       # env-check + tidy + fmt + vet + lint + test + build
+just ci-check    # tidy + vet + lint + race + vuln + build
 just build       # build the ktk-schedule binary
 ```
 
@@ -289,5 +305,9 @@ just build       # build the ktk-schedule binary
 ### Security and Limitations
 
 User passwords are encrypted before being written to the database. If `CREDENTIALS_SECRET` changes, every user has to sign in again.
+
+Do not expose `HEALTH_ADDR` publicly without a firewall or a private reverse proxy. If `PPROF_ENABLED=true`, `/debug/pprof` is served on the same health server.
+
+The CI/CD deploy on the VDS creates a compressed SQLite backup from the Docker volume before updating, builds the Docker image with the commit SHA tag, tags the previous image for rollback, and tries to roll back to it if the new container does not pass its healthcheck.
 
 This project uses a third-party workspace API and may require updates when the API changes, the service is unavailable, or the data format changes.

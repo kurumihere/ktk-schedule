@@ -118,7 +118,7 @@ func New(cfg config.Config) (*App, error) {
 		})
 	}
 	app.healthServer = &http.Server{
-		Addr:         ":" + cfg.HealthPort,
+		Addr:         cfg.HealthAddr,
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,

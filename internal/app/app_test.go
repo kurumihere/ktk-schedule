@@ -252,6 +252,57 @@ func TestFormatUptime(t *testing.T) {
 	}
 }
 
+func TestStartupNotificationDate(t *testing.T) {
+	loc := time.FixedZone("test", 5*60*60)
+	tests := []struct {
+		name      string
+		now       time.Time
+		wantDate  string
+		wantRun   bool
+		wantError bool
+	}{
+		{
+			name:     "inside startup window",
+			now:      time.Date(2026, 6, 1, 7, 31, 0, 0, loc),
+			wantDate: "2026-06-01",
+			wantRun:  true,
+		},
+		{
+			name:    "before notify time",
+			now:     time.Date(2026, 6, 1, 7, 29, 59, 0, loc),
+			wantRun: false,
+		},
+		{
+			name:    "after startup window",
+			now:     time.Date(2026, 6, 1, 7, 32, 1, 0, loc),
+			wantRun: false,
+		},
+		{
+			name:      "invalid notify time",
+			now:       time.Date(2026, 6, 1, 7, 31, 0, 0, loc),
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		notifyTime := "07:30"
+		if tt.wantError {
+			notifyTime = "invalid"
+		}
+
+		gotDate, gotRun, err := startupNotificationDate(tt.now, notifyTime, loc)
+		if (err != nil) != tt.wantError {
+			t.Fatalf("%s: error = %v, want error %v", tt.name, err, tt.wantError)
+		}
+		if gotRun != tt.wantRun {
+			t.Fatalf("%s: run = %v, want %v", tt.name, gotRun, tt.wantRun)
+		}
+		if gotDate != tt.wantDate {
+			t.Fatalf("%s: date = %q, want %q", tt.name, gotDate, tt.wantDate)
+		}
+	}
+}
+
 func TestExtractTelegramDescription(t *testing.T) {
 	tests := []struct {
 		input string

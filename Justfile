@@ -1,5 +1,11 @@
+golangci_lint_version := "v2.12.2"
+govulncheck_version := "v1.3.0"
+
 fmt:
     go fmt ./...
+
+tidy-check:
+    go mod tidy -diff
 
 vet:
     go vet ./...
@@ -12,6 +18,16 @@ test:
 
 lint:
     golangci-lint run
+
+race:
+    go test -count=1 -race ./...
+
+vuln:
+    @if command -v govulncheck >/dev/null 2>&1; then \
+      govulncheck ./...; \
+    else \
+      go run golang.org/x/vuln/cmd/govulncheck@{{govulncheck_version}} ./...; \
+    fi
 
 run:
     go run ./cmd/bot
@@ -30,18 +46,21 @@ docker-logs:
 
 env-check:
     @if [ -f .env ]; then \
-      grep -q '^BOT_TOKEN=' .env || { echo "error: BOT_TOKEN not set in .env"; exit 1; }; \
-      grep -q '^CREDENTIALS_SECRET=' .env || { echo "error: CREDENTIALS_SECRET not set in .env"; exit 1; }; \
+      for key in BOT_TOKEN CREDENTIALS_SECRET; do \
+        value=$$(grep -E "^$$key=" .env | tail -n 1 | cut -d= -f2-); \
+        [ -n "$$value" ] || { echo "error: $$key is empty or missing in .env"; exit 1; }; \
+      done; \
     fi
 
-check: env-check fmt vet test build
+check: env-check tidy-check fmt vet lint test build
+
+ci-check: tidy-check vet lint race vuln build
 
 clean:
     rm -f ktk-schedule ktk-schedule.db *.log
 
 backup:
-    cp ktk-schedule.db ktk-schedule-$(date +%Y%m%d-%H%M%S).db
-    @echo "backup created"
+    BACKUP_VOLUME_NAME=ktk-schedule_ktk_schedule_data BACKUP_DIR=backups scripts/backup-sqlite.sh
 
 setup:
     git config core.hooksPath .githooks
@@ -51,4 +70,7 @@ setup-air:
     go install github.com/air-verse/air@latest
 
 setup-lint:
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}}
+
+setup-vuln:
+    go install golang.org/x/vuln/cmd/govulncheck@{{govulncheck_version}}

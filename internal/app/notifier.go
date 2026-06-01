@@ -14,12 +14,14 @@ import (
 )
 
 func (a *App) runNotifier(ctx context.Context) {
-	a.runDailyScheduleOnce(ctx)
+	lastRunDate := ""
+	if currentDate, ok := a.runDailyScheduleOnce(ctx); ok {
+		lastRunDate = currentDate
+	}
 
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	lastRunDate := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -27,7 +29,7 @@ func (a *App) runNotifier(ctx context.Context) {
 		case <-ticker.C:
 			now := time.Now().In(a.location)
 			currentTime := now.Format("15:04")
-			currentDate := now.Format("2006-01-02")
+			currentDate := now.Format(time.DateOnly)
 
 			if currentTime != a.cfg.NotifyTime || lastRunDate == currentDate {
 				continue
@@ -39,21 +41,35 @@ func (a *App) runNotifier(ctx context.Context) {
 	}
 }
 
-func (a *App) runDailyScheduleOnce(ctx context.Context) {
+func (a *App) runDailyScheduleOnce(ctx context.Context) (string, bool) {
 	now := time.Now().In(a.location)
-	targetTime, err := time.ParseInLocation("15:04", a.cfg.NotifyTime, a.location)
+	currentDate, shouldRun, err := startupNotificationDate(now, a.cfg.NotifyTime, a.location)
 	if err != nil {
 		slog.Warn("parse notify time", "error", err)
-		return
+		return "", false
 	}
-
-	targetToday := time.Date(now.Year(), now.Month(), now.Day(), targetTime.Hour(), targetTime.Minute(), 0, 0, a.location)
-	if now.Before(targetToday) || targetToday.Add(2*time.Minute).Before(now) {
-		return
+	if !shouldRun {
+		return "", false
 	}
 
 	slog.Info("running startup notification", "current_time", now.Format("15:04"), "notify_time", a.cfg.NotifyTime)
 	a.sendDailySchedules(ctx)
+	return currentDate, true
+}
+
+func startupNotificationDate(now time.Time, notifyTime string, loc *time.Location) (string, bool, error) {
+	now = now.In(loc)
+	targetTime, err := time.ParseInLocation("15:04", notifyTime, loc)
+	if err != nil {
+		return "", false, err
+	}
+
+	targetToday := time.Date(now.Year(), now.Month(), now.Day(), targetTime.Hour(), targetTime.Minute(), 0, 0, loc)
+	if now.Before(targetToday) || targetToday.Add(2*time.Minute).Before(now) {
+		return "", false, nil
+	}
+
+	return now.Format(time.DateOnly), true, nil
 }
 
 func (a *App) sendDailySchedules(ctx context.Context) {

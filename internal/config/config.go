@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +31,7 @@ type Config struct {
 	Timezone           string
 	LogLevel           slog.Level
 	HealthPort         string
+	HealthAddr         string
 	PprofEnabled       bool
 }
 
@@ -56,6 +59,11 @@ func Load() (Config, error) {
 	}
 
 	logLevel := parseLogLevel(os.Getenv("LOG_LEVEL"))
+	healthPort := getenv("HEALTH_PORT", "8080")
+	healthAddr, err := normalizeHealthAddr(os.Getenv("HEALTH_ADDR"), healthPort)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		BotToken:           strings.TrimSpace(os.Getenv("BOT_TOKEN")),
@@ -63,7 +71,8 @@ func Load() (Config, error) {
 		DatabasePath:       getenv("DATABASE_PATH", "ktk-schedule.db"),
 		CredentialsSecret:  strings.TrimSpace(os.Getenv("CREDENTIALS_SECRET")),
 		LogLevel:           logLevel,
-		HealthPort:         getenv("HEALTH_PORT", "8080"),
+		HealthPort:         healthPort,
+		HealthAddr:         healthAddr,
 		KTKSignInPath:      getenv("KTK_SIGN_IN_PATH", "/sign-in"),
 		KTKSchedulePath:    strings.TrimSpace(os.Getenv("KTK_SCHEDULE_PATH")),
 		KTKLectureHallPath: strings.TrimSpace(os.Getenv("KTK_LECTURE_HALL_PATH")),
@@ -90,6 +99,25 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func normalizeHealthAddr(addr, port string) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr != "" {
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			return "", fmt.Errorf("HEALTH_ADDR must be host:port: %w", err)
+		}
+		return addr, nil
+	}
+
+	port = strings.TrimSpace(port)
+	if port == "" {
+		port = "8080"
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", fmt.Errorf("HEALTH_PORT must be a port number: %w", err)
+	}
+	return net.JoinHostPort("127.0.0.1", port), nil
 }
 
 func getenv(key, fallback string) string {
