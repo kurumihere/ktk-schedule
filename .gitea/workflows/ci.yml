@@ -5,6 +5,7 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
   GOVULNCHECK_VERSION: v1.3.0
   REGISTRY: git.kurumi.world
+  REGISTRY_USERNAME: kurumi
   IMAGE_NAME: git.kurumi.world/kurumi/ktk-schedule
 
 on:
@@ -68,7 +69,14 @@ jobs:
         run: docker version
 
       - name: Login to Forgejo container registry
-        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${REGISTRY}" -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${REGISTRY_TOKEN:-}" ]; then
+            echo "REGISTRY_TOKEN repository secret is not set"
+            exit 1
+          fi
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
 
       - name: Build and push image
         run: |
@@ -94,6 +102,7 @@ jobs:
     steps:
       - name: Deploy to VDS
         env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           DEPLOY_NOTIFY_BOT_TOKEN: ${{ secrets.DEPLOY_NOTIFY_BOT_TOKEN }}
           DEPLOY_NOTIFY_CHAT_ID: ${{ secrets.DEPLOY_NOTIFY_CHAT_ID }}
         run: |
@@ -113,7 +122,12 @@ jobs:
           git reset --hard origin/master
           export KTK_SCHEDULE_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}"
 
-          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${REGISTRY}" -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+          if [ -z "${REGISTRY_TOKEN:-}" ]; then
+            echo "REGISTRY_TOKEN repository secret is not set"
+            notify_deploy "ktk-schedule deploy failed: REGISTRY_TOKEN secret is not set"
+            exit 1
+          fi
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
 
           previous_image=$(docker inspect ktk-schedule --format '{{.Config.Image}}' 2>/dev/null || true)
           if [ -n "$previous_image" ]; then

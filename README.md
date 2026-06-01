@@ -169,7 +169,6 @@ CI/CD деплой на VDS перед обновлением создаёт с�
 
 | Secret | Зачем нужен |
 | --- | --- |
-| `REGISTRY_USERNAME` | Пользователь Forgejo для `docker login` |
 | `REGISTRY_TOKEN` | Access token с правами на packages/container registry |
 | `DEPLOY_NOTIFY_BOT_TOKEN` | Telegram bot token для уведомлений о deploy |
 | `DEPLOY_NOTIFY_CHAT_ID` | Telegram chat ID, куда отправлять результат deploy |
@@ -323,7 +322,6 @@ CI/CD registry publishing and deploy notifications need these Forgejo repository
 
 | Secret | Why it is needed |
 | --- | --- |
-| `REGISTRY_USERNAME` | Forgejo user for `docker login` |
 | `REGISTRY_TOKEN` | Access token with packages/container registry permissions |
 | `DEPLOY_NOTIFY_BOT_TOKEN` | Telegram bot token for deploy notifications |
 | `DEPLOY_NOTIFY_CHAT_ID` | Telegram chat ID receiving deploy results |
