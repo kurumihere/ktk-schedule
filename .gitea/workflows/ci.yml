@@ -55,8 +55,19 @@ jobs:
     steps:
       - name: Checkout repository
         run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 git.kurumi.world > /tmp/git.kurumi.world.known_hosts
+          fingerprint=$(ssh-keygen -lf /tmp/git.kurumi.world.known_hosts | awk '{print $2}')
+          if [ "$fingerprint" != "SHA256:gvUShZbG4VIxpxQMCYBcxVsmgvGWBq2TqV+0o7+pEqk" ]; then
+            echo "unexpected git.kurumi.world SSH fingerprint: $fingerprint"
+            exit 1
+          fi
+          cat /tmp/git.kurumi.world.known_hosts >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
           rm -rf /tmp/ktk-schedule-image
-          git clone --depth=1 --branch master ssh://git@git.kurumi.world/kurumi/ktk-schedule.git /tmp/ktk-schedule-image
+          GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes" git clone --depth=1 --branch master ssh://git@git.kurumi.world/kurumi/ktk-schedule.git /tmp/ktk-schedule-image
           cd /tmp/ktk-schedule-image
 
       - name: Check Docker availability
