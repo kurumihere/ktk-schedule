@@ -53,22 +53,16 @@ jobs:
     runs-on: native
     timeout-minutes: 15
     steps:
-      - name: Checkout repository
+      - name: Prepare repository
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          ssh-keyscan -t ed25519 git.kurumi.world > /tmp/git.kurumi.world.known_hosts
-          fingerprint=$(ssh-keygen -lf /tmp/git.kurumi.world.known_hosts | awk '{print $2}')
-          if [ "$fingerprint" != "SHA256:gvUShZbG4VIxpxQMCYBcxVsmgvGWBq2TqV+0o7+pEqk" ]; then
-            echo "unexpected git.kurumi.world SSH fingerprint: $fingerprint"
+          cd /home/forgejo-runner/ktk-schedule
+          git fetch origin master
+          fetched_sha=$(git rev-parse origin/master)
+          if [ "$fetched_sha" != "$GITHUB_SHA" ]; then
+            echo "origin/master is $fetched_sha, expected $GITHUB_SHA"
             exit 1
           fi
-          cat /tmp/git.kurumi.world.known_hosts >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-          rm -rf /tmp/ktk-schedule-image
-          GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes" git clone --depth=1 --branch master ssh://git@git.kurumi.world/kurumi/ktk-schedule.git /tmp/ktk-schedule-image
-          cd /tmp/ktk-schedule-image
+          git reset --hard "$GITHUB_SHA"
 
       - name: Check Docker availability
         run: docker version
@@ -78,7 +72,7 @@ jobs:
 
       - name: Build and push image
         run: |
-          cd /tmp/ktk-schedule-image
+          cd /home/forgejo-runner/ktk-schedule
 
           image_sha="${IMAGE_NAME}:${GITHUB_SHA}"
           image_latest="${IMAGE_NAME}:latest"
