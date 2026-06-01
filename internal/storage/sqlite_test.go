@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"path/filepath"
 	"testing"
 	"time"
@@ -220,7 +221,7 @@ func TestScheduleCacheRoundTrip(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected cached schedule")
 	}
-	if string(got.Data) != string(entry.Data) {
+	if !bytes.Equal(got.Data, entry.Data) {
 		t.Fatalf("unexpected cached data: %s", got.Data)
 	}
 	if !got.UpdatedAt.Equal(updatedAt) {
