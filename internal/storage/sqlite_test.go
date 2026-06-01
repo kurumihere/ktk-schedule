@@ -3,6 +3,7 @@ package storage
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	credentialspkg "ktk-schedule/internal/credentials"
 )
@@ -193,6 +194,45 @@ func TestListUserIDs(t *testing.T) {
 	}
 	if len(ids) != 2 || ids[0] != 3001 || ids[1] != 3002 {
 		t.Fatalf("unexpected user ids: %#v", ids)
+	}
+}
+
+func TestScheduleCacheRoundTrip(t *testing.T) {
+	store := newTestStorage(t)
+	defer store.Close()
+
+	updatedAt := time.Date(2026, 6, 1, 10, 30, 0, 0, time.UTC)
+	entry := CachedSchedule{
+		GroupID:     269,
+		WeekStart:   "2026-06-01",
+		TeacherHash: "",
+		Data:        []byte(`[{"Date":"2026-06-01","Subjects":[]}]`),
+		UpdatedAt:   updatedAt,
+	}
+	if err := store.SaveScheduleCache(entry); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetScheduleCache(269, "2026-06-01", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected cached schedule")
+	}
+	if string(got.Data) != string(entry.Data) {
+		t.Fatalf("unexpected cached data: %s", got.Data)
+	}
+	if !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("unexpected updated_at: %s", got.UpdatedAt)
+	}
+
+	missing, err := store.GetScheduleCache(269, "2026-06-08", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing != nil {
+		t.Fatalf("unexpected missing cache entry: %#v", missing)
 	}
 }
 

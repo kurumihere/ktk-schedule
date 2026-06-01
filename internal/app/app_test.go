@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	telegram "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"ktk-schedule/internal/credentials"
 	"ktk-schedule/internal/ktk"
 	"ktk-schedule/internal/storage"
 )
@@ -359,5 +361,38 @@ func TestSessionCleanup(t *testing.T) {
 	app.cleanupSessions()
 	if app.sessionCount() != 0 {
 		t.Fatal("expected 0 sessions after cleanup")
+	}
+}
+
+func TestLoadScheduleUsesPersistentCacheWithoutClient(t *testing.T) {
+	cipher, err := credentials.New("app-test-secret-with-32-characters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.New(t.TempDir()+"/test.db", cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	app := &App{
+		storage:       store,
+		location:      time.UTC,
+		scheduleCache: newScheduleCache(),
+	}
+	if err := store.SaveScheduleCache(storage.CachedSchedule{
+		GroupID:   269,
+		WeekStart: "2026-06-01",
+		Data:      []byte(`[{"Date":"2026-06-01","Subjects":[{"Discipline":"Math","Pair":1}]}]`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	days, err := app.loadSchedule(context.Background(), nil, 269, "", time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 || len(days[0].Subjects) != 1 || days[0].Subjects[0].Discipline != "Math" {
+		t.Fatalf("unexpected cached schedule: %#v", days)
 	}
 }

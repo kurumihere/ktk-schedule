@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -275,6 +276,20 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 		return days, nil
 	}
 
+	if client == nil {
+		days, err := a.loadPersistentScheduleCache(groupID, weekKey, teacherHash)
+		if err != nil {
+			return nil, err
+		}
+		if days == nil {
+			return nil, errors.New("schedule client is unavailable and cached schedule was not found")
+		}
+		if hasScheduledSubjects(days) {
+			a.scheduleCache.set(groupID, weekKey, teacherHash, days)
+		}
+		return days, nil
+	}
+
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -288,11 +303,60 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	}
 	if err == nil {
 		a.cacheEndpoints(client.Endpoints())
+		a.savePersistentScheduleCache(groupID, weekKey, teacherHash, days)
 		if hasScheduledSubjects(days) {
 			a.scheduleCache.set(groupID, weekKey, teacherHash, days)
 		}
+		return days, nil
 	}
-	return days, err
+
+	cachedDays, cacheErr := a.loadPersistentScheduleCache(groupID, weekKey, teacherHash)
+	if cacheErr != nil {
+		slog.Warn("persistent schedule cache load", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", cacheErr)
+		return days, err
+	}
+	if cachedDays != nil {
+		slog.Warn("using persistent schedule cache", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
+		if hasScheduledSubjects(cachedDays) {
+			a.scheduleCache.set(groupID, weekKey, teacherHash, cachedDays)
+		}
+		return cachedDays, nil
+	}
+	return nil, err
+}
+
+func (a *App) savePersistentScheduleCache(groupID int, weekKey string, teacherHash string, days []ktk.ScheduleDay) {
+	if a.storage == nil {
+		return
+	}
+	data, err := json.Marshal(days)
+	if err != nil {
+		slog.Warn("persistent schedule cache marshal", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
+		return
+	}
+	if err := a.storage.SaveScheduleCache(storage.CachedSchedule{
+		GroupID:     groupID,
+		WeekStart:   weekKey,
+		TeacherHash: teacherHash,
+		Data:        data,
+	}); err != nil {
+		slog.Warn("persistent schedule cache save", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
+	}
+}
+
+func (a *App) loadPersistentScheduleCache(groupID int, weekKey string, teacherHash string) ([]ktk.ScheduleDay, error) {
+	if a.storage == nil {
+		return nil, nil
+	}
+	entry, err := a.storage.GetScheduleCache(groupID, weekKey, teacherHash)
+	if err != nil || entry == nil {
+		return nil, err
+	}
+	var days []ktk.ScheduleDay
+	if err := json.Unmarshal(entry.Data, &days); err != nil {
+		return nil, err
+	}
+	return days, nil
 }
 
 func hasScheduledSubjects(days []ktk.ScheduleDay) bool {

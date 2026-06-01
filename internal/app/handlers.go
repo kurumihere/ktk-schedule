@@ -179,15 +179,19 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		return
 	}
 
-	session, err := a.ensureSession(ctx, user)
-	if err != nil {
-		a.send(ctx, chatID, "Не удалось авторизоваться: "+err.Error())
-		return
-	}
-
 	targetDate, err := ktk.ParseScheduleDate(commandArgs(update.Message.Text), time.Now(), a.location)
 	if err != nil {
 		a.send(ctx, chatID, "Не понял дату. Используй /schedule, /schedule 01.09 или /schedule 2026-09-01")
+		return
+	}
+
+	session, err := a.ensureSession(ctx, user)
+	if err != nil {
+		slog.Warn("schedule session unavailable, trying persistent cache", "chat_id", chatID, "error", err)
+		if a.sendCachedSchedule(ctx, chatID, user, targetDate, "Сайт расписания недоступен, показываю сохранённое расписание.") {
+			return
+		}
+		a.send(ctx, chatID, "Не удалось авторизоваться: "+err.Error())
 		return
 	}
 
@@ -227,6 +231,50 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		Text:        a.formatScheduleDay(ctx, displayDays[currentIndex], session),
 		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location, fileCount),
 	})
+}
+
+func (a *App) sendCachedSchedule(ctx context.Context, chatID int64, user *storage.User, targetDate time.Time, notice string) bool {
+	weekStart := ktk.WeekStart(targetDate, a.location)
+	weekKey := weekStart.In(a.location).Format(time.DateOnly)
+	days, err := a.loadPersistentScheduleCache(user.GroupID, weekKey, user.TeacherHash)
+	if err != nil {
+		slog.Warn("cached schedule fallback", "chat_id", chatID, "week_start", weekKey, "error", err)
+		return false
+	}
+	if len(days) == 0 {
+		return false
+	}
+
+	displayDays := days
+	if user.TeacherHash == "" {
+		displayDays = ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+	}
+	if len(displayDays) == 0 {
+		return false
+	}
+
+	currentIndex := ktk.FindDateIndex(displayDays, targetDate, a.location)
+	session := &Session{
+		Schedule:         displayDays,
+		CurrentIndex:     currentIndex,
+		WeekStart:        weekStart,
+		Subgroup:         user.Subgroup,
+		ShowAllSubgroups: user.ShowAllSubgroups,
+		TeacherHash:      user.TeacherHash,
+	}
+	a.setSession(chatID, session)
+
+	text := a.formatScheduleDay(ctx, displayDays[currentIndex], session)
+	if notice != "" {
+		text = notice + "\n\n" + text
+	}
+	fileCount := a.fileCountForDay(ctx, displayDays[currentIndex], session)
+	a.sendMessage(ctx, &telegram.SendMessageParams{
+		ChatID:      chatID,
+		Text:        text,
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, weekStart, a.location, fileCount),
+	})
+	return true
 }
 
 func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.Update) {
@@ -472,7 +520,7 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 
 	chatID := message.Chat.ID
 	session := a.getSession(chatID)
-	if session == nil || session.Client == nil || len(session.Schedule) == 0 {
+	if session == nil || len(session.Schedule) == 0 {
 		user, err := a.storage.GetUser(chatID)
 		if err != nil {
 			a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
@@ -628,6 +676,10 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 	if session.CurrentIndex < 0 || session.CurrentIndex >= len(session.Schedule) {
 		return
 	}
+	if session.Client == nil {
+		a.send(ctx, chatID, "Файлы недоступны без соединения с сайтом расписания.")
+		return
+	}
 
 	type fileInfo struct {
 		ID      int
@@ -724,6 +776,7 @@ func (a *App) downloadAndSendFile(ctx context.Context, bot *telegram.Bot, chatID
 		a.send(ctx, chatID, fmt.Sprintf("Ошибка: файл %q не удалось получить", fileName))
 		return err
 	}
+	a.cacheEndpoints(client.Endpoints())
 
 	data, err := client.DownloadFile(ctx, link)
 	if err != nil {

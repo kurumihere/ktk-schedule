@@ -23,7 +23,7 @@ var (
 		regexp.MustCompile(`Branch(?:%3[Dd]|=)([A-Za-z0-9_-]+)`),
 		regexp.MustCompile(`Branch["']?\s*[:=]\s*["']([A-Za-z0-9_-]+)["']`),
 	}
-	fileHashPattern     = regexp.MustCompile(`/v[0-9]+/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)/user-file`)
+	fileHashPattern     = regexp.MustCompile(`/v[0-9]+/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)/(?:user-file|id|open|can-view)(?:[?"'/\s]|$)`)
 	homeworkHashPattern = regexp.MustCompile(`/v[0-9]+/[A-Za-z0-9_-]+/([A-Za-z0-9_-]+)/homework/check`)
 )
 
@@ -123,10 +123,10 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		}
 	}
 
-	if next.FileHash == "" && len(candidates.fileHashes) > 0 {
+	if len(candidates.fileHashes) > 0 {
 		next.FileHash = candidates.fileHashes[0]
 	}
-	if next.HomeworkHash == "" && len(candidates.homeworkHashes) > 0 {
+	if len(candidates.homeworkHashes) > 0 {
 		next.HomeworkHash = candidates.homeworkHashes[0]
 	}
 
@@ -142,6 +142,31 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		"homework_hash", next.HomeworkHash,
 		"branch_id", next.BranchID,
 	)
+	return nil
+}
+
+func (c *Client) refreshAuxiliaryEndpoints(ctx context.Context) error {
+	candidates, err := c.discoverEndpointCandidates(ctx)
+	if err != nil {
+		return err
+	}
+
+	next := c.endpointSnapshot()
+	changed := false
+	if len(candidates.fileHashes) > 0 && next.FileHash != candidates.fileHashes[0] {
+		next.FileHash = candidates.fileHashes[0]
+		changed = true
+	}
+	if len(candidates.homeworkHashes) > 0 && next.HomeworkHash != candidates.homeworkHashes[0] {
+		next.HomeworkHash = candidates.homeworkHashes[0]
+		changed = true
+	}
+	if !changed {
+		return fmt.Errorf("auxiliary endpoints not found")
+	}
+
+	c.setEndpoints(next)
+	slog.Debug("auxiliary endpoints refreshed", "file_hash", next.FileHash, "homework_hash", next.HomeworkHash)
 	return nil
 }
 

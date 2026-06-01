@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"time"
 
 	"ktk-schedule/internal/credentials"
 
@@ -28,6 +29,14 @@ type User struct {
 	TeacherHash      string
 
 	PasswordLegacy bool
+}
+
+type CachedSchedule struct {
+	GroupID     int
+	WeekStart   string
+	TeacherHash string
+	Data        []byte
+	UpdatedAt   time.Time
 }
 
 func New(path string, credentialCipher *credentials.Cipher) (*Storage, error) {
@@ -85,6 +94,18 @@ func (s *Storage) init() error {
 
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_notify ON users (notify)`); err != nil {
 		slog.Warn("failed to create notify index", "error", err)
+	}
+	if _, err := s.db.Exec(`
+	CREATE TABLE IF NOT EXISTS schedule_cache (
+		group_id INTEGER NOT NULL,
+		week_start TEXT NOT NULL,
+		teacher_hash TEXT NOT NULL DEFAULT '',
+		data BLOB NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (group_id, week_start, teacher_hash)
+	);
+	`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -315,4 +336,46 @@ func (s *Storage) CountNotifyUsers() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE notify = 1;`).Scan(&count)
 	return count, err
+}
+
+func (s *Storage) SaveScheduleCache(entry CachedSchedule) error {
+	if len(entry.Data) == 0 {
+		return errors.New("schedule cache data is empty")
+	}
+	updatedAt := entry.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+
+	_, err := s.db.Exec(`
+	INSERT INTO schedule_cache (group_id, week_start, teacher_hash, data, updated_at)
+	VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT(group_id, week_start, teacher_hash) DO UPDATE SET
+		data = excluded.data,
+		updated_at = excluded.updated_at;
+	`, entry.GroupID, entry.WeekStart, entry.TeacherHash, entry.Data, updatedAt.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Storage) GetScheduleCache(groupID int, weekStart string, teacherHash string) (*CachedSchedule, error) {
+	row := s.db.QueryRow(`
+	SELECT group_id, week_start, teacher_hash, data, updated_at
+	FROM schedule_cache
+	WHERE group_id = ? AND week_start = ? AND teacher_hash = ?;
+	`, groupID, weekStart, teacherHash)
+
+	var entry CachedSchedule
+	var updatedAt string
+	err := row.Scan(&entry.GroupID, &entry.WeekStart, &entry.TeacherHash, &entry.Data, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	entry.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse schedule cache timestamp: %w", err)
+	}
+	return &entry, nil
 }

@@ -804,35 +804,50 @@ func extractWorkspaceID(schedulePath string) string {
 }
 
 func (c *Client) GetDocumentMetadata(ctx context.Context, docID int) (*DocumentMetadata, error) {
-	base, err := c.fileBasePath()
-	if err != nil {
-		return nil, err
+	var meta DocumentMetadata
+	fetch := func() error {
+		base, err := c.fileBasePath()
+		if err != nil {
+			return err
+		}
+
+		idURL := base + "id?ID=" + strconv.Itoa(docID)
+		return retryGet(ctx, 3, func(retryCtx context.Context) error {
+			req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, idURL, nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Accept", "application/json,*/*")
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
+			req.Header.Set("Referer", c.baseURL+"/")
+			req.Header.Set("User-Agent", "ktk-schedule/1.0")
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			body, _ := readLimitedBody(resp)
+			if resp.StatusCode != http.StatusOK {
+				return endpointError{operation: "document metadata", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
+			}
+
+			return json.Unmarshal(body, &meta)
+		})
 	}
 
-	idURL := base + "id?ID=" + strconv.Itoa(docID)
-	var meta DocumentMetadata
-	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
-		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, idURL, nil)
-		if err != nil {
-			return err
+	if c.endpointSnapshot().FileHash == "" {
+		_ = c.refreshAuxiliaryEndpoints(ctx)
+	}
+	err := fetch()
+	if shouldRefreshEndpoints(err) {
+		if refreshErr := c.refreshAuxiliaryEndpoints(ctx); refreshErr == nil {
+			meta = DocumentMetadata{}
+			err = fetch()
 		}
-		req.Header.Set("Accept", "application/json,*/*")
-		req.Header.Set("Referer", c.baseURL+"/")
-		req.Header.Set("User-Agent", "ktk-schedule/1.0")
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-
-		body, _ := readLimitedBody(resp)
-		if resp.StatusCode != http.StatusOK {
-			return endpointError{operation: "document metadata", statusCode: resp.StatusCode, status: resp.Status, body: string(body)}
-		}
-
-		return json.Unmarshal(body, &meta)
-	})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -870,35 +885,50 @@ func readDownloadBody(resp *http.Response) ([]byte, error) {
 }
 
 func (c *Client) GetFileLink(ctx context.Context, docID int) (link string, caption string, err error) {
-	base, err := c.fileBasePath()
-	if err != nil {
-		return "", "", err
+	var resp fileOpenResponse
+	fetch := func() error {
+		base, err := c.fileBasePath()
+		if err != nil {
+			return err
+		}
+
+		openURL := base + "open?ID=" + strconv.Itoa(docID)
+		return retryGet(ctx, 3, func(retryCtx context.Context) error {
+			req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, openURL, nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Accept", "application/json,*/*")
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
+			req.Header.Set("Referer", c.baseURL+"/")
+			req.Header.Set("User-Agent", "ktk-schedule/1.0")
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+			r, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer r.Body.Close()
+
+			body, _ := readLimitedBody(r)
+			if r.StatusCode != http.StatusOK {
+				return endpointError{operation: "file open", statusCode: r.StatusCode, status: r.Status, body: string(body)}
+			}
+
+			return json.Unmarshal(body, &resp)
+		})
 	}
 
-	openURL := base + "open?ID=" + strconv.Itoa(docID)
-	var resp fileOpenResponse
-	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
-		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, openURL, nil)
-		if err != nil {
-			return err
+	if c.endpointSnapshot().FileHash == "" {
+		_ = c.refreshAuxiliaryEndpoints(ctx)
+	}
+	err = fetch()
+	if shouldRefreshEndpoints(err) {
+		if refreshErr := c.refreshAuxiliaryEndpoints(ctx); refreshErr == nil {
+			resp = fileOpenResponse{}
+			err = fetch()
 		}
-		req.Header.Set("Accept", "application/json,*/*")
-		req.Header.Set("Referer", c.baseURL+"/")
-		req.Header.Set("User-Agent", "ktk-schedule/1.0")
-
-		r, err := c.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer r.Body.Close()
-
-		body, _ := readLimitedBody(r)
-		if r.StatusCode != http.StatusOK {
-			return endpointError{operation: "file open", statusCode: r.StatusCode, status: r.Status, body: string(body)}
-		}
-
-		return json.Unmarshal(body, &resp)
-	})
+	}
 	if err != nil {
 		return "", "", err
 	}
@@ -924,35 +954,50 @@ func (c *Client) homeworkCheckBasePath() (string, error) {
 }
 
 func (c *Client) GetHomeworkSubmission(ctx context.Context, sheetID int) (*HomeworkSubmission, error) {
-	base, err := c.homeworkCheckBasePath()
-	if err != nil {
-		return nil, err
+	var sub HomeworkSubmission
+	fetch := func() error {
+		base, err := c.homeworkCheckBasePath()
+		if err != nil {
+			return err
+		}
+
+		checkURL := base + "homework/check?JournalID=" + strconv.Itoa(sheetID)
+		return retryGet(ctx, 3, func(retryCtx context.Context) error {
+			req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, checkURL, nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Accept", "application/json,*/*")
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
+			req.Header.Set("Referer", c.baseURL+"/")
+			req.Header.Set("User-Agent", "ktk-schedule/1.0")
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+			r, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer r.Body.Close()
+
+			body, _ := readLimitedBody(r)
+			if r.StatusCode != http.StatusOK {
+				return endpointError{operation: "homework check", statusCode: r.StatusCode, status: r.Status, body: string(body)}
+			}
+
+			return json.Unmarshal(body, &sub)
+		})
 	}
 
-	checkURL := base + "homework/check?JournalID=" + strconv.Itoa(sheetID)
-	var sub HomeworkSubmission
-	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
-		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, checkURL, nil)
-		if err != nil {
-			return err
+	if c.endpointSnapshot().HomeworkHash == "" {
+		_ = c.refreshAuxiliaryEndpoints(ctx)
+	}
+	err := fetch()
+	if shouldRefreshEndpoints(err) {
+		if refreshErr := c.refreshAuxiliaryEndpoints(ctx); refreshErr == nil {
+			sub = HomeworkSubmission{}
+			err = fetch()
 		}
-		req.Header.Set("Accept", "application/json,*/*")
-		req.Header.Set("Referer", c.baseURL+"/")
-		req.Header.Set("User-Agent", "ktk-schedule/1.0")
-
-		r, err := c.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer r.Body.Close()
-
-		body, _ := readLimitedBody(r)
-		if r.StatusCode != http.StatusOK {
-			return endpointError{operation: "homework check", statusCode: r.StatusCode, status: r.Status, body: string(body)}
-		}
-
-		return json.Unmarshal(body, &sub)
-	})
+	}
 	if err != nil {
 		return nil, err
 	}

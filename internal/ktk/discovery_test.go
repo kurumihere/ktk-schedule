@@ -129,6 +129,95 @@ func TestCallPresetDiscoveredFromWorkspaceAssets(t *testing.T) {
 	}
 }
 
+func TestRefreshEndpointsUpdatesFileAndHomeworkHashes(t *testing.T) {
+	const weekMillis int64 = 1777240800000
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`
+				const schedule = "/v0/root/tenant/schedule";
+				const homework = "/v0/root/homework-new/homework/check";
+				const fileID = "/v0/root/file-new/id?ID=175294";
+				const fileOpen = "/v0/root/file-new/open?ID=175294";
+			`))
+		case "/old/stale-schedule":
+			http.NotFound(w, r)
+		case "/v0/root/tenant/schedule":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[{"Discipline":"Math","LectureHall":42,"Pair":1}]}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithEndpoints(Endpoints{
+		SchedulePath: "/old/stale-schedule",
+		FileHash:     "file-old",
+		HomeworkHash: "homework-old",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.GetSchedule(context.Background(), 269, weekMillis); err != nil {
+		t.Fatal(err)
+	}
+
+	endpoints := client.Endpoints()
+	if endpoints.FileHash != "file-new" {
+		t.Fatalf("expected refreshed file hash, got: %s", endpoints.FileHash)
+	}
+	if endpoints.HomeworkHash != "homework-new" {
+		t.Fatalf("expected refreshed homework hash, got: %s", endpoints.HomeworkHash)
+	}
+}
+
+func TestGetFileLinkRefreshesStaleFileHash(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`const fileOpen = "/v0/root/file-new/open?ID=175294";`))
+		case "/v0/root/file-old/open":
+			http.NotFound(w, r)
+		case "/v0/root/file-new/open":
+			if r.URL.Query().Get("ID") != "175294" {
+				http.Error(w, "bad file id", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"Caption":"plan.rar","Link":"/HEAP/file.rar"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithEndpoints(Endpoints{
+		SchedulePath: "/v0/root/tenant/schedule",
+		FileHash:     "file-old",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	link, caption, err := client.GetFileLink(context.Background(), 175294)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link != server.URL+"/HEAP/file.rar" || caption != "plan.rar" {
+		t.Fatalf("unexpected file link: link=%q caption=%q", link, caption)
+	}
+	if client.Endpoints().FileHash != "file-new" {
+		t.Fatalf("expected refreshed file hash, got: %s", client.Endpoints().FileHash)
+	}
+}
+
 func TestTeacherScheduleEndpointDoesNotRequireGrades(t *testing.T) {
 	const weekMillis int64 = 1777240800000
 
