@@ -4,6 +4,8 @@ run-name: CI
 env:
   GOLANGCI_LINT_VERSION: v2.12.2
   GOVULNCHECK_VERSION: v1.3.0
+  REGISTRY: git.kurumi.world
+  IMAGE_NAME: git.kurumi.world/kurumi/ktk-schedule
 
 on:
   push:
@@ -45,21 +47,61 @@ jobs:
 
       - run: go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/bot
 
-  deploy:
+  image:
     needs: check
+    if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Forgejo container registry
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${REGISTRY}" -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          image_sha="${IMAGE_NAME}:${GITHUB_SHA}"
+          image_latest="${IMAGE_NAME}:latest"
+
+          docker build \
+            --label "org.opencontainers.image.source=https://git.kurumi.world/kurumi/ktk-schedule" \
+            -t "$image_sha" \
+            -t "$image_latest" \
+            .
+
+          docker push "$image_sha"
+          docker push "$image_latest"
+
+  deploy:
+    needs: image
     if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
     runs-on: native
     timeout-minutes: 15
     steps:
       - name: Deploy to VDS
+        env:
+          DEPLOY_NOTIFY_BOT_TOKEN: ${{ secrets.DEPLOY_NOTIFY_BOT_TOKEN }}
+          DEPLOY_NOTIFY_CHAT_ID: ${{ secrets.DEPLOY_NOTIFY_CHAT_ID }}
         run: |
+          notify_deploy() {
+            if [ -z "${DEPLOY_NOTIFY_BOT_TOKEN:-}" ] || [ -z "${DEPLOY_NOTIFY_CHAT_ID:-}" ]; then
+              return 0
+            fi
+
+            curl -fsS -X POST "https://api.telegram.org/bot${DEPLOY_NOTIFY_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${DEPLOY_NOTIFY_CHAT_ID}" \
+              --data-urlencode "text=$1" >/dev/null || true
+          }
+
           cd /home/forgejo-runner/ktk-schedule
 
           git fetch origin master
           git reset --hard origin/master
-          export KTK_SCHEDULE_IMAGE_TAG="${GITHUB_SHA}"
+          export KTK_SCHEDULE_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}"
 
-          previous_image=$(docker inspect ktk-schedule --format '{{.Image}}' 2>/dev/null || true)
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${REGISTRY}" -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+
+          previous_image=$(docker inspect ktk-schedule --format '{{.Config.Image}}' 2>/dev/null || true)
           if [ -n "$previous_image" ]; then
             docker tag "$previous_image" ktk-schedule:rollback
             echo "rollback image tagged"
@@ -70,12 +112,14 @@ jobs:
             BACKUP_KEEP_DAYS=30 \
             scripts/backup-sqlite.sh
 
-          docker compose up --build -d
+          docker pull "$KTK_SCHEDULE_IMAGE"
+          docker compose up -d --no-build
 
           for i in $(seq 1 30); do
             health=$(docker inspect --format='{{.State.Health.Status}}' ktk-schedule 2>/dev/null)
             if [ "$health" = "healthy" ]; then
               echo "container is healthy"
+              notify_deploy "ktk-schedule deploy succeeded: ${GITHUB_SHA}"
               docker image rm ktk-schedule:rollback 2>/dev/null || true
               docker image prune -f
               docker builder prune --filter "until=24h" -f
@@ -88,13 +132,14 @@ jobs:
 
           if docker image inspect ktk-schedule:rollback >/dev/null 2>&1; then
             echo "rolling back to previous image"
-            docker tag ktk-schedule:rollback "ktk-schedule:${KTK_SCHEDULE_IMAGE_TAG}"
+            docker tag ktk-schedule:rollback "$KTK_SCHEDULE_IMAGE"
             docker compose up -d --no-build
 
             for i in $(seq 1 15); do
               health=$(docker inspect --format='{{.State.Health.Status}}' ktk-schedule 2>/dev/null)
               if [ "$health" = "healthy" ]; then
                 echo "rollback container is healthy"
+                notify_deploy "ktk-schedule deploy failed and rolled back: ${GITHUB_SHA}"
                 exit 1
               fi
               sleep 2
@@ -102,4 +147,5 @@ jobs:
             echo "rollback container failed to become healthy"
             docker compose logs --tail=50
           fi
+          notify_deploy "ktk-schedule deploy failed and rollback did not recover: ${GITHUB_SHA}"
           exit 1

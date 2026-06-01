@@ -1,7 +1,7 @@
 services:
   ktk-schedule:
     build: .
-    image: ktk-schedule:${KTK_SCHEDULE_IMAGE_TAG:-local}
+    image: ${KTK_SCHEDULE_IMAGE:-ktk-schedule:local}
     container_name: ktk-schedule
     restart: unless-stopped
     env_file:

@@ -163,7 +163,16 @@ just build       # собрать бинарник ktk-schedule
 
 Не публикуй `HEALTH_ADDR` наружу без firewall или reverse proxy с доступом только для себя. Если включить `PPROF_ENABLED=true`, `/debug/pprof` будет доступен на том же health-сервере.
 
-CI/CD деплой на VDS перед обновлением создаёт сжатый backup SQLite из Docker volume, собирает Docker image с тегом commit SHA, тегирует предыдущий image для rollback и пробует откатиться к нему, если новый контейнер не проходит healthcheck.
+CI/CD деплой на VDS перед обновлением создаёт сжатый backup SQLite из Docker volume, собирает Docker image с тегом commit SHA, пушит его в Forgejo Container Registry, тянет готовый image на VDS, тегирует предыдущий image для rollback и пробует откатиться к нему, если новый контейнер не проходит healthcheck.
+
+Для CI/CD registry и уведомлений нужны repository secrets в Forgejo:
+
+| Secret | Зачем нужен |
+| --- | --- |
+| `REGISTRY_USERNAME` | Пользователь Forgejo для `docker login` |
+| `REGISTRY_TOKEN` | Access token с правами на packages/container registry |
+| `DEPLOY_NOTIFY_BOT_TOKEN` | Telegram bot token для уведомлений о deploy |
+| `DEPLOY_NOTIFY_CHAT_ID` | Telegram chat ID, куда отправлять результат deploy |
 
 Проект использует сторонний workspace API и может требовать обновлений при изменениях API, недоступности сервиса или изменении формата данных.
 
@@ -308,6 +317,15 @@ User passwords are encrypted before being written to the database. If `CREDENTIA
 
 Do not expose `HEALTH_ADDR` publicly without a firewall or a private reverse proxy. If `PPROF_ENABLED=true`, `/debug/pprof` is served on the same health server.
 
-The CI/CD deploy on the VDS creates a compressed SQLite backup from the Docker volume before updating, builds the Docker image with the commit SHA tag, tags the previous image for rollback, and tries to roll back to it if the new container does not pass its healthcheck.
+The CI/CD deploy on the VDS creates a compressed SQLite backup from the Docker volume before updating, builds the Docker image with the commit SHA tag, pushes it to the Forgejo Container Registry, pulls the ready image on the VDS, tags the previous image for rollback, and tries to roll back to it if the new container does not pass its healthcheck.
+
+CI/CD registry publishing and deploy notifications need these Forgejo repository secrets:
+
+| Secret | Why it is needed |
+| --- | --- |
+| `REGISTRY_USERNAME` | Forgejo user for `docker login` |
+| `REGISTRY_TOKEN` | Access token with packages/container registry permissions |
+| `DEPLOY_NOTIFY_BOT_TOKEN` | Telegram bot token for deploy notifications |
+| `DEPLOY_NOTIFY_CHAT_ID` | Telegram chat ID receiving deploy results |
 
 This project uses a third-party workspace API and may require updates when the API changes, the service is unavailable, or the data format changes.
