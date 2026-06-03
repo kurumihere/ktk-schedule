@@ -70,16 +70,9 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		cfg:      cfg,
-		storage:  store,
-		location: location,
-		endpoints: ktk.Endpoints{
-			SignInPath:      cfg.KTKSignInPath,
-			SchedulePath:    cfg.KTKSchedulePath,
-			LectureHallPath: cfg.KTKLectureHallPath,
-			CallPresetPath:  cfg.KTKCallPresetPath,
-			BranchID:        cfg.KTKBranchID,
-		},
+		cfg:            cfg,
+		storage:        store,
+		location:       location,
 		rateLimiter:    newRateLimiter(),
 		loginLimiter:   newLoginRateLimiter(),
 		circuitBreaker: newCircuitBreaker(5, 30*time.Second),

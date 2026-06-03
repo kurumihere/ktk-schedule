@@ -1087,15 +1087,7 @@ func (c *Client) buildScheduleURL(path string, groupID int, teacherHash string, 
 }
 
 func (c *Client) isTeacherSchedulePath(path string) bool {
-	if c.teacherScheduleHash != "" && strings.Contains(path, c.teacherScheduleHash) {
-		return true
-	}
-	for _, hash := range fallbackScheduleHashes {
-		if strings.Contains(path, hash) {
-			return true
-		}
-	}
-	return false
+	return c.teacherScheduleHash != "" && strings.Contains(path, c.teacherScheduleHash)
 }
 
 func (c *Client) buildLectureHallURL(path, branchID string) (string, error) {

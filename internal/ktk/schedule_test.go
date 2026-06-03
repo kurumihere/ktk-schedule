@@ -1,7 +1,6 @@
 package ktk
 
 import (
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -100,36 +99,6 @@ func TestShortDayLabelFormatsDateOnly(t *testing.T) {
 	got := ShortDayLabel(ScheduleDay{Date: "2026-05-25", Today: true})
 	if got != "Пн 25.05" {
 		t.Fatalf("unexpected short day label: %q", got)
-	}
-}
-
-func TestBuildScheduleURLLeavesTeacherEmptyForTeacherSchedulePath(t *testing.T) {
-	client, err := NewClient("https://example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rawURL, err := client.buildScheduleURL("/v0/root/tenant/f88efc44efafbd74", 0, "teacher-long-hash-value", 1777240800000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	query := parsedURL.Query()
-	if query.Get("Teacher") != "" {
-		t.Fatalf("expected empty Teacher query, got %q", query.Get("Teacher"))
-	}
-	if query.Get("Group") != "" {
-		t.Fatalf("expected empty Group query, got %q", query.Get("Group"))
-	}
-	if query.Get("Week") != "1777240800000" {
-		t.Fatalf("unexpected Week query: %q", query.Get("Week"))
-	}
-	if query.Get("Year") == "" {
-		t.Fatal("expected Year query for teacher schedule")
 	}
 }
 

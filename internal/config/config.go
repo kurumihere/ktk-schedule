@@ -13,26 +13,21 @@ import (
 )
 
 type Config struct {
-	BotToken           string
-	BaseURL            string
-	DatabasePath       string
-	CredentialsSecret  string
-	KTKSignInPath      string
-	KTKSchedulePath    string
-	KTKLectureHallPath string
-	KTKBranchID        string
-	KTKDeviceName      string
-	KTKDebugSchedule   bool
-	KTKCallPresetPath  string
-	DefaultGroup       int
-	DefaultSubgroup    string
-	OwnerTelegramID    int64
-	NotifyTime         string
-	Timezone           string
-	LogLevel           slog.Level
-	HealthPort         string
-	HealthAddr         string
-	PprofEnabled       bool
+	BotToken          string
+	BaseURL           string
+	DatabasePath      string
+	CredentialsSecret string
+	KTKDeviceName     string
+	KTKDebugSchedule  bool
+	DefaultGroup      int
+	DefaultSubgroup   string
+	OwnerTelegramID   int64
+	NotifyTime        string
+	Timezone          string
+	LogLevel          slog.Level
+	HealthPort        string
+	HealthAddr        string
+	PprofEnabled      bool
 }
 
 func Load() (Config, error) {
@@ -66,26 +61,21 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		BotToken:           strings.TrimSpace(os.Getenv("BOT_TOKEN")),
-		BaseURL:            getenv("KTK_BASE_URL", "https://workspace.ktk-45.ru"),
-		DatabasePath:       getenv("DATABASE_PATH", "ktk-schedule.db"),
-		CredentialsSecret:  strings.TrimSpace(os.Getenv("CREDENTIALS_SECRET")),
-		LogLevel:           logLevel,
-		HealthPort:         healthPort,
-		HealthAddr:         healthAddr,
-		KTKSignInPath:      getenv("KTK_SIGN_IN_PATH", "/sign-in"),
-		KTKSchedulePath:    strings.TrimSpace(os.Getenv("KTK_SCHEDULE_PATH")),
-		KTKLectureHallPath: strings.TrimSpace(os.Getenv("KTK_LECTURE_HALL_PATH")),
-		KTKBranchID:        strings.TrimSpace(os.Getenv("KTK_BRANCH_ID")),
-		KTKDeviceName:      getenv("KTK_DEVICE_NAME", "ktk-schedule"),
-		KTKDebugSchedule:   debugSchedule,
-		KTKCallPresetPath:  strings.TrimSpace(os.Getenv("KTK_CALL_PRESET_PATH")),
-		DefaultGroup:       defaultGroup,
-		DefaultSubgroup:    getenv("DEFAULT_SUBGROUP", "1"),
-		OwnerTelegramID:    ownerTelegramID,
-		NotifyTime:         getenv("NOTIFY_TIME", "07:30"),
-		Timezone:           getenv("TIMEZONE", "Asia/Yekaterinburg"),
-		PprofEnabled:       pprofEnabled,
+		BotToken:          strings.TrimSpace(os.Getenv("BOT_TOKEN")),
+		BaseURL:           getenv("KTK_BASE_URL", "https://workspace.ktk-45.ru"),
+		DatabasePath:      getenv("DATABASE_PATH", "ktk-schedule.db"),
+		CredentialsSecret: strings.TrimSpace(os.Getenv("CREDENTIALS_SECRET")),
+		LogLevel:          logLevel,
+		HealthPort:        healthPort,
+		HealthAddr:        healthAddr,
+		KTKDeviceName:     getenv("KTK_DEVICE_NAME", "ktk-schedule"),
+		KTKDebugSchedule:  debugSchedule,
+		DefaultGroup:      defaultGroup,
+		DefaultSubgroup:   getenv("DEFAULT_SUBGROUP", "1"),
+		OwnerTelegramID:   ownerTelegramID,
+		NotifyTime:        getenv("NOTIFY_TIME", "07:30"),
+		Timezone:          getenv("TIMEZONE", "Asia/Yekaterinburg"),
+		PprofEnabled:      pprofEnabled,
 	}
 
 	if cfg.BotToken == "" {

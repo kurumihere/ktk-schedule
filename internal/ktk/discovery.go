@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -48,10 +47,6 @@ type endpointCandidates struct {
 	branchIDSet        map[string]struct{}
 }
 
-var fallbackScheduleHashes = []string{
-	"f88efc44efafbd74",
-}
-
 func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis int64, teacherHash ...string) error {
 	candidates, err := c.discoverEndpointCandidates(ctx)
 	if err != nil {
@@ -71,24 +66,6 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	}
 
 	bestPath, groupPath, foundGrades := c.pickScheduleEndpoints(ctx, candidates.schedulePaths, groupID, tHash, weekMillis, !isTeacher)
-	if bestPath == "" {
-		fallbackBase := next.CallPresetPath
-		if fallbackBase == "" && len(candidates.schedulePaths) > 0 {
-			fallbackBase = candidates.schedulePaths[0]
-		}
-		if base := trimLastSegment(fallbackBase); base != "" {
-			for _, hash := range fallbackScheduleHashes {
-				fallbackPath := path.Join(base, hash)
-				if fp, gp, fg := c.pickScheduleEndpoints(ctx, []string{fallbackPath}, groupID, tHash, weekMillis, !isTeacher); fp != "" {
-					bestPath = fp
-					groupPath = gp
-					foundGrades = fg
-					slog.Debug("fallback schedule endpoint", "path", fp, "has_grades", fg)
-					break
-				}
-			}
-		}
-	}
 
 	if bestPath == "" {
 		return fmt.Errorf("schedule endpoint not found")
