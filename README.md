@@ -3,15 +3,22 @@
 <div align="center">
 
 <p>
-  <a href="#russian">🇷🇺 Русский</a> · <a href="#english">🇬🇧 English</a>
+  <a href="#russian">Русский</a> · <a href="#english">English</a>
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Go-1.26.4-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26.4">
-  <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Bot">
-  <img src="https://img.shields.io/badge/SQLite-WAL-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite WAL">
-  <img src="https://img.shields.io/badge/Docker-ready-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/license-BSD--3--Clause-6f42c1?style=for-the-badge" alt="BSD-3-Clause">
+  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.26.4-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.26.4"></a>
+  <a href="https://core.telegram.org/bots/api"><img src="https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot API"></a>
+  <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-WAL_mode-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite WAL"></a>
+  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
+</p>
+
+<p>
+  <img src="https://img.shields.io/badge/platform-linux-lightgrey?style=flat-square&logo=linux&logoColor=white" alt="Linux">
+  <img src="https://img.shields.io/badge/CI-Forgejo-FF5733?style=flat-square&logo=gitea&logoColor=white" alt="Forgejo CI">
+  <img src="https://img.shields.io/badge/security-AES--GCM-green?style=flat-square&logo=letsencrypt&logoColor=white" alt="AES-GCM">
+  <img src="https://img.shields.io/badge/PRs-welcome-0075ca?style=flat-square" alt="PRs welcome">
 </p>
 
 </div>
