@@ -270,8 +270,7 @@ func (a *App) formatScheduleDay(ctx context.Context, day ktk.ScheduleDay, sessio
 	}
 	for _, fileID := range studentFiles {
 		if _, ok := fileNames[fileID]; !ok {
-			meta, err := session.Client.GetDocumentMetadata(ctx, fileID)
-			if err == nil {
+			if meta, err := a.documentMetadata(ctx, session, fileID); err == nil {
 				fileNames[meta.ID] = meta.Caption
 			}
 		}
@@ -313,6 +312,7 @@ func (a *App) fetchFileNames(ctx context.Context, session *Session, day ktk.Sche
 	type result struct {
 		id   int
 		name string
+		icon string
 	}
 
 	results := make(chan result, len(docIDs))
@@ -320,6 +320,11 @@ func (a *App) fetchFileNames(ctx context.Context, session *Session, day ktk.Sche
 	var wg sync.WaitGroup
 
 	for _, id := range docIDs {
+		if meta, ok := session.cachedDocumentMetadata(id); ok {
+			results <- result{meta.ID, meta.Caption, meta.Icon}
+			continue
+		}
+
 		wg.Add(1)
 		go func(docID int) {
 			defer wg.Done()
@@ -330,7 +335,7 @@ func (a *App) fetchFileNames(ctx context.Context, session *Session, day ktk.Sche
 				slog.Debug("fetch file name", "doc_id", docID, "error", err)
 				return
 			}
-			results <- result{meta.ID, meta.Caption}
+			results <- result{meta.ID, meta.Caption, meta.Icon}
 		}(id)
 	}
 
@@ -342,8 +347,25 @@ func (a *App) fetchFileNames(ctx context.Context, session *Session, day ktk.Sche
 	names := make(map[int]string, len(docIDs))
 	for r := range results {
 		names[r.id] = r.name
+		session.cacheDocumentMetadata(ktk.DocumentMetadata{ID: r.id, Caption: r.name, Icon: r.icon})
 	}
 	return names
+}
+
+func (a *App) documentMetadata(ctx context.Context, session *Session, docID int) (ktk.DocumentMetadata, error) {
+	if session == nil || session.Client == nil {
+		return ktk.DocumentMetadata{}, errors.New("schedule client is unavailable")
+	}
+	if meta, ok := session.cachedDocumentMetadata(docID); ok {
+		return meta, nil
+	}
+
+	meta, err := session.Client.GetDocumentMetadata(ctx, docID)
+	if err != nil {
+		return ktk.DocumentMetadata{}, err
+	}
+	session.cacheDocumentMetadata(*meta)
+	return *meta, nil
 }
 
 func (a *App) fileCountForDay(ctx context.Context, day ktk.ScheduleDay, session *Session) int {

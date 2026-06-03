@@ -255,6 +255,11 @@ type PairTiming struct {
 	Duration  int
 }
 
+type pairTimings struct {
+	values []PairTiming
+	valid  []bool
+}
+
 type FormatOptions struct {
 	ShowSubgroupLabels bool
 	CallPresets        CallPresetMap
@@ -1432,6 +1437,44 @@ func CalculatePairTiming(preset CallPreset, pairNumber int) (PairTiming, bool) {
 	}, true
 }
 
+func calculatePairTimings(preset CallPreset, maxPair int) pairTimings {
+	if preset.ID == 0 || maxPair <= 0 {
+		return pairTimings{}
+	}
+
+	limit := min(maxPair, len(preset.CallSet))
+	if limit <= 0 {
+		return pairTimings{}
+	}
+
+	values := make([]PairTiming, limit+1)
+	valid := make([]bool, limit+1)
+	hour, minute := parseBeginTime(preset.Begin)
+	totalMin := hour*60 + minute
+
+	for pairNumber := 1; pairNumber <= limit; pairNumber++ {
+		item := preset.CallSet[pairNumber-1]
+		values[pairNumber] = PairTiming{
+			StartHour: totalMin / 60,
+			StartMin:  totalMin % 60,
+			EndHour:   (totalMin + item.Duration) / 60,
+			EndMin:    (totalMin + item.Duration) % 60,
+			Duration:  item.Duration,
+		}
+		valid[pairNumber] = true
+		totalMin += item.Break + item.Duration
+	}
+
+	return pairTimings{values: values, valid: valid}
+}
+
+func (t pairTimings) get(pairNumber int) (PairTiming, bool) {
+	if pairNumber <= 0 || pairNumber >= len(t.valid) || !t.valid[pairNumber] {
+		return PairTiming{}, false
+	}
+	return t.values[pairNumber], true
+}
+
 func parseBeginTime(value string) (int, int) {
 	parts := strings.SplitN(value, "T", 2)
 	if len(parts) != 2 {
@@ -1506,27 +1549,29 @@ func FormatScheduleDayWithOptions(day ScheduleDay, halls LectureHallMap, options
 		return b.String()
 	}
 
+	timings := calculatePairTimings(preset, lastSubjectPair)
+
 	for p := 1; p <= lastSubjectPair; p++ {
 		if subjects, ok := subjectsByPair[p]; ok {
 			for _, s := range subjects {
-				writeSubjectHeader(&b, s, preset, options)
-				writeTiming(&b, s, preset, day.Today, now)
+				writeSubjectHeader(&b, s, preset, timings, options)
+				writeTiming(&b, s, preset, timings, day.Today, now)
 				writeSubjectBody(&b, s, halls, options)
 			}
 		} else {
-			writeEmptyPair(&b, p, preset)
+			writeEmptyPair(&b, p, preset, timings)
 		}
 	}
 
 	return strings.TrimSpace(b.String())
 }
 
-func writeSubjectHeader(b *strings.Builder, subject ScheduleItem, preset CallPreset, options FormatOptions) {
+func writeSubjectHeader(b *strings.Builder, subject ScheduleItem, preset CallPreset, timings pairTimings, options FormatOptions) {
 	b.WriteString(strconv.Itoa(subject.Pair))
 	b.WriteString(" пара")
 
 	if preset.ID != 0 {
-		if timing, ok := CalculatePairTiming(preset, subject.Pair); ok {
+		if timing, ok := timings.get(subject.Pair); ok {
 			b.WriteString(" [")
 			b.WriteString(strconv.Itoa(timing.Duration))
 			b.WriteString(" мин]")
@@ -1546,12 +1591,12 @@ func writeSubjectHeader(b *strings.Builder, subject ScheduleItem, preset CallPre
 	b.WriteByte('\n')
 }
 
-func writeEmptyPair(b *strings.Builder, pairNumber int, preset CallPreset) {
+func writeEmptyPair(b *strings.Builder, pairNumber int, preset CallPreset, timings pairTimings) {
 	b.WriteString(strconv.Itoa(pairNumber))
 	b.WriteString(" пара")
 
 	if preset.ID != 0 {
-		if timing, ok := CalculatePairTiming(preset, pairNumber); ok {
+		if timing, ok := timings.get(pairNumber); ok {
 			b.WriteString(" [")
 			b.WriteString(strconv.Itoa(timing.Duration))
 			b.WriteString(" мин]")
@@ -1561,7 +1606,7 @@ func writeEmptyPair(b *strings.Builder, pairNumber int, preset CallPreset) {
 	b.WriteString(" — пусто\n")
 
 	if preset.ID != 0 {
-		if timing, ok := CalculatePairTiming(preset, pairNumber); ok {
+		if timing, ok := timings.get(pairNumber); ok {
 			b.WriteString("⏰ ")
 			writeTwoDigits(b, timing.StartHour)
 			b.WriteByte(':')
@@ -1577,12 +1622,12 @@ func writeEmptyPair(b *strings.Builder, pairNumber int, preset CallPreset) {
 	b.WriteByte('\n')
 }
 
-func writeTiming(b *strings.Builder, subject ScheduleItem, preset CallPreset, isToday bool, now time.Time) {
+func writeTiming(b *strings.Builder, subject ScheduleItem, preset CallPreset, timings pairTimings, isToday bool, now time.Time) {
 	if preset.ID == 0 {
 		return
 	}
 
-	timing, ok := CalculatePairTiming(preset, subject.Pair)
+	timing, ok := timings.get(subject.Pair)
 	if !ok {
 		return
 	}

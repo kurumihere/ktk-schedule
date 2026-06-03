@@ -300,8 +300,9 @@ func (c *Client) discoveredAccountInfoPaths(ctx context.Context) ([]string, erro
 }
 
 func appendInfoPaths(paths []string, values ...string) []string {
+	var seen map[string]struct{}
 	for _, value := range values {
-		paths = appendUnique(paths, value)
+		paths, seen = appendUniqueSeen(paths, seen, value)
 	}
 	return paths
 }

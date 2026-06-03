@@ -696,7 +696,7 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 				continue
 			}
 			seen[docID] = true
-			meta, err := session.Client.GetDocumentMetadata(ctx, docID)
+			meta, err := a.documentMetadata(ctx, session, docID)
 			if err != nil {
 				slog.Error("get file metadata", "doc_id", docID, "error", err)
 				infos = append(infos, fileInfo{ID: docID, Caption: fmt.Sprintf("file_%d", docID)})
@@ -708,7 +708,7 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 		if s.ExtraData.Sheet != 0 {
 			if fileID, ok := session.getHomeworkFileID(ctx, s.ExtraData.Sheet); ok && fileID != 0 && !seen[fileID] {
 				seen[fileID] = true
-				meta, err := session.Client.GetDocumentMetadata(ctx, fileID)
+				meta, err := a.documentMetadata(ctx, session, fileID)
 				if err != nil {
 					infos = append(infos, fileInfo{ID: fileID, Caption: fmt.Sprintf("file_%d", fileID)})
 				} else {
@@ -722,6 +722,7 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 		a.send(ctx, chatID, "Нет файлов для скачивания.")
 		return
 	}
+	a.setSession(chatID, session)
 
 	var list strings.Builder
 	list.WriteString("📎 Файлы:")

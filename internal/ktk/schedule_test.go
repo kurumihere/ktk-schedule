@@ -305,6 +305,37 @@ func TestFormatScheduleDayDoesNotRenderEmptyMaxPairDay(t *testing.T) {
 	}
 }
 
+func TestCalculatePairTimingsMatchesSinglePairCalculation(t *testing.T) {
+	preset := CallPreset{
+		ID:    1,
+		Begin: "0001-01-01T08:30:00Z",
+		CallSet: []CallSetItem{
+			{PairNumber: 1, Duration: 45, Break: 10},
+			{PairNumber: 2, Duration: 90, Break: 20},
+			{PairNumber: 3, Duration: 45, Break: 0},
+		},
+	}
+
+	timings := calculatePairTimings(preset, 8)
+	for pairNumber := 1; pairNumber <= len(preset.CallSet); pairNumber++ {
+		want, ok := CalculatePairTiming(preset, pairNumber)
+		if !ok {
+			t.Fatalf("expected pair %d timing", pairNumber)
+		}
+		got, ok := timings.get(pairNumber)
+		if !ok {
+			t.Fatalf("expected cached pair %d timing", pairNumber)
+		}
+		if got != want {
+			t.Fatalf("pair %d timing = %#v, want %#v", pairNumber, got, want)
+		}
+	}
+
+	if _, ok := timings.get(4); ok {
+		t.Fatal("pair beyond call set must not have timing")
+	}
+}
+
 func TestPairTypeName(t *testing.T) {
 	pairTypes := PairTypeMap{
 		1:  {ID: 1, Name: "Лекция", BillingType: "Theoretical"},

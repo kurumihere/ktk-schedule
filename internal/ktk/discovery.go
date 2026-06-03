@@ -36,6 +36,15 @@ type endpointCandidates struct {
 	fileHashes       []string
 	homeworkHashes   []string
 	branchIDs        []string
+
+	infoPathSet        map[string]struct{}
+	schedulePathSet    map[string]struct{}
+	lectureHallPathSet map[string]struct{}
+	callPresetPathSet  map[string]struct{}
+	pairTypePathSet    map[string]struct{}
+	fileHashSet        map[string]struct{}
+	homeworkHashSet    map[string]struct{}
+	branchIDSet        map[string]struct{}
 }
 
 var fallbackScheduleHashes = []string{
@@ -368,40 +377,40 @@ func (c *Client) getJSON(ctx context.Context, requestURL string) ([]byte, int, s
 func (c *endpointCandidates) addFromText(text string) {
 	for _, match := range apiPathPattern.FindAllString(text, -1) {
 		if strings.HasSuffix(match, "/info") {
-			c.infoPaths = appendUnique(c.infoPaths, match)
+			c.infoPaths, c.infoPathSet = appendUniqueSeen(c.infoPaths, c.infoPathSet, match)
 			continue
 		}
 		if strings.Contains(match, "/lecture-hall") {
-			c.lectureHallPaths = appendUnique(c.lectureHallPaths, match)
+			c.lectureHallPaths, c.lectureHallPathSet = appendUniqueSeen(c.lectureHallPaths, c.lectureHallPathSet, match)
 			continue
 		}
 		if strings.Contains(match, "/call-preset") {
-			c.callPresetPaths = appendUnique(c.callPresetPaths, match)
+			c.callPresetPaths, c.callPresetPathSet = appendUniqueSeen(c.callPresetPaths, c.callPresetPathSet, match)
 			continue
 		}
 		if strings.Contains(match, "/pair-type") {
-			c.pairTypePaths = appendUnique(c.pairTypePaths, match)
+			c.pairTypePaths, c.pairTypePathSet = appendUniqueSeen(c.pairTypePaths, c.pairTypePathSet, match)
 			continue
 		}
-		c.schedulePaths = appendUnique(c.schedulePaths, match)
+		c.schedulePaths, c.schedulePathSet = appendUniqueSeen(c.schedulePaths, c.schedulePathSet, match)
 	}
 
 	for _, match := range fileHashPattern.FindAllStringSubmatch(text, -1) {
 		if len(match) == 2 {
-			c.fileHashes = appendUnique(c.fileHashes, match[1])
+			c.fileHashes, c.fileHashSet = appendUniqueSeen(c.fileHashes, c.fileHashSet, match[1])
 		}
 	}
 
 	for _, match := range homeworkHashPattern.FindAllStringSubmatch(text, -1) {
 		if len(match) == 2 {
-			c.homeworkHashes = appendUnique(c.homeworkHashes, match[1])
+			c.homeworkHashes, c.homeworkHashSet = appendUniqueSeen(c.homeworkHashes, c.homeworkHashSet, match[1])
 		}
 	}
 
 	for _, pattern := range branchPatterns {
 		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
 			if len(match) == 2 {
-				c.branchIDs = appendUnique(c.branchIDs, match[1])
+				c.branchIDs, c.branchIDSet = appendUniqueSeen(c.branchIDs, c.branchIDSet, match[1])
 			}
 		}
 	}
@@ -430,15 +439,16 @@ func trimLastSegment(p string) string {
 
 func extractScriptURLs(text, base string) []string {
 	var result []string
+	var seen map[string]struct{}
 
 	for _, match := range scriptSrcPattern.FindAllStringSubmatch(text, -1) {
 		if len(match) == 2 {
-			result = appendUnique(result, resolveReference(base, match[1]))
+			result, seen = appendUniqueSeen(result, seen, resolveReference(base, match[1]))
 		}
 	}
 	for _, match := range jsPathPattern.FindAllStringSubmatch(text, -1) {
 		if len(match) == 2 {
-			result = appendUnique(result, resolveReference(base, match[1]))
+			result, seen = appendUniqueSeen(result, seen, resolveReference(base, match[1]))
 		}
 	}
 
@@ -470,14 +480,26 @@ func sameOrigin(base, target string) bool {
 }
 
 func appendUnique(values []string, value string) []string {
+	values, _ = appendUniqueSeen(values, nil, value)
+	return values
+}
+
+func appendUniqueSeen(values []string, seen map[string]struct{}, value string) ([]string, map[string]struct{}) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return values
+		return values, seen
 	}
-	for _, existing := range values {
-		if existing == value {
-			return values
+
+	if seen == nil {
+		seen = make(map[string]struct{}, len(values)+1)
+		for _, existing := range values {
+			seen[existing] = struct{}{}
 		}
 	}
-	return append(values, value)
+	if _, ok := seen[value]; ok {
+		return values, seen
+	}
+
+	seen[value] = struct{}{}
+	return append(values, value), seen
 }

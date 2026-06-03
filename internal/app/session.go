@@ -17,6 +17,7 @@ type Session struct {
 	AbsenceMarks     []ktk.AbsenceMark
 	PairTypes        ktk.PairTypeMap
 	homeworkCache    map[int]int
+	documentCache    map[int]ktk.DocumentMetadata
 	CurrentIndex     int
 	WeekStart        time.Time
 	WeekSelectOffset int
@@ -83,6 +84,13 @@ func (s *Session) copy() *Session {
 		}
 	}
 
+	if s.documentCache != nil {
+		c.documentCache = make(map[int]ktk.DocumentMetadata, len(s.documentCache))
+		for k, v := range s.documentCache {
+			c.documentCache[k] = v
+		}
+	}
+
 	return c
 }
 
@@ -112,6 +120,24 @@ func (s *Session) getHomeworkFileID(ctx context.Context, sheet int) (fileID int,
 	}
 	s.homeworkCache[sheet] = 0
 	return 0, true
+}
+
+func (s *Session) cachedDocumentMetadata(docID int) (ktk.DocumentMetadata, bool) {
+	if s.documentCache == nil {
+		return ktk.DocumentMetadata{}, false
+	}
+	meta, ok := s.documentCache[docID]
+	return meta, ok
+}
+
+func (s *Session) cacheDocumentMetadata(meta ktk.DocumentMetadata) {
+	if meta.ID == 0 {
+		return
+	}
+	if s.documentCache == nil {
+		s.documentCache = make(map[int]ktk.DocumentMetadata)
+	}
+	s.documentCache[meta.ID] = meta
 }
 
 func (s *Session) lastAccess() time.Time {

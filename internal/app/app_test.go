@@ -138,6 +138,9 @@ func TestSessionCopy(t *testing.T) {
 		AbsenceMarks: []ktk.AbsenceMark{
 			{Digit: 4, Caption: "sick"},
 		},
+		documentCache: map[int]ktk.DocumentMetadata{
+			10: {ID: 10, Caption: "task.pdf", Icon: "pdf"},
+		},
 		WeekStart: ktk.WeekStart(time.Now(), loc),
 	}
 
@@ -157,8 +160,12 @@ func TestSessionCopy(t *testing.T) {
 
 	cp.Subgroup = "right"
 	cp.CurrentIndex = 0
+	cp.documentCache[10] = ktk.DocumentMetadata{ID: 10, Caption: "changed.pdf", Icon: "pdf"}
 	if orig.Subgroup == cp.Subgroup {
 		t.Fatal("modifying copy must not affect original scalar fields")
+	}
+	if orig.documentCache[10].Caption == cp.documentCache[10].Caption {
+		t.Fatal("modifying copy must not affect original document cache")
 	}
 }
 
