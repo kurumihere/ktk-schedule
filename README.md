@@ -89,9 +89,6 @@ docker compose logs -f
 | `/schedule` | Расписание на текущую неделю |
 | `/schedule 01.09` | Расписание на дату (текущий учебный год) |
 | `/schedule 2026-09-01` | Расписание на конкретную дату |
-| `/group` | Выбрать группу |
-| `/subgroup` | Выбрать подгруппу |
-| `/subgroups_on` / `/subgroups_off` | Показать обе подгруппы или только свою |
 | `/notify_on` / `/notify_off` | Включить или выключить утренние уведомления |
 | `/announce текст` | Объявление от владельца всем пользователям |
 | `reply /announce` | Разослать сообщение из ответа |
@@ -281,9 +278,6 @@ docker compose logs -f
 | `/schedule` | Open the current week schedule |
 | `/schedule 01.09` | Schedule for a date in the current academic year |
 | `/schedule 2026-09-01` | Schedule for an exact date |
-| `/group` | Select a group |
-| `/subgroup` | Select a subgroup |
-| `/subgroups_on` / `/subgroups_off` | Show both subgroups or only the selected one |
 | `/notify_on` / `/notify_off` | Enable or disable morning notifications |
 | `/announce text` | Send an owner announcement to all users |
 | `reply /announce` | Broadcast the replied-to message |
@@ -382,23 +376,6 @@ just check       # full local verification before handoff
 just ci-check    # CI-level verification
 just backup      # backup SQLite from Docker volume
 just clean       # remove binary, database, and logs
-```
-
-Recommended before any release-quality change:
-
-```bash
-go fmt ./...
-go mod tidy -diff
-go vet ./...
-golangci-lint run
-go test -count=1 ./...
-go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/bot
-```
-
-Run the race detector for changes touching sessions, caches, goroutines, rate limiter, notifier, or circuit breaker:
-
-```bash
-go test -count=1 -race ./...
 ```
 
 ### Operations
