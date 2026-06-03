@@ -45,11 +45,12 @@ docker-logs:
     docker compose logs -f
 
 env-check:
-    @if [ -f .env ]; then \
-      for key in BOT_TOKEN CREDENTIALS_SECRET; do \
-        value=$$(grep -E "^$$key=" .env | tail -n 1 | cut -d= -f2-); \
-        [ -n "$$value" ] || { echo "error: $$key is empty or missing in .env"; exit 1; }; \
-      done; \
+    #!/usr/bin/env bash
+    if [ -f .env ]; then
+      for key in BOT_TOKEN CREDENTIALS_SECRET; do
+        value=$(grep -E "^${key}=" .env | tail -n 1 | cut -d= -f2-)
+        [ -n "$value" ] || { echo "error: $key is empty or missing in .env"; exit 1; }
+      done
     fi
 
 check: env-check tidy-check fmt vet lint test build
