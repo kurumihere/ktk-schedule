@@ -141,6 +141,9 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 	}
 
 	teacherHash := client.TeacherHash()
+	if detectedGroupID := client.GroupID(); detectedGroupID > 0 {
+		groupID = detectedGroupID
+	}
 	weekMillis := ktk.WeekStartMillis(time.Now(), a.location)
 	if hasScheduleEndpoint(endpoints) && teacherHash == "" {
 		return client, nil

@@ -20,6 +20,7 @@ type Client struct {
 	device              string
 	debugSchedule       bool
 	subgroup            string
+	groupID             int
 	teacherHash         string
 	teacherScheduleHash string
 	httpClient          *http.Client
@@ -38,6 +39,7 @@ type signInRequest struct {
 
 type accountInfo struct {
 	Hash      string `json:"Hash"`
+	Group     any    `json:"Group"`
 	IsStudent *bool  `json:"IsStudent"`
 }
 
@@ -136,8 +138,16 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 		slog.Debug("subgroup detected", "subgroup", subgroup)
 		c.subgroup = subgroup
 	}
+	if groupID := extractPersonalGroupID(body); groupID > 0 {
+		slog.Debug("group detected", "group_id", groupID)
+		c.groupID = groupID
+	}
 
-	if info, _, err := c.GetAccountInfo(ctx); err == nil && info.IsStudent != nil {
+	if info, infoBody, err := c.GetAccountInfo(ctx); err == nil && info.IsStudent != nil {
+		if groupID := accountInfoGroupID(info, infoBody); groupID > 0 {
+			slog.Debug("account info detected group", "group_id", groupID)
+			c.groupID = groupID
+		}
 		if *info.IsStudent {
 			slog.Debug("account info detected student")
 			c.teacherHash = ""
@@ -311,6 +321,10 @@ func (c *Client) Subgroup() string {
 	return c.subgroup
 }
 
+func (c *Client) GroupID() int {
+	return c.groupID
+}
+
 func (c *Client) TeacherHash() string {
 	return c.teacherHash
 }
@@ -384,6 +398,65 @@ func findPersonalSubgroup(value any) string {
 		}
 	}
 	return ""
+}
+
+func extractPersonalGroupID(body []byte) int {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return 0
+	}
+	return findPersonalGroupID(value)
+}
+
+func findPersonalGroupID(value any) int {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, raw := range typed {
+			normalized := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+			if normalized == "group" || normalized == "groupid" {
+				if groupID := groupIDFromValue(raw); groupID > 0 {
+					return groupID
+				}
+			}
+		}
+		for _, raw := range typed {
+			if groupID := findPersonalGroupID(raw); groupID > 0 {
+				return groupID
+			}
+		}
+	case []any:
+		for _, raw := range typed {
+			if groupID := findPersonalGroupID(raw); groupID > 0 {
+				return groupID
+			}
+		}
+	}
+	return 0
+}
+
+func accountInfoGroupID(info accountInfo, body []byte) int {
+	if groupID := groupIDFromValue(info.Group); groupID > 0 {
+		return groupID
+	}
+	return extractPersonalGroupID(body)
+}
+
+func groupIDFromValue(value any) int {
+	switch typed := value.(type) {
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil && n > 0 {
+			return n
+		}
+	case float64:
+		if typed > 0 && typed == float64(int(typed)) {
+			return int(typed)
+		}
+	case json.Number:
+		if n, err := typed.Int64(); err == nil && n > 0 {
+			return int(n)
+		}
+	}
+	return 0
 }
 
 func subgroupFromValue(value any) string {

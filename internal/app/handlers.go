@@ -112,6 +112,9 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 		a.send(ctx, chatID, "Не удалось войти. Проверь логин и пароль.")
 		return
 	}
+	if detectedGroupID := client.GroupID(); detectedGroupID > 0 {
+		user.GroupID = detectedGroupID
+	}
 	user.Subgroup = clientSubgroupOrDefault(client, a.cfg.DefaultSubgroup)
 	user.TeacherHash = client.TeacherHash()
 

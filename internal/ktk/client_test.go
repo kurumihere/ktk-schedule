@@ -54,7 +54,7 @@ func TestSignInAccountInfoStudentOverridesHashHeuristic(t *testing.T) {
 			_, _ = w.Write([]byte(`const info = "/v0/workspace/infohash123/info";`))
 		case "/v0/workspace/infohash123/info":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"IsStudent":true}`))
+			_, _ = w.Write([]byte(`{"Group":"269","IsStudent":true}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -71,6 +71,9 @@ func TestSignInAccountInfoStudentOverridesHashHeuristic(t *testing.T) {
 
 	if client.TeacherHash() != "" {
 		t.Fatalf("student account must not be detected as teacher, got hash %q", client.TeacherHash())
+	}
+	if client.GroupID() != 269 {
+		t.Fatalf("unexpected detected group id: %d", client.GroupID())
 	}
 }
 
@@ -171,5 +174,23 @@ func TestSignInSkipsBrokenAccountInfoCandidate(t *testing.T) {
 	}
 	if client.Endpoints().InfoPath != "/v0/workspace/good/info" {
 		t.Fatalf("unexpected info path: %s", client.Endpoints().InfoPath)
+	}
+}
+
+func TestExtractPersonalGroupID(t *testing.T) {
+	tests := []struct {
+		body []byte
+		want int
+	}{
+		{[]byte(`{"Group":"269"}`), 269},
+		{[]byte(`{"GroupID":268}`), 268},
+		{[]byte(`{"Profile":{"group_id":"270"}}`), 270},
+		{[]byte(`{"Group":"bad"}`), 0},
+	}
+
+	for _, tt := range tests {
+		if got := extractPersonalGroupID(tt.body); got != tt.want {
+			t.Fatalf("extractPersonalGroupID(%s) = %d, want %d", tt.body, got, tt.want)
+		}
 	}
 }
