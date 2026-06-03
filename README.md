@@ -7,11 +7,11 @@
 </p>
 
 <p>
-  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.26.4-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.26.4"></a>
+  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26.4-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.26.4"></a>
   <a href="https://core.telegram.org/bots/api"><img src="https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot API"></a>
   <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-WAL_mode-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite WAL"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
+  <a href="https://git.kurumi.world/kurumi/ktk-schedule/src/branch/master/LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
 </p>
 
 <p>
@@ -27,7 +27,7 @@
 
 <a name="russian"></a>
 
-## 🇷🇺 Русский
+## Русский
 
 Telegram-бот для workspace КТК. Авторизует пользователей, хранит учётные данные в зашифрованной SQLite, показывает расписание прямо в Telegram и отправляет утренние уведомления.
 
@@ -176,8 +176,6 @@ just setup-lint  # установить golangci-lint
 just setup-vuln  # установить govulncheck
 ```
 
-Основные команды:
-
 ```bash
 just dev         # hot reload (air)
 just run         # обычный запуск
@@ -186,27 +184,10 @@ just race        # тесты с -race
 just lint        # golangci-lint run
 just vuln        # govulncheck ./...
 just build       # собрать ./ktk-schedule
-just check       # полная локальная проверка перед handoff
+just check       # полная локальная проверка
 just ci-check    # проверка уровня CI
 just backup      # backup SQLite из Docker volume
 just clean       # удалить бинарник, БД и логи
-```
-
-Рекомендуется перед любым готовым изменением:
-
-```bash
-go fmt ./...
-go mod tidy -diff
-go vet ./...
-golangci-lint run
-go test -count=1 ./...
-go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/bot
-```
-
-Для изменений в сессиях, кешах, горутинах, rate limiter, notifier или circuit breaker — обязательно с `-race`:
-
-```bash
-go test -count=1 -race ./...
 ```
 
 ### Эксплуатация
@@ -230,22 +211,6 @@ Health-сервер и pprof не должны быть открыты нару�
 
 Forgejo CI/CD выполняет проверки качества, собирает Docker image, публикует в registry и деплоит на VDS. Перед деплоем создаётся backup SQLite; если новый контейнер не проходит healthcheck — pipeline выполняет rollback на предыдущий image.
 
-Repository secrets для деплоя:
-
-| Secret | Назначение |
-|---|---|
-| `REGISTRY_TOKEN` | Access token для container registry |
-| `DEPLOY_NOTIFY_BOT_TOKEN` | Telegram bot token для уведомлений о деплое |
-| `DEPLOY_NOTIFY_CHAT_ID` | Chat ID для результатов деплоя |
-
-### Безопасность
-
-- Не коммитить `.env`, SQLite-базы, логи, backup-архивы и бинарник.
-- Не логировать `BOT_TOKEN`, workspace-учётные данные, encrypted payloads и raw Telegram input.
-- После изменения `CREDENTIALS_SECRET` всем пользователям потребуется повторный вход.
-- Telegram send/copy операции должны проходить через retry-обёртки.
-- Callback payloads должны укладываться в лимит Telegram — 64 байта.
-
 ### Лицензия
 
 [BSD-3-Clause](./LICENSE)
@@ -254,7 +219,7 @@ Repository secrets для деплоя:
 
 <a name="english"></a>
 
-## 🇬🇧 English
+## English
 
 Telegram bot for the KTK workspace. Authenticates users, stores credentials in encrypted SQLite, renders schedules directly in Telegram, and sends morning notifications.
 
@@ -456,22 +421,6 @@ Health endpoints:
 Do not expose the health server or pprof publicly without access control.
 
 Forgejo CI/CD runs quality checks, builds the Docker image, publishes it to the registry, and deploys to the VDS. A compressed SQLite backup is created before deployment; if the new container fails health checks, the pipeline attempts a rollback to the previous image.
-
-Repository secrets required for deployment:
-
-| Secret | Purpose |
-|---|---|
-| `REGISTRY_TOKEN` | Access token for the container registry |
-| `DEPLOY_NOTIFY_BOT_TOKEN` | Telegram bot token for deployment notifications |
-| `DEPLOY_NOTIFY_CHAT_ID` | Chat ID for deployment results |
-
-### Security
-
-- Do not commit `.env`, SQLite databases, logs, backup archives, or the binary.
-- Do not log `BOT_TOKEN`, workspace credentials, encrypted payloads, or raw Telegram input.
-- Changing `CREDENTIALS_SECRET` requires all users to sign in again.
-- Keep Telegram send and copy operations behind retry wrappers.
-- Keep callback payloads within Telegram's 64-byte limit.
 
 ### License
 
