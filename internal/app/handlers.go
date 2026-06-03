@@ -236,7 +236,8 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 func (a *App) sendCachedSchedule(ctx context.Context, chatID int64, user *storage.User, targetDate time.Time, notice string) bool {
 	weekStart := ktk.WeekStart(targetDate, a.location)
 	weekKey := weekStart.In(a.location).Format(time.DateOnly)
-	days, err := a.loadPersistentScheduleCache(user.GroupID, weekKey, user.TeacherHash)
+	cacheTeacherHash := scheduleCacheTeacherHash(user.TeacherHash, user.TeacherHash == "" && a.shouldUseGroupSchedule(user))
+	days, err := a.loadPersistentScheduleCache(user.GroupID, weekKey, cacheTeacherHash)
 	if err != nil {
 		slog.Warn("cached schedule fallback", "chat_id", chatID, "week_start", weekKey, "error", err)
 		return false

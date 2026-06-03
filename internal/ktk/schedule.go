@@ -347,6 +347,44 @@ func (c *Client) GetSchedule(ctx context.Context, groupID int, weekMillis int64)
 	return c.getSchedule(ctx, c.endpointSnapshot().SchedulePath, groupID, "", weekMillis)
 }
 
+func (c *Client) GetGroupSchedule(ctx context.Context, groupID int, weekMillis int64) ([]ScheduleDay, error) {
+	endpoint := c.endpointSnapshot()
+	path := endpoint.GroupSchedulePath
+	if path == "" {
+		path = endpoint.SchedulePath
+	}
+	if path == "" {
+		if err := c.RefreshEndpoints(ctx, groupID, weekMillis); err != nil {
+			return nil, err
+		}
+		endpoint = c.endpointSnapshot()
+		path = endpoint.GroupSchedulePath
+		if path == "" {
+			path = endpoint.SchedulePath
+		}
+		return c.getSchedule(ctx, path, groupID, "", weekMillis)
+	}
+
+	days, err := c.getSchedule(ctx, path, groupID, "", weekMillis)
+	if err == nil {
+		return days, nil
+	}
+	if !shouldRefreshEndpoints(err) {
+		return nil, err
+	}
+
+	if refreshErr := c.RefreshEndpoints(ctx, groupID, weekMillis); refreshErr != nil {
+		return nil, fmt.Errorf("%w; endpoint refresh failed: %v", err, refreshErr)
+	}
+
+	endpoint = c.endpointSnapshot()
+	path = endpoint.GroupSchedulePath
+	if path == "" {
+		path = endpoint.SchedulePath
+	}
+	return c.getSchedule(ctx, path, groupID, "", weekMillis)
+}
+
 func (c *Client) GetTeacherSchedule(ctx context.Context, teacherHash string, weekMillis int64) ([]ScheduleDay, error) {
 	if c.teacherScheduleHash != "" {
 		endpoint := c.endpointSnapshot()

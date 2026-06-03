@@ -6,16 +6,17 @@ import (
 )
 
 type Endpoints struct {
-	SignInPath      string
-	InfoPath        string
-	SchedulePath    string
-	LectureHallPath string
-	CallPresetPath  string
-	AbsenceMarkPath string
-	PairTypePath    string
-	FileHash        string
-	HomeworkHash    string
-	BranchID        string
+	SignInPath        string
+	InfoPath          string
+	SchedulePath      string
+	GroupSchedulePath string
+	LectureHallPath   string
+	CallPresetPath    string
+	AbsenceMarkPath   string
+	PairTypePath      string
+	FileHash          string
+	HomeworkHash      string
+	BranchID          string
 }
 
 func DefaultEndpoints() Endpoints {
@@ -33,6 +34,9 @@ func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	}
 	if strings.TrimSpace(e.SchedulePath) == "" {
 		e.SchedulePath = fallback.SchedulePath
+	}
+	if strings.TrimSpace(e.GroupSchedulePath) == "" {
+		e.GroupSchedulePath = fallback.GroupSchedulePath
 	}
 	if strings.TrimSpace(e.LectureHallPath) == "" {
 		e.LectureHallPath = fallback.LectureHallPath
@@ -59,6 +63,7 @@ func (e Endpoints) WithFallback(fallback Endpoints) Endpoints {
 	e.SignInPath = normalizeEndpointPath(e.SignInPath)
 	e.InfoPath = normalizeEndpointPath(e.InfoPath)
 	e.SchedulePath = normalizeEndpointPath(e.SchedulePath)
+	e.GroupSchedulePath = normalizeEndpointPath(e.GroupSchedulePath)
 	e.LectureHallPath = normalizeEndpointPath(e.LectureHallPath)
 	e.CallPresetPath = normalizeEndpointPath(e.CallPresetPath)
 	e.AbsenceMarkPath = normalizeEndpointPath(e.AbsenceMarkPath)

@@ -15,23 +15,14 @@ type scheduleCache struct {
 }
 
 type cacheKey struct {
-	groupID   int
-	weekStart string
+	groupID       int
+	weekStart     string
+	teacherHash   string
+	groupSchedule bool
 }
 
-func keyFor(groupID int, weekStart string, teacherHash string) cacheKey {
-	if teacherHash != "" {
-		groupID = int(hashString(teacherHash))
-	}
-	return cacheKey{groupID, weekStart}
-}
-
-func hashString(s string) int64 {
-	var h int64
-	for _, c := range s {
-		h = h*31 + int64(c)
-	}
-	return h
+func keyFor(groupID int, weekStart string, teacherHash string, groupSchedule bool) cacheKey {
+	return cacheKey{groupID, weekStart, teacherHash, groupSchedule}
 }
 
 type cacheEntry struct {
@@ -46,10 +37,14 @@ func newScheduleCache() *scheduleCache {
 }
 
 func (c *scheduleCache) get(groupID int, weekStart string, teacherHash string) ([]ktk.ScheduleDay, bool) {
+	return c.getWithMode(groupID, weekStart, teacherHash, false)
+}
+
+func (c *scheduleCache) getWithMode(groupID int, weekStart string, teacherHash string, groupSchedule bool) ([]ktk.ScheduleDay, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	entry, ok := c.entries[keyFor(groupID, weekStart, teacherHash)]
+	entry, ok := c.entries[keyFor(groupID, weekStart, teacherHash, groupSchedule)]
 	if !ok || time.Now().After(entry.expiresAt) {
 		return nil, false
 	}
@@ -57,10 +52,14 @@ func (c *scheduleCache) get(groupID int, weekStart string, teacherHash string) (
 }
 
 func (c *scheduleCache) set(groupID int, weekStart string, teacherHash string, days []ktk.ScheduleDay) {
+	c.setWithMode(groupID, weekStart, teacherHash, false, days)
+}
+
+func (c *scheduleCache) setWithMode(groupID int, weekStart string, teacherHash string, groupSchedule bool, days []ktk.ScheduleDay) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.entries[keyFor(groupID, weekStart, teacherHash)] = cacheEntry{
+	c.entries[keyFor(groupID, weekStart, teacherHash, groupSchedule)] = cacheEntry{
 		days:      days,
 		expiresAt: time.Now().Add(scheduleCacheTTL),
 	}
@@ -71,12 +70,17 @@ func (c *scheduleCache) invalidate(groupID int, teacherHash ...string) {
 	defer c.mu.Unlock()
 
 	target := groupID
+	targetTeacherHash := ""
 	if len(teacherHash) > 0 && teacherHash[0] != "" {
-		target = int(hashString(teacherHash[0]))
+		targetTeacherHash = teacherHash[0]
 	}
 
 	for key := range c.entries {
-		if key.groupID == target {
+		if targetTeacherHash != "" && key.teacherHash == targetTeacherHash {
+			delete(c.entries, key)
+			continue
+		}
+		if targetTeacherHash == "" && key.groupID == target {
 			delete(c.entries, key)
 		}
 	}

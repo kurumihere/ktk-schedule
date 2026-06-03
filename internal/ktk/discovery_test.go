@@ -129,6 +129,72 @@ func TestCallPresetDiscoveredFromWorkspaceAssets(t *testing.T) {
 	}
 }
 
+func TestRefreshEndpointsSeparatesPersonalAndGroupSchedules(t *testing.T) {
+	const weekMillis int64 = 1777240800000
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
+		case "/assets/app.js":
+			_, _ = w.Write([]byte(`
+				const studentSchedule = "/v0/root/tenant/student-schedule";
+				const groupSchedule = "/v0/root/tenant/group-schedule";
+			`))
+		case "/v0/root/tenant/student-schedule":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[{"Appraisal":5,"Discipline":"Personal","LectureHall":1,"Pair":1,"Subgroup":"middle"}]}]`))
+		case "/v0/root/tenant/group-schedule":
+			if r.URL.Query().Get("Group") == "268" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[{"Discipline":"Other group","LectureHall":2,"Pair":1,"Subgroup":"1-я подгруппа"}]}]`))
+				return
+			}
+			if r.URL.Query().Get("Group") != "269" {
+				http.Error(w, "bad group", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[{"Discipline":"Group left","LectureHall":2,"Pair":1,"Subgroup":"1-я подгруппа"},{"Discipline":"Group right","LectureHall":3,"Pair":1,"Subgroup":"2-я подгруппа"}]}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RefreshEndpoints(context.Background(), 269, weekMillis); err != nil {
+		t.Fatal(err)
+	}
+
+	endpoints := client.Endpoints()
+	if endpoints.SchedulePath != "/v0/root/tenant/student-schedule" {
+		t.Fatalf("unexpected personal schedule path: %s", endpoints.SchedulePath)
+	}
+	if endpoints.GroupSchedulePath != "/v0/root/tenant/group-schedule" {
+		t.Fatalf("unexpected group schedule path: %s", endpoints.GroupSchedulePath)
+	}
+
+	personal, err := client.GetSchedule(context.Background(), 269, weekMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := personal[0].Subjects[0].Discipline; got != "Personal" {
+		t.Fatalf("unexpected personal schedule subject: %s", got)
+	}
+
+	group, err := client.GetGroupSchedule(context.Background(), 269, weekMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(group[0].Subjects) != 2 {
+		t.Fatalf("unexpected group schedule subjects: %#v", group[0].Subjects)
+	}
+}
+
 func TestRefreshEndpointsUpdatesFileAndHomeworkHashes(t *testing.T) {
 	const weekMillis int64 = 1777240800000
 

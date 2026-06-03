@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -69,7 +70,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		next.InfoPath = candidates.infoPaths[0]
 	}
 
-	bestPath, foundGrades, _ := c.pickScheduleEndpoint(ctx, candidates.schedulePaths, groupID, tHash, weekMillis, !isTeacher)
+	bestPath, groupPath, foundGrades := c.pickScheduleEndpoints(ctx, candidates.schedulePaths, groupID, tHash, weekMillis, !isTeacher)
 	if bestPath == "" {
 		fallbackBase := next.CallPresetPath
 		if fallbackBase == "" && len(candidates.schedulePaths) > 0 {
@@ -78,8 +79,9 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		if base := trimLastSegment(fallbackBase); base != "" {
 			for _, hash := range fallbackScheduleHashes {
 				fallbackPath := path.Join(base, hash)
-				if fp, fg, _ := c.pickScheduleEndpoint(ctx, []string{fallbackPath}, groupID, tHash, weekMillis, !isTeacher); fp != "" {
+				if fp, gp, fg := c.pickScheduleEndpoints(ctx, []string{fallbackPath}, groupID, tHash, weekMillis, !isTeacher); fp != "" {
 					bestPath = fp
+					groupPath = gp
 					foundGrades = fg
 					slog.Debug("fallback schedule endpoint", "path", fp, "has_grades", fg)
 					break
@@ -93,6 +95,9 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	}
 
 	next.SchedulePath = bestPath
+	if groupPath != "" {
+		next.GroupSchedulePath = groupPath
+	}
 	if next.InfoPath == "" {
 		next.InfoPath = DeriveInfoPath(next.SchedulePath)
 	}
@@ -142,6 +147,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	c.setEndpoints(next)
 	slog.Debug("endpoints refreshed",
 		"schedule_path", next.SchedulePath,
+		"group_schedule_path", next.GroupSchedulePath,
 		"info_path", next.InfoPath,
 		"lecture_hall_path", next.LectureHallPath,
 		"call_preset_path", next.CallPresetPath,
@@ -198,6 +204,87 @@ func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, group
 		}
 	}
 	return
+}
+
+func (c *Client) pickScheduleEndpoints(ctx context.Context, paths []string, groupID int, teacherHash string, weekMillis int64, preferGrades bool) (bestPath string, groupPath string, hasGrades bool) {
+	if teacherHash != "" {
+		bestPath, hasGrades, _ = c.pickScheduleEndpoint(ctx, paths, groupID, teacherHash, weekMillis, preferGrades)
+		return bestPath, "", hasGrades
+	}
+
+	type candidate struct {
+		path       string
+		days       []ScheduleDay
+		raw        []byte
+		count      int
+		hasGrades  bool
+		groupAware bool
+	}
+
+	candidates := make([]candidate, 0, len(paths))
+	for _, p := range paths {
+		days, raw, err := c.validateScheduleEndpoint(ctx, p, groupID, "", weekMillis)
+		if err != nil {
+			continue
+		}
+
+		item := candidate{
+			path:      p,
+			days:      days,
+			raw:       raw,
+			count:     countSubjects(days),
+			hasGrades: scheduleHasGrades(raw),
+		}
+		item.groupAware = c.schedulePathVariesByGroup(ctx, p, groupID, weekMillis, item.days)
+		candidates = append(candidates, item)
+	}
+
+	bestPersonal := -1
+	bestGroup := -1
+	for i, item := range candidates {
+		if item.groupAware {
+			if bestGroup < 0 || item.count > candidates[bestGroup].count {
+				bestGroup = i
+			}
+			continue
+		}
+
+		if bestPersonal < 0 ||
+			(preferGrades && item.hasGrades && !candidates[bestPersonal].hasGrades) ||
+			(item.hasGrades == candidates[bestPersonal].hasGrades && item.count > candidates[bestPersonal].count) {
+			bestPersonal = i
+		}
+	}
+
+	if bestGroup >= 0 {
+		groupPath = candidates[bestGroup].path
+	}
+	if bestPersonal >= 0 {
+		bestPath = candidates[bestPersonal].path
+		hasGrades = candidates[bestPersonal].hasGrades
+		return bestPath, groupPath, hasGrades
+	}
+	if bestGroup >= 0 {
+		bestPath = candidates[bestGroup].path
+		hasGrades = candidates[bestGroup].hasGrades
+	}
+	return bestPath, groupPath, hasGrades
+}
+
+func (c *Client) schedulePathVariesByGroup(ctx context.Context, path string, groupID int, weekMillis int64, baseDays []ScheduleDay) bool {
+	for _, alternateGroupID := range []int{groupID - 1, groupID + 1} {
+		if alternateGroupID <= 0 || alternateGroupID == groupID {
+			continue
+		}
+		alternateDays, _, err := c.validateScheduleEndpoint(ctx, path, alternateGroupID, "", weekMillis)
+		if err != nil || countSubjects(alternateDays) == 0 {
+			continue
+		}
+		if scheduleFingerprint(alternateDays) != scheduleFingerprint(baseDays) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) discoverEndpointCandidates(ctx context.Context) (endpointCandidates, error) {
@@ -422,6 +509,28 @@ func countSubjects(days []ScheduleDay) int {
 		count += len(day.Subjects)
 	}
 	return count
+}
+
+func scheduleFingerprint(days []ScheduleDay) string {
+	var b strings.Builder
+	for _, day := range days {
+		b.WriteString(day.Date)
+		b.WriteByte('|')
+		for _, subject := range day.Subjects {
+			b.WriteString(strconv.Itoa(subject.Pair))
+			b.WriteByte(':')
+			b.WriteString(subject.Discipline)
+			b.WriteByte(':')
+			b.WriteString(subject.Teacher)
+			b.WriteByte(':')
+			b.WriteString(strconv.Itoa(subject.LectureHall))
+			b.WriteByte(':')
+			b.WriteString(subject.Subgroup)
+			b.WriteByte(';')
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func scheduleHasGrades(raw []byte) bool {

@@ -12,6 +12,7 @@ import (
 	telegram "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"ktk-schedule/internal/config"
 	"ktk-schedule/internal/credentials"
 	"ktk-schedule/internal/ktk"
 	"ktk-schedule/internal/storage"
@@ -406,6 +407,49 @@ func TestRefilterSessionScheduleAppliesSubgroupChange(t *testing.T) {
 	}
 }
 
+func TestShouldUseGroupSchedule(t *testing.T) {
+	app := &App{cfg: config.Config{DefaultGroup: 269, DefaultSubgroup: "1"}}
+
+	tests := []struct {
+		name     string
+		groupID  int
+		subgroup string
+		showAll  bool
+		want     bool
+	}{
+		{name: "default personal subgroup", groupID: 269, subgroup: "left", want: false},
+		{name: "other group", groupID: 268, subgroup: "left", want: true},
+		{name: "other subgroup", groupID: 269, subgroup: "right", want: true},
+		{name: "show all subgroups", groupID: 269, subgroup: "left", showAll: true, want: true},
+	}
+
+	for _, tt := range tests {
+		got := app.shouldUseGroupScheduleValues(tt.groupID, tt.subgroup, tt.showAll)
+		if got != tt.want {
+			t.Fatalf("%s: got %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestScheduleCacheSeparatesPersonalAndGroupSchedules(t *testing.T) {
+	cache := newScheduleCache()
+	personal := []ktk.ScheduleDay{{Date: "2026-06-01", Subjects: []ktk.ScheduleItem{{Discipline: "Personal"}}}}
+	group := []ktk.ScheduleDay{{Date: "2026-06-01", Subjects: []ktk.ScheduleItem{{Discipline: "Group"}}}}
+
+	cache.setWithMode(269, "2026-06-01", "", false, personal)
+	cache.setWithMode(269, "2026-06-01", "", true, group)
+
+	gotPersonal, ok := cache.getWithMode(269, "2026-06-01", "", false)
+	if !ok || gotPersonal[0].Subjects[0].Discipline != "Personal" {
+		t.Fatalf("unexpected personal cache value: %#v", gotPersonal)
+	}
+
+	gotGroup, ok := cache.getWithMode(269, "2026-06-01", "", true)
+	if !ok || gotGroup[0].Subjects[0].Discipline != "Group" {
+		t.Fatalf("unexpected group cache value: %#v", gotGroup)
+	}
+}
+
 func TestSessionConcurrentAccess(t *testing.T) {
 	app := &App{}
 	app.setSession(1, &Session{Subgroup: "left", CurrentIndex: 0})
@@ -498,7 +542,7 @@ func TestLoadScheduleUsesPersistentCacheWithoutClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	days, err := app.loadSchedule(context.Background(), nil, 269, "", time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
+	days, err := app.loadSchedule(context.Background(), nil, 269, "", time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC), false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,8 @@ import (
 	"ktk-schedule/internal/storage"
 )
 
+const groupScheduleCacheKey = "__group_schedule__"
+
 func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, error) {
 	if session := a.getSession(user.TelegramID); session != nil && session.Client != nil {
 		a.syncTeacherHash(user, session.Client.TeacherHash())
@@ -155,7 +157,8 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 
 func (a *App) refreshSessionSchedule(ctx context.Context, user *storage.User, session *Session, targetDate time.Time) ([]ktk.ScheduleDay, int, error) {
 	weekStart := ktk.WeekStart(targetDate, a.location)
-	days, err := a.loadSchedule(ctx, session.Client, user.GroupID, session.TeacherHash, weekStart)
+	useGroupSchedule := user.TeacherHash == "" && a.shouldUseGroupSchedule(user)
+	days, err := a.loadSchedule(ctx, session.Client, user.GroupID, session.TeacherHash, weekStart, useGroupSchedule)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -180,6 +183,25 @@ func (a *App) refreshSessionSchedule(ctx context.Context, user *storage.User, se
 	a.setSession(user.TelegramID, session)
 
 	return displayDays, currentIndex, nil
+}
+
+func (a *App) shouldUseGroupSchedule(user *storage.User) bool {
+	if user == nil {
+		return false
+	}
+	return a.shouldUseGroupScheduleValues(user.GroupID, user.Subgroup, user.ShowAllSubgroups)
+}
+
+func (a *App) shouldUseGroupScheduleValues(groupID int, subgroup string, showAllSubgroups bool) bool {
+	if showAllSubgroups || groupID != a.cfg.DefaultGroup {
+		return true
+	}
+	defaultSubgroup, ok := ktk.ParsePersonalSubgroup(a.cfg.DefaultSubgroup)
+	if !ok {
+		defaultSubgroup = "left"
+	}
+	selectedSubgroup, ok := ktk.ParsePersonalSubgroup(subgroup)
+	return ok && selectedSubgroup != defaultSubgroup
 }
 
 func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session, targetDate time.Time) {
@@ -254,7 +276,8 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 
 func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, groupID int, teacherHash string, targetDate time.Time) bool {
 	nextWeekStart := ktk.WeekStart(targetDate, a.location).AddDate(0, 0, 7)
-	nextDays, err := a.loadSchedule(ctx, session.Client, groupID, teacherHash, nextWeekStart)
+	useGroupSchedule := teacherHash == "" && a.shouldUseGroupScheduleValues(groupID, session.Subgroup, session.ShowAllSubgroups)
+	nextDays, err := a.loadSchedule(ctx, session.Client, groupID, teacherHash, nextWeekStart, useGroupSchedule)
 	if err != nil || len(nextDays) == 0 {
 		return false
 	}
@@ -273,14 +296,15 @@ func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, gr
 	return true
 }
 
-func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int, teacherHash string, weekStart time.Time) ([]ktk.ScheduleDay, error) {
+func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int, teacherHash string, weekStart time.Time, useGroupSchedule bool) ([]ktk.ScheduleDay, error) {
 	weekKey := weekStart.In(a.location).Format(time.DateOnly)
-	if days, ok := a.scheduleCache.get(groupID, weekKey, teacherHash); ok {
+	cacheTeacherHash := scheduleCacheTeacherHash(teacherHash, useGroupSchedule)
+	if days, ok := a.scheduleCache.getWithMode(groupID, weekKey, teacherHash, useGroupSchedule); ok {
 		return days, nil
 	}
 
 	if client == nil {
-		days, err := a.loadPersistentScheduleCache(groupID, weekKey, teacherHash)
+		days, err := a.loadPersistentScheduleCache(groupID, weekKey, cacheTeacherHash)
 		if err != nil {
 			return nil, err
 		}
@@ -288,7 +312,7 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 			return nil, errors.New("schedule client is unavailable and cached schedule was not found")
 		}
 		if hasScheduledSubjects(days) {
-			a.scheduleCache.set(groupID, weekKey, teacherHash, days)
+			a.scheduleCache.setWithMode(groupID, weekKey, teacherHash, useGroupSchedule, days)
 		}
 		return days, nil
 	}
@@ -301,19 +325,21 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	var err error
 	if teacherHash != "" {
 		days, err = client.GetTeacherSchedule(requestCtx, teacherHash, weekMillis)
+	} else if useGroupSchedule {
+		days, err = client.GetGroupSchedule(requestCtx, groupID, weekMillis)
 	} else {
 		days, err = client.GetSchedule(requestCtx, groupID, weekMillis)
 	}
 	if err == nil {
 		a.cacheEndpoints(client.Endpoints())
-		a.savePersistentScheduleCache(groupID, weekKey, teacherHash, days)
+		a.savePersistentScheduleCache(groupID, weekKey, cacheTeacherHash, days)
 		if hasScheduledSubjects(days) {
-			a.scheduleCache.set(groupID, weekKey, teacherHash, days)
+			a.scheduleCache.setWithMode(groupID, weekKey, teacherHash, useGroupSchedule, days)
 		}
 		return days, nil
 	}
 
-	cachedDays, cacheErr := a.loadPersistentScheduleCache(groupID, weekKey, teacherHash)
+	cachedDays, cacheErr := a.loadPersistentScheduleCache(groupID, weekKey, cacheTeacherHash)
 	if cacheErr != nil {
 		slog.Warn("persistent schedule cache load", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", cacheErr)
 		return days, err
@@ -321,11 +347,18 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	if cachedDays != nil {
 		slog.Warn("using persistent schedule cache", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
 		if hasScheduledSubjects(cachedDays) {
-			a.scheduleCache.set(groupID, weekKey, teacherHash, cachedDays)
+			a.scheduleCache.setWithMode(groupID, weekKey, teacherHash, useGroupSchedule, cachedDays)
 		}
 		return cachedDays, nil
 	}
 	return nil, err
+}
+
+func scheduleCacheTeacherHash(teacherHash string, useGroupSchedule bool) string {
+	if useGroupSchedule {
+		return groupScheduleCacheKey
+	}
+	return teacherHash
 }
 
 func (a *App) savePersistentScheduleCache(groupID int, weekKey string, teacherHash string, days []ktk.ScheduleDay) {
