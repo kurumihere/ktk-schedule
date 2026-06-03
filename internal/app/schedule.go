@@ -169,6 +169,7 @@ func (a *App) refreshSessionSchedule(ctx context.Context, user *storage.User, se
 	}
 
 	currentIndex := ktk.FindDateIndex(displayDays, targetDate, a.location)
+	session.AllSchedule = days
 	session.Schedule = displayDays
 	session.CurrentIndex = currentIndex
 	session.WeekStart = weekStart
@@ -215,6 +216,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 	a.circuitBreaker.RecordSuccess()
 	if len(days) == 0 {
 		weekStart := ktk.WeekStart(targetDate, a.location)
+		session.AllSchedule = nil
 		session.Schedule = nil
 		session.CurrentIndex = 0
 		session.WeekStart = weekStart
@@ -264,6 +266,7 @@ func (a *App) switchToNextWeekSchedule(ctx context.Context, session *Session, gr
 		return false
 	}
 	session.Schedule = nextDisplay
+	session.AllSchedule = nextDays
 	session.WeekStart = nextWeekStart
 	session.CurrentIndex = 0
 	session.WeekSelectOffset = 0

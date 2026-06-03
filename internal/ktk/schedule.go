@@ -1400,9 +1400,9 @@ func normalizeSubgroup(value string) string {
 	value = strings.ReplaceAll(value, " ", "")
 
 	switch value {
-	case "1", "left", "first", "one", "первая", "первый", "1подгруппа", "подгруппа1":
+	case "1", "left", "first", "one", "первая", "первый", "1я", "1ая", "1ый", "1подгруппа", "1яподгруппа", "1аяподгруппа", "подгруппа1":
 		return "left"
-	case "2", "right", "second", "two", "вторая", "второй", "2подгруппа", "подгруппа2":
+	case "2", "right", "second", "two", "вторая", "второй", "2я", "2ая", "2ой", "2подгруппа", "2яподгруппа", "2аяподгруппа", "подгруппа2":
 		return "right"
 	case "", "middle", "common", "both", "all", "общая", "обе":
 		return "middle"

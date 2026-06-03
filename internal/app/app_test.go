@@ -123,6 +123,11 @@ func TestSessionCopy(t *testing.T) {
 		Subgroup:         "left",
 		ShowAllSubgroups: false,
 		CurrentIndex:     2,
+		AllSchedule: []ktk.ScheduleDay{
+			{Date: "2026-05-14T00:00:00Z", Subjects: []ktk.ScheduleItem{
+				{Discipline: "Raw Math", Pair: 1},
+			}},
+		},
 		Schedule: []ktk.ScheduleDay{
 			{Date: "2026-05-14T00:00:00Z", Subjects: []ktk.ScheduleItem{
 				{Discipline: "Math", Pair: 1},
@@ -160,9 +165,13 @@ func TestSessionCopy(t *testing.T) {
 
 	cp.Subgroup = "right"
 	cp.CurrentIndex = 0
+	cp.AllSchedule[0].Subjects[0].Discipline = "Changed"
 	cp.documentCache[10] = ktk.DocumentMetadata{ID: 10, Caption: "changed.pdf", Icon: "pdf"}
 	if orig.Subgroup == cp.Subgroup {
 		t.Fatal("modifying copy must not affect original scalar fields")
+	}
+	if orig.AllSchedule[0].Subjects[0].Discipline == cp.AllSchedule[0].Subjects[0].Discipline {
+		t.Fatal("modifying copy must not affect original all schedule")
 	}
 	if orig.documentCache[10].Caption == cp.documentCache[10].Caption {
 		t.Fatal("modifying copy must not affect original document cache")
@@ -351,6 +360,49 @@ func TestSessionAtomicPointer(t *testing.T) {
 	})
 	if app.getSession(999) != nil {
 		t.Fatal("modifySession on non-existent session must not create one")
+	}
+
+	app.deleteSession(1)
+	if app.getSession(1) != nil {
+		t.Fatal("deleteSession must remove existing session")
+	}
+}
+
+func TestRefilterSessionScheduleAppliesSubgroupChange(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	weekStart := time.Date(2026, 6, 1, 6, 0, 0, 0, loc)
+	session := &Session{
+		AllSchedule: []ktk.ScheduleDay{{
+			Date: "2026-06-01",
+			Subjects: []ktk.ScheduleItem{
+				{Discipline: "Class hour", Subgroup: "middle"},
+				{Discipline: "Programming", Subgroup: "1-я подгруппа"},
+				{Discipline: "Networks", Subgroup: "2-я подгруппа"},
+			},
+		}},
+		Schedule: []ktk.ScheduleDay{{
+			Date: "2026-06-01",
+			Subjects: []ktk.ScheduleItem{
+				{Discipline: "Class hour", Subgroup: "middle"},
+				{Discipline: "Programming", Subgroup: "1-я подгруппа"},
+			},
+		}},
+		CurrentIndex: 0,
+		WeekStart:    weekStart,
+		Subgroup:     "right",
+	}
+
+	refilterSessionSchedule(session, loc)
+
+	if len(session.Schedule) != 1 {
+		t.Fatalf("unexpected day count: %d", len(session.Schedule))
+	}
+	got := session.Schedule[0].Subjects
+	if len(got) != 2 {
+		t.Fatalf("unexpected subjects: %#v", got)
+	}
+	if got[0].Discipline != "Class hour" || got[1].Discipline != "Networks" {
+		t.Fatalf("unexpected filtered subjects: %#v", got)
 	}
 }
 

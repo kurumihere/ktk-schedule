@@ -255,6 +255,7 @@ func (a *App) sendCachedSchedule(ctx context.Context, chatID int64, user *storag
 
 	currentIndex := ktk.FindDateIndex(displayDays, targetDate, a.location)
 	session := &Session{
+		AllSchedule:      days,
 		Schedule:         displayDays,
 		CurrentIndex:     currentIndex,
 		WeekStart:        weekStart,
@@ -295,6 +296,8 @@ func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.U
 	}
 
 	a.scheduleCache.invalidate(user.GroupID)
+	a.scheduleCache.invalidate(groupID)
+	a.deleteSession(user.TelegramID)
 
 	a.send(ctx, user.TelegramID, fmt.Sprintf("Группа изменена на %d.\nТеперь напиши /schedule", groupID))
 }
@@ -318,6 +321,7 @@ func (a *App) handleSubgroup(ctx context.Context, _ *telegram.Bot, update *model
 	a.modifySession(user.TelegramID, func(s *Session) {
 		s.Subgroup = subgroup
 		s.ShowAllSubgroups = false
+		refilterSessionSchedule(s, a.location)
 	})
 
 	a.send(ctx, user.TelegramID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
@@ -343,6 +347,7 @@ func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, en
 	}
 	a.modifySession(user.TelegramID, func(s *Session) {
 		s.ShowAllSubgroups = enabled
+		refilterSessionSchedule(s, a.location)
 	})
 
 	if enabled {
@@ -350,6 +355,26 @@ func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, en
 	} else {
 		a.send(ctx, user.TelegramID, "Теперь показываю только твою подгруппу: "+ktk.SubgroupLabel(user.Subgroup)+".\nНапиши /schedule")
 	}
+}
+
+func refilterSessionSchedule(session *Session, loc *time.Location) {
+	if session == nil || len(session.AllSchedule) == 0 {
+		return
+	}
+
+	selectedDate := time.Now()
+	if session.CurrentIndex >= 0 && session.CurrentIndex < len(session.Schedule) {
+		if !session.WeekStart.IsZero() {
+			selectedDate = session.WeekStart.AddDate(0, 0, session.CurrentIndex)
+		}
+	}
+
+	session.Schedule = ktk.FilterScheduleDays(session.AllSchedule, session.Subgroup, session.ShowAllSubgroups)
+	if len(session.Schedule) == 0 {
+		session.CurrentIndex = 0
+		return
+	}
+	session.CurrentIndex = ktk.FindDateIndex(session.Schedule, selectedDate, loc)
 }
 
 func (a *App) handleNotifyOn(ctx context.Context, _ *telegram.Bot, update *models.Update) {

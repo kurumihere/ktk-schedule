@@ -26,8 +26,8 @@ func TestFilterScheduleDaysKeepsCommonAndSelectedSubgroup(t *testing.T) {
 		Date: "2026-04-29T00:00:00Z",
 		Subjects: []ScheduleItem{
 			{Discipline: "Class hour", Subgroup: "middle"},
-			{Discipline: "Programming", Subgroup: "left"},
-			{Discipline: "Networks", Subgroup: "right"},
+			{Discipline: "Programming", Subgroup: "1-я подгруппа"},
+			{Discipline: "Networks", Subgroup: "2-я подгруппа"},
 		},
 	}}
 

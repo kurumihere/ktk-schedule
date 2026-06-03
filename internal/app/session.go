@@ -11,6 +11,7 @@ import (
 
 type Session struct {
 	Client           *ktk.Client
+	AllSchedule      []ktk.ScheduleDay
 	Schedule         []ktk.ScheduleDay
 	Halls            ktk.LectureHallMap
 	CallPresets      ktk.CallPresetMap
@@ -33,6 +34,7 @@ func (s *Session) copy() *Session {
 	}
 	c := &Session{
 		Client:           s.Client,
+		AllSchedule:      copyScheduleDays(s.AllSchedule),
 		Schedule:         make([]ktk.ScheduleDay, len(s.Schedule)),
 		CurrentIndex:     s.CurrentIndex,
 		WeekStart:        s.WeekStart,
@@ -44,12 +46,7 @@ func (s *Session) copy() *Session {
 	}
 	copy(c.Schedule, s.Schedule)
 
-	for i := range c.Schedule {
-		if len(s.Schedule[i].Subjects) > 0 {
-			c.Schedule[i].Subjects = make([]ktk.ScheduleItem, len(s.Schedule[i].Subjects))
-			copy(c.Schedule[i].Subjects, s.Schedule[i].Subjects)
-		}
-	}
+	copyScheduleSubjects(c.Schedule, s.Schedule)
 
 	if s.Halls != nil {
 		c.Halls = make(ktk.LectureHallMap, len(s.Halls))
@@ -92,6 +89,25 @@ func (s *Session) copy() *Session {
 	}
 
 	return c
+}
+
+func copyScheduleDays(days []ktk.ScheduleDay) []ktk.ScheduleDay {
+	if days == nil {
+		return nil
+	}
+	copied := make([]ktk.ScheduleDay, len(days))
+	copy(copied, days)
+	copyScheduleSubjects(copied, days)
+	return copied
+}
+
+func copyScheduleSubjects(dst, src []ktk.ScheduleDay) {
+	for i := range dst {
+		if len(src[i].Subjects) > 0 {
+			dst[i].Subjects = make([]ktk.ScheduleItem, len(src[i].Subjects))
+			copy(dst[i].Subjects, src[i].Subjects)
+		}
+	}
 }
 
 // getHomeworkFileID returns the cached file ID for a sheet, or fetches it via API.
@@ -168,6 +184,10 @@ func (a *App) setSession(telegramID int64, session *Session) {
 	session.touchLastAccess()
 	ptr, _ := a.sessions.LoadOrStore(telegramID, &atomic.Pointer[Session]{})
 	ptr.(*atomic.Pointer[Session]).Store(session)
+}
+
+func (a *App) deleteSession(telegramID int64) {
+	a.sessions.Delete(telegramID)
 }
 
 func (a *App) modifySession(telegramID int64, fn func(*Session)) {
