@@ -25,9 +25,6 @@ const helpText = `Привет! Я ktk-schedule
 /start (Показать список команд)
 /login логин пароль (Авторизоваться в workspace)
 /schedule [дата] (Показать расписание на текущую неделю или дату)
-/group 269 (Изменить группу)
-/subgroup 1 || 2 (Выбрать первую-вторую подгруппу)
-/subgroups_on || _off (Показывать обе подгруппы в одном расписании || Показывать только выбранную подгруппу)
 /notify_on || _off (Включить || Отключить утренние уведомления)
 `
 
@@ -37,10 +34,6 @@ func (a *App) registerHandlers() {
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "login", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleLogin))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "announce", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleAnnounce))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "schedule", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSchedule))
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "group", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleGroup))
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroup", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSubgroup))
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_on", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSubgroupsOn))
-	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "subgroups_off", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleSubgroupsOff))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_on", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleNotifyOn))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "notify_off", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleNotifyOff))
 	a.bot.RegisterHandler(telegram.HandlerTypeMessageText, "stats", telegram.MatchTypeCommandStartOnly, a.wrapHandler(a.handleStats))
@@ -79,7 +72,7 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 	a.deleteUserMessage(ctx, bot, update.Message)
 
 	if !a.loginLimiter.allow(chatID) {
-		a.send(ctx, chatID, "Слишком много попыток входа. Подожди немного.")
+		a.send(ctx, chatID, "Слишком много попыток входа. Попробуй позже.")
 		return
 	}
 
@@ -103,6 +96,7 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 		GroupID:          a.cfg.DefaultGroup,
 		Notify:           false,
 		Subgroup:         subgroup,
+		PersonalSubgroup: subgroup,
 		ShowAllSubgroups: false,
 	}
 
@@ -116,6 +110,7 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 		user.GroupID = detectedGroupID
 	}
 	user.Subgroup = clientSubgroupOrDefault(client, a.cfg.DefaultSubgroup)
+	user.PersonalSubgroup = user.Subgroup
 	user.TeacherHash = client.TeacherHash()
 
 	if err := a.storage.SaveUser(user); err != nil {
@@ -173,7 +168,6 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 
 	chatID := update.Message.Chat.ID
 	if !a.rateLimiter.allow(chatID) {
-		a.send(ctx, chatID, "Подожди немного перед повторным запросом.")
 		return
 	}
 
@@ -223,7 +217,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 		a.sendMessage(ctx, &telegram.SendMessageParams{
 			ChatID:      chatID,
 			Text:        "📅 " + targetDate.In(a.location).Format("02.01.2006") + "\n\nПар нет. Сегодня не учебный день.",
-			ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0),
+			ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 		})
 		return
 	}
@@ -232,7 +226,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
 		Text:        a.formatScheduleDay(ctx, displayDays[currentIndex], session),
-		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location, fileCount),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, session.WeekStart, a.location, fileCount, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 }
 
@@ -277,88 +271,9 @@ func (a *App) sendCachedSchedule(ctx context.Context, chatID int64, user *storag
 	a.sendMessage(ctx, &telegram.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
-		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, weekStart, a.location, fileCount),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, weekStart, a.location, fileCount, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 	return true
-}
-
-func (a *App) handleGroup(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	user, ok := a.requireUser(ctx, update.Message)
-	if !ok {
-		return
-	}
-
-	groupID, err := strconv.Atoi(strings.TrimSpace(commandArgs(update.Message.Text)))
-	if err != nil || groupID <= 0 || groupID > 100000 {
-		a.send(ctx, user.TelegramID, "Используй:\n/group 269")
-		return
-	}
-
-	if err := a.storage.SetGroup(user.TelegramID, groupID); err != nil {
-		a.send(ctx, user.TelegramID, "Не удалось сохранить группу: "+err.Error())
-		return
-	}
-
-	a.scheduleCache.invalidate(user.GroupID)
-	a.scheduleCache.invalidate(groupID)
-	a.deleteSession(user.TelegramID)
-
-	a.send(ctx, user.TelegramID, fmt.Sprintf("Группа изменена на %d.\nТеперь напиши /schedule", groupID))
-}
-
-func (a *App) handleSubgroup(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	user, ok := a.requireUser(ctx, update.Message)
-	if !ok {
-		return
-	}
-
-	subgroup, ok := ktk.ParsePersonalSubgroup(commandArgs(update.Message.Text))
-	if !ok {
-		a.send(ctx, user.TelegramID, "Используй:\n/subgroup 1\nили\n/subgroup 2")
-		return
-	}
-
-	if err := a.storage.SetSubgroup(user.TelegramID, subgroup); err != nil {
-		a.send(ctx, user.TelegramID, "Не удалось сохранить подгруппу: "+err.Error())
-		return
-	}
-	a.modifySession(user.TelegramID, func(s *Session) {
-		s.Subgroup = subgroup
-		s.ShowAllSubgroups = false
-		refilterSessionSchedule(s, a.location)
-	})
-
-	a.send(ctx, user.TelegramID, "Подгруппа изменена: "+ktk.SubgroupLabel(subgroup)+".\nТеперь напиши /schedule")
-}
-
-func (a *App) handleSubgroupsOn(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	a.handleSubgroupsMode(ctx, update, true)
-}
-
-func (a *App) handleSubgroupsOff(ctx context.Context, _ *telegram.Bot, update *models.Update) {
-	a.handleSubgroupsMode(ctx, update, false)
-}
-
-func (a *App) handleSubgroupsMode(ctx context.Context, update *models.Update, enabled bool) {
-	user, ok := a.requireUser(ctx, update.Message)
-	if !ok {
-		return
-	}
-
-	if err := a.storage.SetShowAllSubgroups(user.TelegramID, enabled); err != nil {
-		a.send(ctx, user.TelegramID, "Не удалось сохранить режим подгрупп: "+err.Error())
-		return
-	}
-	a.modifySession(user.TelegramID, func(s *Session) {
-		s.ShowAllSubgroups = enabled
-		refilterSessionSchedule(s, a.location)
-	})
-
-	if enabled {
-		a.send(ctx, user.TelegramID, "Теперь показываю обе подгруппы.\nНапиши /schedule")
-	} else {
-		a.send(ctx, user.TelegramID, "Теперь показываю только твою подгруппу: "+ktk.SubgroupLabel(user.Subgroup)+".\nНапиши /schedule")
-	}
 }
 
 func refilterSessionSchedule(session *Session, loc *time.Location) {
@@ -575,6 +490,21 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	oldIndex := session.CurrentIndex
 
 	switch {
+	case data == "schedule:my":
+		a.handleCallbackMy(ctx, bot, chatID, message.ID, session)
+		return
+	case data == "schedule:group:select":
+		a.handleCallbackGroupSelect(ctx, bot, chatID, message.ID, session)
+		return
+	case data == "schedule:subgroup:left":
+		a.handleCallbackSubgroup(ctx, bot, chatID, message.ID, session, "left", false)
+		return
+	case data == "schedule:subgroup:right":
+		a.handleCallbackSubgroup(ctx, bot, chatID, message.ID, session, "right", false)
+		return
+	case data == "schedule:subgroup:all":
+		a.handleCallbackSubgroup(ctx, bot, chatID, message.ID, session, "", true)
+		return
 	case data == "schedule:week:select":
 		a.handleCallbackWeekSelect(ctx, bot, chatID, message.ID, session)
 		return
@@ -845,7 +775,7 @@ func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID
 		ChatID:      chatID,
 		MessageID:   messageID,
 		Text:        a.formatScheduleDay(ctx, day, session),
-		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, fileCount),
+		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, fileCount, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 	if err != nil {
 		if isMessageNotModified(err) {
@@ -875,7 +805,7 @@ func (a *App) editEmptyWeekMessage(ctx context.Context, bot *telegram.Bot, chatI
 		ChatID:      chatID,
 		MessageID:   messageID,
 		Text:        "На этой неделе нет пар.",
-		ReplyMarkup: tg.ScheduleKeyboard(nil, 0, session.WeekStart, a.location, 0),
+		ReplyMarkup: tg.ScheduleKeyboard(nil, 0, session.WeekStart, a.location, 0, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 	if err != nil && !isMessageNotModified(err) {
 		slog.Error("edit empty week message", "chat_id", chatID, "error", err)
@@ -888,7 +818,7 @@ func (a *App) editNonSchoolDayMessage(ctx context.Context, bot *telegram.Bot, ch
 		ChatID:      chatID,
 		MessageID:   messageID,
 		Text:        text,
-		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0),
+		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 	if err != nil && !isMessageNotModified(err) {
 		slog.Error("edit message", "chat_id", chatID, "error", err)
@@ -912,15 +842,226 @@ func (a *App) handleDefault(ctx context.Context, _ *telegram.Bot, update *models
 	if update.Message == nil {
 		return
 	}
-	if a.cfg.OwnerTelegramID != 0 && telegramSenderID(update.Message) == a.cfg.OwnerTelegramID {
-		a.send(ctx, update.Message.Chat.ID, "Чтобы разослать это сообщение, ответь на него командой /announce.")
-		return
-	}
+	chatID := update.Message.Chat.ID
+
 	if update.Message.Text == "" {
 		return
 	}
 
-	a.send(ctx, update.Message.Chat.ID, "Неизвестная команда. Напиши /start")
+	// Сначала проверяем ожидание ввода группы — для всех, включая owner
+	session := a.getSession(chatID)
+	if session != nil && session.AwaitingGroupInput {
+		groupID, err := strconv.Atoi(strings.TrimSpace(update.Message.Text))
+		if err != nil || groupID <= 0 || groupID > 100000 {
+			a.send(ctx, chatID, "Не понял номер группы. Напиши просто число, например: 269")
+			return
+		}
+
+		a.modifySession(chatID, func(s *Session) {
+			s.AwaitingGroupInput = false
+		})
+		session.AwaitingGroupInput = false
+
+		user, ok := a.requireUser(ctx, update.Message)
+		if !ok {
+			return
+		}
+		if !a.rateLimiter.allow(chatID) {
+			return
+		}
+		a.loadGroupScheduleForUser(ctx, user, session, groupID, time.Now(), chatID)
+		return
+	}
+
+	if a.cfg.OwnerTelegramID != 0 && telegramSenderID(update.Message) == a.cfg.OwnerTelegramID {
+		a.send(ctx, chatID, "Чтобы разослать это сообщение, ответь на него командой /announce.")
+		return
+	}
+
+	a.send(ctx, chatID, "Неизвестная команда. Напиши /start")
+}
+
+func (a *App) handleCallbackMy(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	user, err := a.storage.GetUser(chatID)
+	if err != nil || user == nil {
+		a.send(ctx, chatID, "Ошибка базы данных.")
+		return
+	}
+
+	targetDate := a.selectedScheduleDate(session)
+	sess, err := a.ensureSession(ctx, user)
+	if err != nil {
+		a.send(ctx, chatID, "Не удалось загрузить расписание. Попробуй /schedule.")
+		return
+	}
+
+	subgroup, showAllSubgroups := ownScheduleSubgroupSettings(user, sess)
+	if user.TeacherHash == "" {
+		if err := a.saveUserSubgroupMode(user, subgroup, showAllSubgroups, sess); err != nil {
+			a.send(ctx, chatID, "Не удалось сохранить подгруппу.")
+			return
+		}
+	}
+
+	// Полностью сбрасываем состояние просмотра и возвращаем привязанную подгруппу.
+	sess.ViewingGroupID = 0
+	sess.Subgroup = user.Subgroup
+	sess.ShowAllSubgroups = user.ShowAllSubgroups
+	sess.AllSchedule = nil
+	sess.Schedule = nil
+	a.setSession(chatID, sess)
+
+	_, _, err = a.refreshSessionSchedule(ctx, user, sess, targetDate)
+	if err != nil {
+		a.send(ctx, chatID, "Не удалось загрузить расписание. Попробуй /schedule.")
+		return
+	}
+
+	a.editScheduleMessage(ctx, bot, chatID, messageID, a.getSession(chatID))
+}
+
+func ownScheduleSubgroupSettings(user *storage.User, session *Session) (string, bool) {
+	return ownScheduleSubgroupSettingsFromValues(user, detectedPersonalSubgroup(session))
+}
+
+func ownScheduleSubgroupSettingsFromValues(user *storage.User, detectedSubgroup string) (string, bool) {
+	if user != nil && user.TeacherHash != "" {
+		return user.Subgroup, user.ShowAllSubgroups
+	}
+	return ownScheduleSubgroupFromValues(user, detectedSubgroup), false
+}
+
+func ownScheduleSubgroupFromValues(user *storage.User, detectedSubgroup string) string {
+	if user == nil {
+		return "left"
+	}
+	if user.TeacherHash != "" {
+		return user.Subgroup
+	}
+	if subgroup, ok := ktk.ParsePersonalSubgroup(detectedSubgroup); ok {
+		return subgroup
+	}
+	if subgroup, ok := ktk.ParsePersonalSubgroup(user.PersonalSubgroup); ok {
+		return subgroup
+	}
+	return clientSubgroupOrDefault(nil, user.Subgroup)
+}
+
+func detectedPersonalSubgroup(session *Session) string {
+	if session == nil || session.Client == nil {
+		return ""
+	}
+	return session.Client.Subgroup()
+}
+
+func (a *App) saveUserSubgroupMode(user *storage.User, subgroup string, showAll bool, session *Session) error {
+	user.Subgroup = subgroup
+	user.ShowAllSubgroups = showAll
+	if user.TeacherHash == "" {
+		if detected, ok := ktk.ParsePersonalSubgroup(detectedPersonalSubgroup(session)); ok {
+			user.PersonalSubgroup = detected
+		} else if _, ok := ktk.ParsePersonalSubgroup(user.PersonalSubgroup); !ok {
+			user.PersonalSubgroup = subgroup
+		}
+	}
+	return a.storage.SaveUser(*user)
+}
+
+func (a *App) handleCallbackGroupSelect(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
+	a.modifySession(chatID, func(s *Session) {
+		s.AwaitingGroupInput = true
+	})
+	_, err := bot.EditMessageText(ctx, &telegram.EditMessageTextParams{
+		ChatID:    chatID,
+		MessageID: messageID,
+		Text:      "Напиши номер группы (например: 269)",
+		ReplyMarkup: &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: "↩️ Назад", CallbackData: "schedule:back"}},
+			},
+		},
+	})
+	if err != nil && !isMessageNotModified(err) {
+		slog.Error("edit group select message", "chat_id", chatID, "error", err)
+	}
+}
+
+func (a *App) handleCallbackSubgroup(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session, subgroup string, showAll bool) {
+	user, err := a.storage.GetUser(chatID)
+	if err != nil || user == nil {
+		a.send(ctx, chatID, "Ошибка базы данных.")
+		return
+	}
+
+	targetDate := a.selectedScheduleDate(session)
+
+	if session.ViewingGroupID > 0 {
+		// просмотр чужой группы — не трогаем БД, меняем только в памяти сессии
+		session.Subgroup = subgroup
+		session.ShowAllSubgroups = showAll
+		session.Schedule = ktk.FilterScheduleDays(session.AllSchedule, subgroup, showAll)
+		session.CurrentIndex = ktk.FindDateIndex(session.Schedule, targetDate, a.location)
+		a.setSession(chatID, session)
+	} else {
+		// своё расписание — сохраняем в БД и перезагружаем
+		if err := a.saveUserSubgroupMode(user, subgroup, showAll, session); err != nil {
+			a.send(ctx, chatID, "Не удалось сохранить подгруппу.")
+			return
+		}
+		// сбрасываем кеш — иначе loadSchedule вернёт старые данные с персонального эндпоинта
+		a.scheduleCache.invalidate(user.GroupID)
+		sess, err := a.ensureSession(ctx, user)
+		if err != nil {
+			a.send(ctx, chatID, "Не удалось загрузить расписание.")
+			return
+		}
+		sess.Subgroup = subgroup
+		sess.ShowAllSubgroups = showAll
+		if _, _, err = a.refreshSessionSchedule(ctx, user, sess, targetDate); err != nil {
+			a.send(ctx, chatID, "Не удалось загрузить расписание.")
+			return
+		}
+	}
+
+	updatedSession := a.getSession(chatID)
+	if updatedSession == nil {
+		return
+	}
+	a.editScheduleMessage(ctx, bot, chatID, messageID, updatedSession)
+}
+
+func (a *App) loadGroupScheduleForUser(ctx context.Context, user *storage.User, session *Session, groupID int, targetDate time.Time, chatID int64) {
+	weekStart := ktk.WeekStart(targetDate, a.location)
+	days, err := a.loadSchedule(ctx, session.Client, groupID, "", weekStart, true)
+	if err != nil {
+		a.circuitBreaker.RecordFailure()
+		slog.Error("group schedule fetch failed", "chat_id", chatID, "group_id", groupID, "error", err)
+		a.send(ctx, chatID, "Не удалось получить расписание группы. Попробуй позже.")
+		return
+	}
+	a.circuitBreaker.RecordSuccess()
+
+	displayDays := ktk.FilterScheduleDays(days, user.Subgroup, user.ShowAllSubgroups)
+	if len(displayDays) == 0 {
+		a.send(ctx, chatID, fmt.Sprintf("Расписание группы %d пустое.", groupID))
+		return
+	}
+
+	currentIndex := ktk.FindDateIndex(displayDays, targetDate, a.location)
+	session.AllSchedule = days
+	session.Schedule = displayDays
+	session.CurrentIndex = currentIndex
+	session.WeekStart = weekStart
+	session.WeekSelectOffset = 0
+	session.ViewingGroupID = groupID
+	a.setSession(chatID, session)
+
+	fileCount := a.fileCountForDay(ctx, displayDays[currentIndex], session)
+	a.sendMessage(ctx, &telegram.SendMessageParams{
+		ChatID:      chatID,
+		Text:        fmt.Sprintf("📋 Расписание группы %d\n\n", groupID) + a.formatScheduleDay(ctx, displayDays[currentIndex], session),
+		ReplyMarkup: tg.ScheduleKeyboard(displayDays, currentIndex, weekStart, a.location, fileCount, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
+	})
 }
 
 func commandArgs(text string) string {

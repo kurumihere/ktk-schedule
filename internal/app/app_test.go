@@ -82,6 +82,98 @@ func TestClientSubgroupOrDefault(t *testing.T) {
 	}
 }
 
+func TestOwnScheduleSubgroupSettingsPreferLinkedSubgroup(t *testing.T) {
+	user := &storage.User{Subgroup: "left", ShowAllSubgroups: true}
+
+	subgroup, showAll := ownScheduleSubgroupSettingsFromValues(user, "2")
+
+	if subgroup != "right" {
+		t.Fatalf("expected linked subgroup right, got %q", subgroup)
+	}
+	if showAll {
+		t.Fatal("own group must reset all-subgroups mode")
+	}
+}
+
+func TestOwnScheduleSubgroupSettingsKeepStoredFallback(t *testing.T) {
+	user := &storage.User{Subgroup: "left", PersonalSubgroup: "right", ShowAllSubgroups: true}
+
+	subgroup, showAll := ownScheduleSubgroupSettings(user, &Session{})
+
+	if subgroup != "right" {
+		t.Fatalf("expected stored personal subgroup right, got %q", subgroup)
+	}
+	if showAll {
+		t.Fatal("own group must reset all-subgroups mode")
+	}
+}
+
+func TestOwnScheduleSubgroupSettingsFallbackToCurrentSubgroup(t *testing.T) {
+	user := &storage.User{Subgroup: "right", ShowAllSubgroups: true}
+
+	subgroup, showAll := ownScheduleSubgroupSettings(user, &Session{})
+
+	if subgroup != "right" {
+		t.Fatalf("expected current subgroup fallback right, got %q", subgroup)
+	}
+	if showAll {
+		t.Fatal("own group must reset all-subgroups mode")
+	}
+}
+
+func TestOwnScheduleSubgroupSettingsLeavesTeacherSettings(t *testing.T) {
+	user := &storage.User{Subgroup: "right", ShowAllSubgroups: true, TeacherHash: "teacher-hash"}
+
+	subgroup, showAll := ownScheduleSubgroupSettings(user, &Session{})
+
+	if subgroup != "right" {
+		t.Fatalf("expected teacher subgroup to stay right, got %q", subgroup)
+	}
+	if !showAll {
+		t.Fatal("teacher settings must stay unchanged")
+	}
+}
+
+func TestSaveUserSubgroupModeKeepsPersonalSubgroup(t *testing.T) {
+	cipher, err := credentials.New("app-test-secret-with-32-characters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.New(t.TempDir()+"/test.db", cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	user := storage.User{
+		TelegramID:       101,
+		Login:            "student",
+		Password:         "password",
+		GroupID:          269,
+		Subgroup:         "right",
+		PersonalSubgroup: "right",
+	}
+	if err := store.SaveUser(user); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{storage: store}
+	if err := app.saveUserSubgroupMode(&user, "left", false, &Session{}); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := store.GetUser(user.TelegramID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Subgroup != "left" {
+		t.Fatalf("expected selected subgroup left, got %q", saved.Subgroup)
+	}
+	if saved.PersonalSubgroup != "right" {
+		t.Fatalf("expected personal subgroup to stay right, got %q", saved.PersonalSubgroup)
+	}
+}
+
 func TestSyncTeacherHashUpdatesUser(t *testing.T) {
 	app := &App{}
 	user := &storage.User{TelegramID: 42}
@@ -106,15 +198,26 @@ func TestHasScheduledSubjects(t *testing.T) {
 }
 
 func TestRateLimiter(t *testing.T) {
-	rl := newRateLimiter()
-	if !rl.allow(1) {
+	rl := newRateLimiterWithConfig(time.Second, 3, 5*time.Second)
+	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+
+	if !rl.allowAt(1, now) {
 		t.Error("first request must be allowed")
 	}
-	if !rl.allow(2) {
+	if !rl.allowAt(2, now) {
 		t.Error("different key must be allowed")
 	}
-	if rl.allow(1) {
-		t.Error("immediate second request must be denied")
+	if !rl.allowAt(1, now.Add(100*time.Millisecond)) || !rl.allowAt(1, now.Add(200*time.Millisecond)) {
+		t.Fatal("normal burst must be allowed")
+	}
+	if rl.allowAt(1, now.Add(300*time.Millisecond)) {
+		t.Fatal("excessive burst must be denied")
+	}
+	if rl.allowAt(1, now.Add(time.Second)) {
+		t.Fatal("blocked key must stay denied")
+	}
+	if !rl.allowAt(1, now.Add(6*time.Second)) {
+		t.Fatal("key must be allowed after block expires")
 	}
 }
 

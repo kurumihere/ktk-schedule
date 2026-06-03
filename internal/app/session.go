@@ -10,22 +10,24 @@ import (
 )
 
 type Session struct {
-	Client           *ktk.Client
-	AllSchedule      []ktk.ScheduleDay
-	Schedule         []ktk.ScheduleDay
-	Halls            ktk.LectureHallMap
-	CallPresets      ktk.CallPresetMap
-	AbsenceMarks     []ktk.AbsenceMark
-	PairTypes        ktk.PairTypeMap
-	homeworkCache    map[int]int
-	documentCache    map[int]ktk.DocumentMetadata
-	CurrentIndex     int
-	WeekStart        time.Time
-	WeekSelectOffset int
-	Subgroup         string
-	ShowAllSubgroups bool
-	TeacherHash      string
-	lastAccessUnix   int64 // atomic
+	Client             *ktk.Client
+	AllSchedule        []ktk.ScheduleDay
+	Schedule           []ktk.ScheduleDay
+	Halls              ktk.LectureHallMap
+	CallPresets        ktk.CallPresetMap
+	AbsenceMarks       []ktk.AbsenceMark
+	PairTypes          ktk.PairTypeMap
+	homeworkCache      map[int]int
+	documentCache      map[int]ktk.DocumentMetadata
+	CurrentIndex       int
+	WeekStart          time.Time
+	WeekSelectOffset   int
+	Subgroup           string
+	ShowAllSubgroups   bool
+	TeacherHash        string
+	ViewingGroupID     int   // >0 — просматриваем чужую группу, 0 — своё расписание
+	AwaitingGroupInput bool  // ждём ввода номера группы текстом
+	lastAccessUnix     int64 // atomic
 }
 
 func (s *Session) copy() *Session {
@@ -33,16 +35,18 @@ func (s *Session) copy() *Session {
 		return nil
 	}
 	c := &Session{
-		Client:           s.Client,
-		AllSchedule:      copyScheduleDays(s.AllSchedule),
-		Schedule:         make([]ktk.ScheduleDay, len(s.Schedule)),
-		CurrentIndex:     s.CurrentIndex,
-		WeekStart:        s.WeekStart,
-		WeekSelectOffset: s.WeekSelectOffset,
-		Subgroup:         s.Subgroup,
-		ShowAllSubgroups: s.ShowAllSubgroups,
-		TeacherHash:      s.TeacherHash,
-		lastAccessUnix:   atomic.LoadInt64(&s.lastAccessUnix),
+		Client:             s.Client,
+		AllSchedule:        copyScheduleDays(s.AllSchedule),
+		Schedule:           make([]ktk.ScheduleDay, len(s.Schedule)),
+		CurrentIndex:       s.CurrentIndex,
+		WeekStart:          s.WeekStart,
+		WeekSelectOffset:   s.WeekSelectOffset,
+		Subgroup:           s.Subgroup,
+		ShowAllSubgroups:   s.ShowAllSubgroups,
+		TeacherHash:        s.TeacherHash,
+		ViewingGroupID:     s.ViewingGroupID,
+		AwaitingGroupInput: s.AwaitingGroupInput,
+		lastAccessUnix:     atomic.LoadInt64(&s.lastAccessUnix),
 	}
 	copy(c.Schedule, s.Schedule)
 

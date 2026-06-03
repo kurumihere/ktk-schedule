@@ -19,7 +19,7 @@ func callbackDataOrPanic(format string, args ...any) string {
 	return data
 }
 
-func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.Time, loc *time.Location, fileCount int) *models.InlineKeyboardMarkup {
+func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.Time, loc *time.Location, fileCount int, viewingGroupID int, isTeacher bool, subgroup string, showAllSubgroups bool) *models.InlineKeyboardMarkup {
 	if weekStart.IsZero() {
 		weekStart = ktk.WeekStart(time.Now(), loc)
 	}
@@ -48,6 +48,25 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.T
 		{Text: nextText, CallbackData: "schedule:next"},
 	})
 
+	if viewingGroupID > 0 {
+		myLabel := "🏠 Своя группа"
+		if isTeacher {
+			myLabel = "👤 Своё расписание"
+		}
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: myLabel, CallbackData: "schedule:my"},
+			{Text: "🔍 Другая группа", CallbackData: "schedule:group:select"},
+		})
+	} else {
+		rows = append(rows, []models.InlineKeyboardButton{
+			{Text: "🔍 Расписание группы", CallbackData: "schedule:group:select"},
+		})
+	}
+
+	if !isTeacher {
+		rows = append(rows, subgroupRow(subgroup, showAllSubgroups))
+	}
+
 	if fileCount > 0 {
 		label := fmt.Sprintf("📎 Скачать файлы (%d)", fileCount)
 		rows = append(rows, []models.InlineKeyboardButton{
@@ -67,6 +86,23 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.T
 	}
 
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func subgroupRow(subgroup string, showAll bool) []models.InlineKeyboardButton {
+	btn1 := models.InlineKeyboardButton{Text: "1 подгруппа", CallbackData: "schedule:subgroup:left"}
+	btn2 := models.InlineKeyboardButton{Text: "2 подгруппа", CallbackData: "schedule:subgroup:right"}
+	btnAll := models.InlineKeyboardButton{Text: "Обе", CallbackData: "schedule:subgroup:all"}
+
+	switch {
+	case showAll:
+		btnAll.Text = "✅ Обе"
+	case subgroup == "right":
+		btn2.Text = "✅ 2 подгруппа"
+	default:
+		btn1.Text = "✅ 1 подгруппа"
+	}
+
+	return []models.InlineKeyboardButton{btn1, btn2, btnAll}
 }
 
 func WeekSelectKeyboard(baseWeekStart time.Time, offset int, loc *time.Location) *models.InlineKeyboardMarkup {

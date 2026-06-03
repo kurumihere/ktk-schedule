@@ -17,7 +17,7 @@ func TestCallbackDataLength(t *testing.T) {
 	}
 	weekStart := time.Date(2026, 5, 11, 0, 0, 0, 0, loc)
 
-	kb := ScheduleKeyboard(days, 0, weekStart, loc, 0)
+	kb := ScheduleKeyboard(days, 0, weekStart, loc, 0, 0, false, "left", false)
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
 			if len(btn.CallbackData) > maxCallbackData {
@@ -34,7 +34,7 @@ func TestScheduleKeyboardNoSelectedDay(t *testing.T) {
 		{Date: "2026-06-02", Subjects: []ktk.ScheduleItem{{Discipline: "Physics", Pair: 1}}},
 	}
 
-	kb := ScheduleKeyboard(days, -1, time.Date(2026, 6, 1, 0, 0, 0, 0, loc), loc, 0)
+	kb := ScheduleKeyboard(days, -1, time.Date(2026, 6, 1, 0, 0, 0, 0, loc), loc, 0, 0, false, "left", false)
 
 	if kb.InlineKeyboard[1][0].Text != "⛔" {
 		t.Fatalf("expected previous button to be disabled, got %q", kb.InlineKeyboard[1][0].Text)
@@ -42,9 +42,12 @@ func TestScheduleKeyboardNoSelectedDay(t *testing.T) {
 	if kb.InlineKeyboard[1][2].Text != "➡️" {
 		t.Fatalf("expected next button to stay enabled, got %q", kb.InlineKeyboard[1][2].Text)
 	}
-	for _, row := range kb.InlineKeyboard[2:] {
-		if strings.HasPrefix(row[0].Text, "✅ ") {
-			t.Fatalf("did not expect selected day label, got %q", row[0].Text)
+	// дни идут после строк навигации, группы и подгрупп — ищем только кнопки с callback schedule:day:
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			if strings.HasPrefix(btn.CallbackData, "schedule:day:") && strings.HasPrefix(btn.Text, "✅ ") {
+				t.Fatalf("did not expect selected day label, got %q", btn.Text)
+			}
 		}
 	}
 }

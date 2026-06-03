@@ -52,15 +52,12 @@
 | `/my_id` | Показывает твой Telegram ID |
 | `/login логин пароль` | Авторизует в workspace |
 | `/schedule [дата]` | Показывает расписание на неделю или дату |
-| `/group 269` | Меняет группу |
-| `/subgroup 1` / `/subgroup 2` | Меняет подгруппу |
-| `/subgroups_on` / `/subgroups_off` | Показывает обе подгруппы или только выбранную |
 | `/notify_on` / `/notify_off` | Включает или выключает утреннее расписание |
 | `/announce текст` | Рассылает объявление от владельца |
 | `reply /announce` | Рассылает сообщение, на которое был дан ответ |
 | `/stats` | Показывает статистику бота владельцу |
 
-После `/schedule` появляется inline-клавиатура. Через неё можно листать дни, перейти к сегодняшнему дню, переключать недели, открыть выбор недели и скачать все файлы выбранного дня кнопкой `📎 Скачать файлы (N)`.
+После `/schedule` появляется inline-клавиатура. Через неё можно листать дни, перейти к сегодняшнему дню, переключать недели, открыть выбор недели и скачать все файлы выбранного дня кнопкой `📎 Скачать файлы (N)`. Через неё же можно открыть расписание другой группы, вернуться кнопкой `🏠 Своя группа`, выбрать 1-ю, 2-ю или обе подгруппы.
 
 ### Быстрый старт
 
@@ -205,15 +202,12 @@ The project is designed for daily use: viewing the current week, opening a speci
 | `/my_id` | Shows your Telegram ID |
 | `/login login password` | Signs in to workspace |
 | `/schedule [date]` | Shows schedule for a week or date |
-| `/group 269` | Changes group |
-| `/subgroup 1` / `/subgroup 2` | Changes subgroup |
-| `/subgroups_on` / `/subgroups_off` | Shows both subgroups or only the selected one |
 | `/notify_on` / `/notify_off` | Enables or disables morning schedule messages |
 | `/announce text` | Sends an owner announcement |
 | `reply /announce` | Broadcasts the replied message |
 | `/stats` | Shows bot statistics to the owner |
 
-After `/schedule`, the bot shows an inline keyboard. It lets you switch days, return to today, switch weeks, open week selection, and download all files for the selected day with `📎 Скачать файлы (N)`.
+After `/schedule`, the bot shows an inline keyboard. It lets you switch days, return to today, switch weeks, open week selection, download all files for the selected day with `📎 Скачать файлы (N)`, open another group's schedule, return with `🏠 Своя группа`, and select the 1st, 2nd, or both subgroups.
 
 ### Quick Start
 

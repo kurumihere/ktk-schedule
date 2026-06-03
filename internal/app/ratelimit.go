@@ -6,50 +6,84 @@ import (
 )
 
 const (
-	scheduleCooldown = 15 * time.Second
-	loginCooldown    = 30 * time.Second
-	sessionTTL       = 10 * time.Minute
-	cleanupInterval  = 5 * time.Minute
+	scheduleRateWindow    = 10 * time.Second
+	scheduleRateLimit     = 8
+	scheduleBlockDuration = 20 * time.Second
+	loginRateWindow       = time.Minute
+	loginRateLimit        = 5
+	loginBlockDuration    = 5 * time.Minute
+	cleanupInterval       = 5 * time.Minute
 )
+
+type rateLimitEntry struct {
+	events       []time.Time
+	blockedUntil time.Time
+}
 
 type rateLimiter struct {
 	mu       sync.Mutex
-	values   map[int64]time.Time
-	cooldown time.Duration
+	values   map[int64]rateLimitEntry
+	window   time.Duration
+	limit    int
+	blockFor time.Duration
 	stopCh   chan struct{}
 }
 
 func newRateLimiter() *rateLimiter {
-	r := &rateLimiter{
-		values:   make(map[int64]time.Time),
-		cooldown: scheduleCooldown,
-		stopCh:   make(chan struct{}),
-	}
+	r := newRateLimiterWithConfig(scheduleRateWindow, scheduleRateLimit, scheduleBlockDuration)
 	go r.cleanupLoop()
 	return r
 }
 
+func newRateLimiterWithConfig(window time.Duration, limit int, blockFor time.Duration) *rateLimiter {
+	return &rateLimiter{
+		values:   make(map[int64]rateLimitEntry),
+		window:   window,
+		limit:    limit,
+		blockFor: blockFor,
+		stopCh:   make(chan struct{}),
+	}
+}
+
 func (r *rateLimiter) allow(key int64) bool {
+	return r.allowAt(key, time.Now())
+}
+
+func (r *rateLimiter) allowAt(key int64, now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	last, ok := r.values[key]
-	now := time.Now()
-
-	if ok && now.Sub(last) < r.cooldown {
+	if r.limit <= 0 {
 		return false
 	}
 
-	r.values[key] = now
+	entry := r.values[key]
+	if now.Before(entry.blockedUntil) {
+		return false
+	}
+
+	cutoff := now.Add(-r.window)
+	events := entry.events[:0]
+	for _, event := range entry.events {
+		if event.After(cutoff) {
+			events = append(events, event)
+		}
+	}
+	entry.events = events
+
+	if len(entry.events) >= r.limit {
+		entry.blockedUntil = now.Add(r.blockFor)
+		r.values[key] = entry
+		return false
+	}
+
+	entry.events = append(entry.events, now)
+	r.values[key] = entry
 	return true
 }
 
 func newLoginRateLimiter() *rateLimiter {
-	r := &rateLimiter{
-		values:   make(map[int64]time.Time),
-		cooldown: loginCooldown,
-		stopCh:   make(chan struct{}),
-	}
+	r := newRateLimiterWithConfig(loginRateWindow, loginRateLimit, loginBlockDuration)
 	go r.cleanupLoop()
 	return r
 }
@@ -73,13 +107,26 @@ func (r *rateLimiter) cleanupLoop() {
 }
 
 func (r *rateLimiter) cleanup() {
+	r.cleanupAt(time.Now())
+}
+
+func (r *rateLimiter) cleanupAt(now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
-	for key, last := range r.values {
-		if now.Sub(last) > sessionTTL {
-			delete(r.values, key)
+	for key, entry := range r.values {
+		cutoff := now.Add(-r.window)
+		events := entry.events[:0]
+		for _, event := range entry.events {
+			if event.After(cutoff) {
+				events = append(events, event)
+			}
 		}
+		entry.events = events
+		if len(entry.events) == 0 && !now.Before(entry.blockedUntil) {
+			delete(r.values, key)
+			continue
+		}
+		r.values[key] = entry
 	}
 }
