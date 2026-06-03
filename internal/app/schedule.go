@@ -326,11 +326,12 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 	weekMillis := ktk.WeekStartMillis(weekStart, a.location)
 	var days []ktk.ScheduleDay
 	var err error
-	if teacherHash != "" {
+	switch {
+	case teacherHash != "":
 		days, err = client.GetTeacherSchedule(requestCtx, teacherHash, weekMillis)
-	} else if useGroupSchedule {
+	case useGroupSchedule:
 		days, err = client.GetGroupSchedule(requestCtx, groupID, weekMillis)
-	} else {
+	default:
 		days, err = client.GetSchedule(requestCtx, groupID, weekMillis)
 	}
 	if err == nil {

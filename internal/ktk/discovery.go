@@ -565,11 +565,6 @@ func sameOrigin(base, target string) bool {
 	return baseURL.Scheme == targetURL.Scheme && baseURL.Host == targetURL.Host
 }
 
-func appendUnique(values []string, value string) []string {
-	values, _ = appendUniqueSeen(values, nil, value)
-	return values
-}
-
 func appendUniqueSeen(values []string, seen map[string]struct{}, value string) ([]string, map[string]struct{}) {
 	value = strings.TrimSpace(value)
 	if value == "" {

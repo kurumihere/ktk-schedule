@@ -36,10 +36,6 @@ func newScheduleCache() *scheduleCache {
 	}
 }
 
-func (c *scheduleCache) get(groupID int, weekStart string, teacherHash string) ([]ktk.ScheduleDay, bool) {
-	return c.getWithMode(groupID, weekStart, teacherHash, false)
-}
-
 func (c *scheduleCache) getWithMode(groupID int, weekStart string, teacherHash string, groupSchedule bool) ([]ktk.ScheduleDay, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -49,10 +45,6 @@ func (c *scheduleCache) getWithMode(groupID int, weekStart string, teacherHash s
 		return nil, false
 	}
 	return entry.days, true
-}
-
-func (c *scheduleCache) set(groupID int, weekStart string, teacherHash string, days []ktk.ScheduleDay) {
-	c.setWithMode(groupID, weekStart, teacherHash, false, days)
 }
 
 func (c *scheduleCache) setWithMode(groupID int, weekStart string, teacherHash string, groupSchedule bool, days []ktk.ScheduleDay) {
