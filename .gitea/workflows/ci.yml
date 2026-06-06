@@ -41,15 +41,10 @@ concurrency:
 jobs:
   quick:
     name: Quick Go checks
-    runs-on: ubuntu-latest
+    runs-on: native
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
 
       - name: Download Go modules
         run: |
@@ -71,28 +66,14 @@ jobs:
           go test -count=1 -shuffle=on -coverprofile=artifacts/coverage.out ./...
           go tool cover -func=artifacts/coverage.out | tee artifacts/coverage.txt
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage
-          path: |
-            artifacts/coverage.out
-            artifacts/coverage.txt
-          if-no-files-found: ignore
-
       - run: go build -trimpath -ldflags="-s -w" -o /tmp/ktk-schedule ./cmd/bot
 
   lint:
     name: golangci-lint
-    runs-on: ubuntu-latest
+    runs-on: native
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
 
       - name: Download Go modules
         run: |
@@ -104,43 +85,14 @@ jobs:
           done
           go mod download
 
-      - name: Cache golangci-lint
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/bin/golangci-lint
-            ~/.cache/golangci-lint
-          key: ${{ runner.os }}-golangci-lint-${{ env.GO_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-golangci-lint-${{ env.GO_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}-
-
-      - name: Install golangci-lint
-        run: |
-          gobin="$(go env GOPATH)/bin"
-          echo "$gobin" >> "$GITHUB_PATH"
-          if [ ! -x "$gobin/golangci-lint" ]; then
-            for attempt in 1 2 3; do
-              if go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"; then
-                exit 0
-              fi
-              sleep "$((attempt * 5))"
-            done
-            go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
-          fi
-
       - run: golangci-lint run
 
   race:
     name: Race tests
-    runs-on: ubuntu-latest
+    runs-on: native
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
 
       - name: Download Go modules
         run: |
@@ -157,15 +109,10 @@ jobs:
   security:
     name: Go security scan
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: native
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
 
       - name: Download Go modules
         run: |
@@ -176,28 +123,6 @@ jobs:
             sleep "$((attempt * 5))"
           done
           go mod download
-
-      - name: Cache govulncheck
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin/govulncheck
-          key: ${{ runner.os }}-govulncheck-${{ env.GO_VERSION }}-${{ env.GOVULNCHECK_VERSION }}-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-govulncheck-${{ env.GO_VERSION }}-${{ env.GOVULNCHECK_VERSION }}-
-
-      - name: Install govulncheck
-        run: |
-          gobin="$(go env GOPATH)/bin"
-          echo "$gobin" >> "$GITHUB_PATH"
-          if [ ! -x "$gobin/govulncheck" ]; then
-            for attempt in 1 2 3; do
-              if go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"; then
-                exit 0
-              fi
-              sleep "$((attempt * 5))"
-            done
-            go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
-          fi
 
       - run: govulncheck ./...
 
@@ -317,15 +242,6 @@ jobs:
           trap 'rm -f "$key_file"' EXIT
           printf '%s' "$COSIGN_PRIVATE_KEY" > "$key_file"
           cosign sign --yes --key "$key_file" "${{ steps.publish.outputs.image-ref }}"
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: image-reports
-          path: |
-            artifacts/image-summary.txt
-            artifacts/trivy-report.txt
-          if-no-files-found: ignore
 
   deploy:
     name: Deploy to VDS
