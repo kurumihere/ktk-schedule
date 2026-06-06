@@ -208,4 +208,4 @@ Forgejo CI/CD выполняет проверки качества, собира
 
 ### Лицензия
 
-https://www.tldrlegal.com/license/bsd-3-clause-license-revised
+['BSD 3-Clause License'](https://www.tldrlegal.com/license/bsd-3-clause-license-revised)
