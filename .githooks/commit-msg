@@ -20,13 +20,14 @@ if printf '%s\n' "$subject" | grep -Eq '\.$'; then
 	exit 1
 fi
 
-if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|refactor|chore|test|style|docs|perf|build|ci)(\([a-z0-9._-]+\))?!?: [a-z0-9].*'; then
+if ! printf '%s\n' "$subject" | grep -Eiq '^(feat|fix|refactor|chore|test|style|docs|perf|build|ci)(\([a-z0-9._-]+\))?!?: [[:alnum:]].*( \[skip ci\])?$'; then
 	cat >&2 <<'EOF'
 error: commit subject must use Conventional Commits:
   <type>(<scope>): <description>
 
 examples:
   fix(schedule): restore teacher session state
+  feat: Add login flow [skip ci]
   docs: improve readme
 
 allowed types: feat, fix, refactor, chore, test, style, docs, perf, build, ci
