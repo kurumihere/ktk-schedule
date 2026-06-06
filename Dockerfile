@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:3.22
 
-RUN apk add --no-cache tzdata curl su-exec \
+RUN apk add --no-cache tzdata curl su-exec sqlite \
     && adduser -D -h /app app \
     && mkdir -p /app/data
 

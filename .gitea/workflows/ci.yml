@@ -317,10 +317,16 @@ jobs:
           echo "previous image: ${previous_image:-none}"
           echo "deploying image: $KTK_SCHEDULE_IMAGE"
 
+          if ! docker pull "$KTK_SCHEDULE_IMAGE"; then
+            notify_deploy "ktk-schedule deploy failed: image pull failed"
+            exit 1
+          fi
+
           if ! backup_output=$(BACKUP_DIR="$DEPLOY_DIR/backups" \
             BACKUP_KEEP_COUNT=10 \
             BACKUP_KEEP_DAYS=30 \
             BACKUP_VERIFY=true \
+            BACKUP_HELPER_IMAGE="$KTK_SCHEDULE_IMAGE" \
             scripts/backup-sqlite.sh 2>&1); then
             echo "$backup_output"
             notify_deploy "ktk-schedule deploy failed: backup failed"
@@ -329,10 +335,6 @@ jobs:
           echo "$backup_output"
           backup_path=$(printf '%s\n' "$backup_output" | sed -n 's/^database backed up to //p' | tail -n 1)
 
-          if ! docker pull "$KTK_SCHEDULE_IMAGE"; then
-            notify_deploy "ktk-schedule deploy failed: image pull failed"
-            exit 1
-          fi
           if ! docker compose up -d --no-build; then
             notify_deploy "ktk-schedule deploy failed: docker compose up failed"
             exit 1
