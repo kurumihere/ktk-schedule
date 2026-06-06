@@ -5,23 +5,23 @@ set -e
 subject=$(sed -n '/^[[:space:]]*#/d; /^[[:space:]]*$/d; p; q' "$1")
 
 case "$subject" in
-    Merge\ *|Revert\ *|fixup!\ *|squash!\ *)
-        exit 0
-        ;;
+Merge\ * | Revert\ * | fixup!\ * | squash!\ *)
+	exit 0
+	;;
 esac
 
 if [ ${#subject} -gt 100 ]; then
-    echo "error: commit subject must be 100 characters or less" >&2
-    exit 1
+	echo "error: commit subject must be 100 characters or less" >&2
+	exit 1
 fi
 
 if printf '%s\n' "$subject" | grep -Eq '\.$'; then
-    echo "error: commit subject must not end with a period" >&2
-    exit 1
+	echo "error: commit subject must not end with a period" >&2
+	exit 1
 fi
 
 if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|refactor|chore|test|style|docs|perf|build|ci)(\([a-z0-9._-]+\))?!?: [a-z0-9].*'; then
-    cat >&2 <<'EOF'
+	cat >&2 <<'EOF'
 error: commit subject must use Conventional Commits:
   <type>(<scope>): <description>
 
@@ -31,5 +31,5 @@ examples:
 
 allowed types: feat, fix, refactor, chore, test, style, docs, perf, build, ci
 EOF
-    exit 1
+	exit 1
 fi
