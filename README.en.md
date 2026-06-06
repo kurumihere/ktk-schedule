@@ -210,4 +210,4 @@ Forgejo CI/CD runs quality checks, builds the Docker image, publishes it to the 
 
 ### License
 
-['BSD 3-Clause License'](https://www.tldrlegal.com/license/bsd-3-clause-license-revised)
+[`BSD 3-Clause License`](https://www.tldrlegal.com/license/bsd-3-clause-license-revised)
