@@ -11,12 +11,12 @@
   <a href="https://core.telegram.org/bots/api"><img src="https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot API"></a>
   <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-WAL_mode-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite WAL"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose"></a>
-  <a href="https://git.kurumi.world/kurumi/ktk-schedule/src/branch/master/LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
 </p>
 
 <p>
   <img src="https://img.shields.io/badge/platform-linux-lightgrey?style=flat-square&logo=linux&logoColor=white" alt="Linux">
-  <img src="https://img.shields.io/badge/CI-Forgejo-FF5733?style=flat-square&logo=gitea&logoColor=white" alt="Forgejo CI">
+  <img src="https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white" alt="GitHub Actions CI">
   <img src="https://img.shields.io/badge/security-AES--GCM-green?style=flat-square&logo=letsencrypt&logoColor=white" alt="AES-GCM">
   <img src="https://img.shields.io/badge/PRs-welcome-0075ca?style=flat-square" alt="PRs welcome">
 </p>
@@ -42,7 +42,7 @@ Telegram-бот для workspace КТК. Авторизует пользоват
 | Файлы | Вложения к домашним заданиям, загруженные файлы, скачивание по дням |
 | Уведомления | Утренняя рассылка расписания по `NOTIFY_TIME` и `TIMEZONE` |
 | Надёжность | Ограниченные HTTP-ответы, retry, rate limiting, circuit breaker, cache |
-| Эксплуатация | `/health`, `/health/extended`, опциональный `/debug/pprof`, Docker, Forgejo CI/CD |
+| Эксплуатация | `/health`, `/health/extended`, опциональный `/debug/pprof`, Docker, GitHub Actions CI/CD |
 | Безопасность | AES-GCM для паролей, приватный `/login`, `.env`, SQLite WAL |
 
 ### Быстрый старт
@@ -137,7 +137,7 @@ flowchart LR
 | `internal/credentials` | AES-GCM шифрование и миграция legacy plaintext |
 | `internal/config` | Загрузка и валидация `.env` |
 | `internal/tg` | Inline-клавиатуры и compact callback payloads |
-| `.gitea/workflows` | CI/CD, сборка образа, deploy, backup, rollback |
+| `.github/workflows` | CI/CD, сборка образа, deploy, backup, rollback |
 
 Границы пакетов намеренные: Telegram-логика — в `internal/app`, workspace-логика — в `internal/ktk`, хранение — в `internal/storage`.
 
@@ -204,7 +204,7 @@ Health endpoints:
 
 Health-сервер и pprof не должны быть открыты наружу без контроля доступа.
 
-Forgejo CI/CD выполняет проверки качества, собирает Docker image, публикует в registry и деплоит на VDS. Перед деплоем создаётся backup SQLite; если новый контейнер не проходит healthcheck — pipeline выполняет rollback на предыдущий image.
+GitHub Actions выполняет проверки качества, собирает Docker image, публикует его в GitHub Container Registry и деплоит на VDS. Перед деплоем создаётся backup SQLite; если новый контейнер не проходит healthcheck — pipeline выполняет rollback на предыдущий image.
 
 ### Лицензия
 

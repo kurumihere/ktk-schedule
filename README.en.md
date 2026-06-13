@@ -11,12 +11,12 @@
   <a href="https://core.telegram.org/bots/api"><img src="https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot API"></a>
   <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-WAL_mode-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite WAL"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose"></a>
-  <a href="https://git.kurumi.world/kurumi/ktk-schedule/src/branch/master/LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
 </p>
 
 <p>
   <img src="https://img.shields.io/badge/platform-linux-lightgrey?style=flat-square&logo=linux&logoColor=white" alt="Linux">
-  <img src="https://img.shields.io/badge/CI-Forgejo-FF5733?style=flat-square&logo=gitea&logoColor=white" alt="Forgejo CI">
+  <img src="https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white" alt="GitHub Actions CI">
   <img src="https://img.shields.io/badge/security-AES--GCM-green?style=flat-square&logo=letsencrypt&logoColor=white" alt="AES-GCM">
   <img src="https://img.shields.io/badge/PRs-welcome-0075ca?style=flat-square" alt="PRs welcome">
 </p>
@@ -42,7 +42,7 @@ Built for daily production use: HTTP timeouts, retry wrappers, rate limiting, ci
 | Files | Homework attachments, uploaded files, day-based download |
 | Notifications | Morning schedule delivery via `NOTIFY_TIME` and `TIMEZONE` |
 | Reliability | Bounded HTTP reads, retries, rate limiting, circuit breaker, cache |
-| Operations | `/health`, `/health/extended`, optional `/debug/pprof`, Docker, Forgejo CI/CD |
+| Operations | `/health`, `/health/extended`, optional `/debug/pprof`, Docker, GitHub Actions CI/CD |
 | Security | AES-GCM password storage, private `/login`, `.env` secrets, SQLite WAL |
 
 ### Quick Start
@@ -137,7 +137,7 @@ flowchart LR
 | `internal/credentials` | AES-GCM encryption and legacy plaintext migration |
 | `internal/config` | `.env` loading and validation |
 | `internal/tg` | Inline keyboards and compact callback payloads |
-| `.gitea/workflows` | CI/CD, image build, deploy, backup, rollback |
+| `.github/workflows` | CI/CD, image build, deploy, backup, rollback |
 
 Package boundaries are intentional: Telegram orchestration in `internal/app`, workspace logic in `internal/ktk`, persistence in `internal/storage`.
 
@@ -206,7 +206,7 @@ Health endpoints:
 
 Do not expose the health server or pprof publicly without access control.
 
-Forgejo CI/CD runs quality checks, builds the Docker image, publishes it to the registry, and deploys to the VDS. A compressed SQLite backup is created before deployment; if the new container fails health checks, the pipeline attempts a rollback to the previous image.
+GitHub Actions runs quality checks, builds the Docker image, publishes it to GitHub Container Registry, and deploys to the VDS. A compressed SQLite backup is created before deployment; if the new container fails health checks, the pipeline attempts a rollback to the previous image.
 
 ### License
 

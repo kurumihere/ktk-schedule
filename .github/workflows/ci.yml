@@ -1,23 +1,12 @@
 name: CI/CD
 run-name: CI/CD
 
-env:
-  GO_VERSION: "1.26.4"
-  GOLANGCI_LINT_VERSION: v2.12.2
-  GOVULNCHECK_VERSION: v1.3.0
-  TRIVY_IMAGE: aquasec/trivy:0.71.0
-  REGISTRY: git.kurumi.world
-  REGISTRY_USERNAME: kurumi
-  IMAGE_NAME: git.kurumi.world/kurumi/ktk-schedule
-  IMAGE_CACHE: git.kurumi.world/kurumi/ktk-schedule:buildcache
-  DEPLOY_DIR: /home/forgejo-runner/ktk-schedule
-  COMPOSE_PROJECT_NAME: ktk-schedule
-
 on:
   push:
     branches: [master]
     paths-ignore:
       - README.md
+      - README.en.md
       - LICENSE
       - .gitattributes
       - .gitignore
@@ -26,6 +15,7 @@ on:
     branches: [master]
     paths-ignore:
       - README.md
+      - README.en.md
       - LICENSE
       - .gitattributes
       - .gitignore
@@ -34,6 +24,20 @@ on:
   schedule:
     - cron: "17 2 * * *"
 
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GO_VERSION: "1.26.4"
+  GOLANGCI_LINT_VERSION: v2.12.2
+  GOVULNCHECK_VERSION: v1.3.0
+  TRIVY_IMAGE: aquasec/trivy:0.71.0
+  REGISTRY: ghcr.io
+  REGISTRY_USERNAME: ${{ github.actor }}
+  DEPLOY_DIR: /home/github-runner/ktk-schedule
+  COMPOSE_PROJECT_NAME: ktk-schedule
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
@@ -41,10 +45,15 @@ concurrency:
 jobs:
   quick:
     name: Quick Go checks
-    runs-on: native
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Download Go modules
         run: |
@@ -70,10 +79,20 @@ jobs:
 
   lint:
     name: golangci-lint
-    runs-on: native
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install golangci-lint
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 
       - name: Download Go modules
         run: |
@@ -89,10 +108,15 @@ jobs:
 
   race:
     name: Race tests
-    runs-on: native
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Download Go modules
         run: |
@@ -109,10 +133,20 @@ jobs:
   security:
     name: Go security scan
     if: github.event_name != 'pull_request'
-    runs-on: native
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install govulncheck
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
 
       - name: Download Go modules
         run: |
@@ -130,7 +164,7 @@ jobs:
     name: Build and publish image
     needs: [quick, lint, race, security]
     if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
-    runs-on: native
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       image-ref: ${{ steps.publish.outputs.image-ref }}
@@ -138,47 +172,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check Docker availability
-        run: docker version
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Prepare Docker Buildx
-        run: |
-          docker buildx version
-          if docker buildx inspect ktk-schedule-builder > /tmp/buildx-inspect.txt 2>/dev/null; then
-            driver=$(awk '/^Driver:/ {print $2; exit}' /tmp/buildx-inspect.txt)
-            if [ "$driver" = "docker-container" ]; then
-              docker buildx use ktk-schedule-builder
-            else
-              docker buildx rm ktk-schedule-builder
-              docker buildx create --name ktk-schedule-builder --driver docker-container --use
-            fi
-          else
-            docker buildx create --name ktk-schedule-builder --driver docker-container --use
-          fi
-          docker buildx inspect --bootstrap
-
-      - name: Login to Forgejo container registry
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          if [ -z "${REGISTRY_TOKEN:-}" ]; then
-            echo "REGISTRY_TOKEN repository secret is not set"
-            exit 1
-          fi
-          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
         id: publish
         run: |
-          image_sha="${IMAGE_NAME}:${GITHUB_SHA}"
-          image_latest="${IMAGE_NAME}:latest"
+          set -eu
+
+          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image_name="${REGISTRY}/${image_owner}/ktk-schedule"
+          image_sha="${image_name}:${GITHUB_SHA}"
+          image_latest="${image_name}:latest"
+          image_cache="${image_name}:buildcache"
 
           docker buildx build \
-            --label "org.opencontainers.image.source=https://git.kurumi.world/kurumi/ktk-schedule" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --cache-from "type=registry,ref=${IMAGE_CACHE}" \
-            --cache-to "type=registry,ref=${IMAGE_CACHE},mode=max" \
+            --cache-from "type=registry,ref=${image_cache}" \
+            --cache-to "type=registry,ref=${image_cache},mode=max" \
             --sbom=true \
             --provenance=true \
             -t "$image_sha" \
@@ -192,7 +210,7 @@ jobs:
             exit 1
           fi
 
-          image_ref="${IMAGE_NAME}@${digest}"
+          image_ref="${image_name}@${digest}"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "image-ref=$image_ref" >> "$GITHUB_OUTPUT"
           mkdir -p artifacts
@@ -204,25 +222,22 @@ jobs:
 
       - name: Scan image for critical CVEs
         env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          IMAGE_REF: ${{ steps.publish.outputs.image-ref }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p artifacts "$HOME/.cache/trivy"
-          image_ref="${{ steps.publish.outputs.image-ref }}"
-          if command -v trivy >/dev/null 2>&1; then
-            trivy image --scanners vuln --severity CRITICAL --exit-code 1 "$image_ref"
-            trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 "$image_ref" | tee artifacts/trivy-report.txt
-          else
-            docker run --rm \
-              -v "$HOME/.cache/trivy:/root/.cache/trivy" \
-              -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
-              -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
-              "$TRIVY_IMAGE" image --scanners vuln --severity CRITICAL --exit-code 1 "$image_ref"
-            docker run --rm \
-              -v "$HOME/.cache/trivy:/root/.cache/trivy" \
-              -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
-              -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
-              "$TRIVY_IMAGE" image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 "$image_ref" | tee artifacts/trivy-report.txt
-          fi
+          docker run --rm \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
+            -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
+            "$TRIVY_IMAGE" image --scanners vuln --severity CRITICAL --exit-code 1 "$IMAGE_REF"
+          docker run --rm \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
+            -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
+            "$TRIVY_IMAGE" image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 "$IMAGE_REF" | tee artifacts/trivy-report.txt
+
+      - uses: sigstore/cosign-installer@v3
 
       - name: Sign image
         env:
@@ -232,10 +247,6 @@ jobs:
           if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
             echo "COSIGN_PRIVATE_KEY is not set; skipping image signing"
             exit 0
-          fi
-          if ! command -v cosign >/dev/null 2>&1; then
-            echo "COSIGN_PRIVATE_KEY is set, but cosign is not installed on the native runner"
-            exit 1
           fi
 
           key_file=$(mktemp)
@@ -247,14 +258,14 @@ jobs:
     name: Deploy to VDS
     needs: image
     if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
-    runs-on: native
+    runs-on: [self-hosted, native]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - name: Deploy to VDS
         env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_NOTIFY_BOT_TOKEN: ${{ secrets.DEPLOY_NOTIFY_BOT_TOKEN }}
           DEPLOY_NOTIFY_CHAT_ID: ${{ secrets.DEPLOY_NOTIFY_CHAT_ID }}
           IMAGE_REF: ${{ needs.image.outputs.image-ref }}
@@ -293,8 +304,8 @@ jobs:
           fi
 
           if [ -z "${REGISTRY_TOKEN:-}" ]; then
-            echo "REGISTRY_TOKEN repository secret is not set"
-            notify_deploy "ktk-schedule deploy failed: REGISTRY_TOKEN secret is not set"
+            echo "GITHUB_TOKEN is not available for registry login"
+            notify_deploy "ktk-schedule deploy failed: registry token is not available"
             exit 1
           fi
 
