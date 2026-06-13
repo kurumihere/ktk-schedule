@@ -1,11 +1,6 @@
-name: CI/CD
-run-name: CI/CD / ${{ github.ref_name }}
+name: Continuous Integration
 
-on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+on: [push, pull_request]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,10 +11,6 @@ permissions:
 
 env:
   GO_VERSION: "1.26.4"
-  REGISTRY: ghcr.io
-  REGISTRY_USERNAME: ${{ github.actor }}
-  DEPLOY_ROOT: /home/github-runner/ktk-schedule
-  COMPOSE_PROJECT_NAME: ktk-schedule
 
 jobs:
   test:
@@ -41,137 +32,3 @@ jobs:
 
       - name: Build
         run: go build -trimpath -ldflags="-s -w" -o /tmp/ktk-schedule ./cmd/bot
-
-  image:
-    name: Build image
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ env.REGISTRY_USERNAME }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        run: |
-          set -eu
-
-          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          image_name="${REGISTRY}/${image_owner}/ktk-schedule"
-
-          docker buildx build \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            -t "${image_name}:${GITHUB_SHA}" \
-            -t "${image_name}:latest" \
-            --push \
-            .
-
-  deploy:
-    name: Deploy
-    needs: image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: self-hosted
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Deploy
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-
-          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          image_ref="${REGISTRY}/${image_owner}/ktk-schedule:${GITHUB_SHA}"
-
-          if [ ! -f "$DEPLOY_ROOT/.env" ]; then
-            echo "$DEPLOY_ROOT/.env is missing"
-            exit 1
-          fi
-
-          cd "$GITHUB_WORKSPACE"
-
-          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
-
-          previous_image=$(docker inspect ktk-schedule --format '{{.Config.Image}}' 2>/dev/null || true)
-          echo "previous image: ${previous_image:-none}"
-          echo "deploying image: $image_ref"
-
-          if ! docker pull "$image_ref"; then
-            echo "image pull failed"
-            exit 1
-          fi
-
-          if ! BACKUP_DIR="$DEPLOY_ROOT/backups" \
-            BACKUP_KEEP_COUNT=10 \
-            BACKUP_KEEP_DAYS=30 \
-            BACKUP_VERIFY=true \
-            BACKUP_HELPER_IMAGE="$image_ref" \
-            scripts/backup-sqlite.sh; then
-            echo "backup failed"
-            exit 1
-          fi
-
-          export KTK_SCHEDULE_IMAGE="$image_ref"
-
-          wait_for_health() {
-            attempts="$1"
-            for i in $(seq 1 "$attempts"); do
-              health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' ktk-schedule 2>/dev/null || true)
-              if [ "$health" = "healthy" ]; then
-                echo "container is healthy"
-                return 0
-              fi
-              echo "waiting for healthcheck: ${health:-missing} ($i/$attempts)"
-              sleep 2
-            done
-            return 1
-          }
-
-          if ! docker compose --env-file "$DEPLOY_ROOT/.env" up -d --no-build; then
-            echo "docker compose up failed"
-            exit 1
-          fi
-
-          if wait_for_health 30; then
-            docker image prune --filter "until=168h" -f || true
-            docker builder prune --filter "until=168h" -f || true
-            exit 0
-          fi
-
-          echo "container failed to become healthy"
-          docker compose logs --tail=50 || true
-
-          if [ -n "$previous_image" ]; then
-            echo "rolling back to previous image"
-            export KTK_SCHEDULE_IMAGE="$previous_image"
-            docker pull "$KTK_SCHEDULE_IMAGE" || true
-
-            if docker compose --env-file "$DEPLOY_ROOT/.env" up -d --no-build && wait_for_health 15; then
-              echo "rollback succeeded"
-              exit 1
-            fi
-
-            echo "rollback container failed to become healthy"
-            docker compose logs --tail=50 || true
-          fi
-
-          exit 1

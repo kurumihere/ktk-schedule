@@ -1,60 +1,29 @@
 # ktk-schedule
 
-<div align="center">
+[Русская версия](./README.md)
 
-<p>
-  <a href="./README.md">Русская версия</a>
-</p>
+Telegram bot for the KTK workspace schedule. It signs users in, stores data in SQLite, shows schedules in Telegram, and sends morning notifications.
 
-<p>
-  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26.4-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.26.4"></a>
-  <a href="https://core.telegram.org/bots/api"><img src="https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot API"></a>
-  <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-WAL_mode-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite WAL"></a>
-  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BSD_3--Clause-6f42c1?style=flat-square" alt="BSD-3-Clause"></a>
-</p>
+## Features
 
-<p>
-  <img src="https://img.shields.io/badge/platform-linux-lightgrey?style=flat-square&logo=linux&logoColor=white" alt="Linux">
-  <img src="https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white" alt="GitHub Actions CI">
-  <img src="https://img.shields.io/badge/security-AES--GCM-green?style=flat-square&logo=letsencrypt&logoColor=white" alt="AES-GCM">
-  <img src="https://img.shields.io/badge/PRs-welcome-0075ca?style=flat-square" alt="PRs welcome">
-</p>
+- weekly, daily, and date-based schedules;
+- student and teacher sign-in;
+- groups, subgroups, and another-group view;
+- homework attachments and day files;
+- morning notifications;
+- encrypted password storage in SQLite;
+- Docker healthcheck for deployment.
 
-</div>
-
----
-
-## English
-
-Telegram bot for the KTK workspace. Authenticates users, stores credentials in encrypted SQLite, renders schedules directly in Telegram, and sends morning notifications.
-
-Built for daily production use: HTTP timeouts, retry wrappers, rate limiting, circuit breaker, persistent cache, Docker health checks, graceful shutdown.
-
-### Features
-
-| Area | What it does |
-|---|---|
-| Schedule | Week view, specific dates, today, week switching, day selection |
-| Groups | Personal group, other group, subgroup selection, both subgroups mode |
-| Teachers | Teacher sign-in and schedule retrieval |
-| Academic data | Lesson time, room, type, current status, grades, attendance |
-| Files | Homework attachments, uploaded files, day-based download |
-| Notifications | Morning schedule delivery via `NOTIFY_TIME` and `TIMEZONE` |
-| Reliability | Bounded HTTP reads, retries, rate limiting, circuit breaker, cache |
-| Operations | `/health`, `/health/extended`, optional `/debug/pprof`, Docker, GitHub Actions CI/CD |
-| Security | AES-GCM password storage, private `/login`, `.env` secrets, SQLite WAL |
-
-### Quick Start
+## Run
 
 ```bash
 cp .env.example .env
 ```
 
-Minimum required variables:
+Minimum required values:
 
 ```dotenv
-BOT_TOKEN=123456:your-token-from-botfather
+BOT_TOKEN=123456:token-from-botfather
 CREDENTIALS_SECRET=random-string-at-least-32-characters
 ```
 
@@ -64,150 +33,90 @@ Generate a secret:
 openssl rand -base64 32
 ```
 
-Run locally:
+Locally:
 
 ```bash
 go run ./cmd/bot
 ```
 
-Run with Docker:
+With Docker:
 
 ```bash
 docker compose up --build -d
 docker compose logs -f
 ```
 
-### Bot Commands
+## Bot Commands
 
 | Command | Purpose |
 |---|---|
-| `/start` | Show available commands |
-| `/my_id` | Show your Telegram ID |
-| `/login username password` | Sign in to the workspace |
-| `/schedule` | Open the current week schedule |
-| `/schedule 01.09` | Schedule for a date in the current academic year |
-| `/schedule 2026-09-01` | Schedule for an exact date |
-| `/notify_on` / `/notify_off` | Enable or disable morning notifications |
-| `/announce text` | Send an owner announcement to all users |
-| `reply /announce` | Broadcast the replied-to message |
-| `/stats` | Show bot statistics (owner only) |
+| `/start` | show commands |
+| `/my_id` | show Telegram ID |
+| `/login username password` | sign in to workspace |
+| `/schedule` | open schedule |
+| `/schedule 01.09` | schedule for a date |
+| `/notify_on` / `/notify_off` | enable or disable notifications |
+| `/announce text` | broadcast owner announcement |
+| `/stats` | owner statistics |
 
-`/login` deletes the user message immediately after receipt — credentials never stay in the chat.
+`/login` deletes the user message after processing so credentials do not stay in chat history.
 
-### Schedule Output
+## Configuration
 
-```
-📅 01.06.2026
+All variables are listed in [.env.example](./.env.example). Main ones:
 
-1 пара [70 мин] — ОП.12 ИКГ
-⏰ 08:00-09:10
-🔬 Практическое занятие
-👤 Бухтоярова Елена Леонидовна
-🏫 Кабинет: 301
-
-2 пара [70 мин] — ОП.02 ДМЭМЛ
-⏰ 09:20-10:30
-📚 Лекция
-👤 Сапожникова Елена Владимировна
-🏫 Кабинет: 41
-```
-
-After `/schedule`, inline navigation is available for days, weeks, files, groups, and subgroups.
-
-### Architecture
-
-```mermaid
-flowchart LR
-    T[Telegram] --> A[internal/app]
-    A --> K[internal/ktk]
-    A --> S[internal/storage]
-    A --> TG[internal/tg]
-    S --> C[internal/credentials]
-    K --> W[Workspace API]
-    S --> DB[(SQLite)]
-    A --> H[/health/]
-```
-
-| Path | Responsibility |
+| Variable | Purpose |
 |---|---|
-| `cmd/bot` | Entry point, config loading, logging, graceful shutdown |
-| `internal/app` | Telegram handlers, sessions, notifications, cache, rate limit, health server |
-| `internal/ktk` | Workspace client, parsing, formatting, files, endpoint discovery |
-| `internal/storage` | SQLite, migrations, users, encrypted credentials, schedule cache |
-| `internal/credentials` | AES-GCM encryption and legacy plaintext migration |
-| `internal/config` | `.env` loading and validation |
-| `internal/tg` | Inline keyboards and compact callback payloads |
-| `.github/workflows` | CI/CD, image build, deploy, backup, rollback |
+| `BOT_TOKEN` | Telegram bot token |
+| `CREDENTIALS_SECRET` | password encryption secret |
+| `OWNER_TELEGRAM_ID` | owner for `/announce` and `/stats` |
+| `DATABASE_PATH` | SQLite path |
+| `NOTIFY_TIME` | morning notification time |
+| `TIMEZONE` | time zone |
+| `HEALTH_ADDR` | `/health` address |
 
-Package boundaries are intentional: Telegram orchestration in `internal/app`, workspace logic in `internal/ktk`, persistence in `internal/storage`.
+## Development
 
-### Configuration
-
-All variables are documented in [.env.example](.env.example). Required:
-
-| Variable | Description |
-|---|---|
-| `BOT_TOKEN` | Telegram bot token from `@BotFather` |
-| `CREDENTIALS_SECRET` | AES-GCM secret, at least 32 characters |
-| `OWNER_TELEGRAM_ID` | Owner Telegram ID for `/announce` and `/stats` |
-| `KTK_BASE_URL` | Workspace base URL (default `https://workspace.ktk-45.ru`) |
-| `KTK_DEVICE_NAME` | Device name sent with sign-in requests |
-| `DEFAULT_GROUP_ID` | Default group after first sign-in |
-| `DEFAULT_SUBGROUP` | Default subgroup: `1` or `2` |
-| `NOTIFY_TIME` | Morning notification time, `HH:MM` format |
-| `TIMEZONE` | Time zone, e.g. `Asia/Yekaterinburg` |
-| `DATABASE_PATH` | Path to the SQLite file |
-| `HEALTH_ADDR` | Health server address, default `127.0.0.1:8080` |
-| `PPROF_ENABLED` | Enable `/debug/pprof` on the health server |
-
-### Development
-
-Required: Go 1.26.4+, [`just`](https://github.com/casey/just), `golangci-lint`, `govulncheck`. Hot reload uses `air`.
+Go 1.26.4+ is required. `just` is optional and only wraps regular commands:
 
 ```bash
-just setup       # configure .githooks
-just setup-air   # install air
-just setup-lint  # install golangci-lint
-just setup-vuln  # install govulncheck
+just test     # go test ./...
+just build    # go build ./cmd/bot
+just check    # fmt, vet, test, build
+just docker   # docker compose up --build -d
+just logs     # docker compose logs -f
+just down     # docker compose down
 ```
 
-Common commands:
+Without `just`:
 
 ```bash
-just dev         # hot reload (air)
-just run         # run normally
-just test        # go test -count=1 ./...
-just race        # tests with -race
-just lint        # golangci-lint run
-just vuln        # govulncheck ./...
-just build       # build ./ktk-schedule
-just check       # full local verification before handoff
-just ci-check    # CI-level verification
-just backup      # backup SQLite from Docker volume
-just clean       # remove binary, database, and logs
+go fmt ./...
+go vet ./...
+go test ./...
+go build -trimpath -ldflags="-s -w" -o ktk-schedule ./cmd/bot
 ```
 
-### Operations
+## Deploy
 
-Docker Compose starts the service with a persistent SQLite volume:
+GitHub Actions are split into two small workflows:
 
-```bash
-docker compose up --build -d
-docker compose logs -f
-```
+- `Continuous Integration`: tests and binary build for pushes and pull requests.
+- `Deploy`: after successful CI on `master`, builds the Docker image, pushes it to GHCR, and deploys `production` through GitHub Deployments.
 
-Health endpoints:
+Before deployment, the workflow creates a SQLite backup. If the new container does not become healthy, it tries to roll back to the previous image.
 
-| Endpoint | Purpose |
+## Layout
+
+| Path | Purpose |
 |---|---|
-| `/health` | Basic process health check |
-| `/health/extended` | Extended diagnostics |
-| `/debug/pprof` | Profiling, only when `PPROF_ENABLED=true` |
+| `cmd/bot` | entry point |
+| `internal/app` | Telegram handlers, notifications, health |
+| `internal/ktk` | workspace client and schedule formatting |
+| `internal/storage` | SQLite |
+| `internal/config` | `.env` loading |
+| `.github/workflows` | CI and deploy |
 
-Do not expose the health server or pprof publicly without access control.
+## License
 
-GitHub Actions runs quality checks, builds the Docker image, publishes it to GitHub Container Registry, and deploys to the VDS. A compressed SQLite backup is created before deployment; if the new container fails health checks, the pipeline attempts a rollback to the previous image.
-
-### License
-
-[`BSD 3-Clause License`](https://www.tldrlegal.com/license/bsd-3-clause-license-revised)
+[BSD 3-Clause](./LICENSE)

@@ -1,0 +1,149 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["Continuous Integration"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: production
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ktk-schedule
+  DEPLOY_DIR: /home/github-runner/ktk-schedule
+  COMPOSE_PROJECT_NAME: ktk-schedule
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  image:
+    name: Build image
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          set -eu
+
+          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${image_owner}/${IMAGE_NAME}"
+
+          docker buildx build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${SOURCE_SHA}" \
+            -t "${image}:${SOURCE_SHA}" \
+            -t "${image}:latest" \
+            --push \
+            .
+
+  deploy:
+    name: Production
+    needs: image
+    runs-on: self-hosted
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://t.me/ktk45_schedule_bot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Deploy
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+
+          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${image_owner}/${IMAGE_NAME}:${SOURCE_SHA}"
+
+          if [ ! -f "$DEPLOY_DIR/.env" ]; then
+            echo "$DEPLOY_DIR/.env is missing"
+            exit 1
+          fi
+
+          mkdir -p "$DEPLOY_DIR/scripts" "$DEPLOY_DIR/backups"
+          install -m 0644 docker-compose.yml "$DEPLOY_DIR/docker-compose.yml"
+          install -m 0755 scripts/backup-sqlite.sh "$DEPLOY_DIR/scripts/backup-sqlite.sh"
+
+          cd "$DEPLOY_DIR"
+
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$GITHUB_ACTOR" --password-stdin
+
+          previous_image=$(docker inspect ktk-schedule --format '{{.Config.Image}}' 2>/dev/null || true)
+          echo "deploying $image"
+
+          docker pull "$image"
+
+          BACKUP_DIR="$DEPLOY_DIR/backups" \
+            BACKUP_KEEP_COUNT=10 \
+            BACKUP_KEEP_DAYS=30 \
+            BACKUP_VERIFY=true \
+            BACKUP_HELPER_IMAGE="$image" \
+            scripts/backup-sqlite.sh
+
+          wait_for_health() {
+            attempts="$1"
+            for attempt in $(seq 1 "$attempts"); do
+              health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' ktk-schedule 2>/dev/null || true)
+              if [ "$health" = "healthy" ]; then
+                return 0
+              fi
+              echo "waiting for healthcheck: ${health:-missing} ($attempt/$attempts)"
+              sleep 2
+            done
+            return 1
+          }
+
+          rollback() {
+            if [ -n "$previous_image" ]; then
+              echo "rolling back to $previous_image"
+              export KTK_SCHEDULE_IMAGE="$previous_image"
+              docker compose up -d --no-build || true
+              wait_for_health 15 || true
+            fi
+          }
+
+          export KTK_SCHEDULE_IMAGE="$image"
+          if ! docker compose up -d --no-build; then
+            rollback
+            exit 1
+          fi
+
+          if wait_for_health 30; then
+            docker image prune --filter "until=168h" -f || true
+            exit 0
+          fi
+
+          docker compose logs --tail=50 || true
+          rollback
+          exit 1
