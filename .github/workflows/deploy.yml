@@ -1,0 +1,239 @@
+name: Deploy
+run-name: Deploy / ${{ github.event.workflow_run.head_branch || github.ref_name }}
+
+on:
+  workflow_run:
+    workflows: ["Continuous Integration"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  REGISTRY_USERNAME: ${{ github.actor }}
+  TRIVY_IMAGE: aquasec/trivy:0.71.0
+  DEPLOY_DIR: /home/github-runner/ktk-schedule
+  COMPOSE_PROJECT_NAME: ktk-schedule
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  image:
+    name: Build Image
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-ref: ${{ steps.publish.outputs.image-ref }}
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
+        id: publish
+        run: |
+          set -eu
+
+          source_sha=$(printf '%s' "${SOURCE_SHA:-$GITHUB_SHA}")
+          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image_name="${REGISTRY}/${image_owner}/ktk-schedule"
+          image_sha="${image_name}:${source_sha}"
+          image_latest="${image_name}:latest"
+          image_cache="${image_name}:buildcache"
+
+          docker buildx build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${source_sha}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --cache-from "type=registry,ref=${image_cache}" \
+            --cache-to "type=registry,ref=${image_cache},mode=max" \
+            --sbom=true \
+            --provenance=true \
+            -t "$image_sha" \
+            -t "$image_latest" \
+            --push \
+            .
+
+          digest=$(docker buildx imagetools inspect "$image_sha" | awk '/^Digest:/ {print $2; exit}')
+          if [ -z "$digest" ]; then
+            echo "failed to resolve pushed image digest"
+            exit 1
+          fi
+
+          image_ref="${image_name}@${digest}"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image-ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "image=$image_ref"
+          echo "sha-tag=$image_sha"
+          echo "latest-tag=$image_latest"
+
+      - name: Scan image
+        env:
+          IMAGE_REF: ${{ steps.publish.outputs.image-ref }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$HOME/.cache/trivy"
+          docker run --rm \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
+            -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
+            -e TRIVY_NO_PROGRESS=true \
+            "$TRIVY_IMAGE" image --scanners vuln --severity CRITICAL --exit-code 1 "$IMAGE_REF"
+
+  deploy:
+    name: Deploy to VDS
+    needs: image
+    runs-on: [self-hosted, native]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Deploy
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_NOTIFY_BOT_TOKEN: ${{ secrets.DEPLOY_NOTIFY_BOT_TOKEN }}
+          DEPLOY_NOTIFY_CHAT_ID: ${{ secrets.DEPLOY_NOTIFY_CHAT_ID }}
+          IMAGE_REF: ${{ needs.image.outputs.image-ref }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -eu
+
+          notify_deploy() {
+            if [ -z "${DEPLOY_NOTIFY_BOT_TOKEN:-}" ] || [ -z "${DEPLOY_NOTIFY_CHAT_ID:-}" ]; then
+              return 0
+            fi
+
+            curl -fsS -X POST "https://api.telegram.org/bot${DEPLOY_NOTIFY_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${DEPLOY_NOTIFY_CHAT_ID}" \
+              --data-urlencode "text=$1" >/dev/null || true
+          }
+
+          wait_for_health() {
+            attempts="$1"
+            for i in $(seq 1 "$attempts"); do
+              health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' ktk-schedule 2>/dev/null || true)
+              if [ "$health" = "healthy" ]; then
+                echo "container is healthy"
+                return 0
+              fi
+              echo "waiting for healthcheck: ${health:-missing} ($i/$attempts)"
+              sleep 2
+            done
+            return 1
+          }
+
+          if [ -z "${IMAGE_REF:-}" ]; then
+            echo "image digest output is empty"
+            notify_deploy "ktk-schedule deploy failed: image digest output is empty"
+            exit 1
+          fi
+
+          if [ -z "${REGISTRY_TOKEN:-}" ]; then
+            echo "GITHUB_TOKEN is not available for registry login"
+            notify_deploy "ktk-schedule deploy failed: registry token is not available"
+            exit 1
+          fi
+
+          if [ ! -f "$DEPLOY_DIR/.env" ]; then
+            echo "$DEPLOY_DIR/.env is missing"
+            notify_deploy "ktk-schedule deploy failed: .env is missing on VDS"
+            exit 1
+          fi
+
+          mkdir -p "$DEPLOY_DIR/scripts" "$DEPLOY_DIR/backups"
+          install -m 0644 docker-compose.yml "$DEPLOY_DIR/docker-compose.yml"
+          install -m 0755 scripts/backup-sqlite.sh "$DEPLOY_DIR/scripts/backup-sqlite.sh"
+
+          cd "$DEPLOY_DIR"
+          export KTK_SCHEDULE_IMAGE="$IMAGE_REF"
+
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+
+          previous_image=$(docker inspect ktk-schedule --format '{{.Config.Image}}' 2>/dev/null || true)
+          echo "previous image: ${previous_image:-none}"
+          echo "deploying image: $KTK_SCHEDULE_IMAGE"
+
+          if ! docker pull "$KTK_SCHEDULE_IMAGE"; then
+            notify_deploy "ktk-schedule deploy failed: image pull failed"
+            exit 1
+          fi
+
+          if ! backup_output=$(BACKUP_DIR="$DEPLOY_DIR/backups" \
+            BACKUP_KEEP_COUNT=10 \
+            BACKUP_KEEP_DAYS=30 \
+            BACKUP_VERIFY=true \
+            BACKUP_HELPER_IMAGE="$KTK_SCHEDULE_IMAGE" \
+            scripts/backup-sqlite.sh 2>&1); then
+            echo "$backup_output"
+            notify_deploy "ktk-schedule deploy failed: backup failed"
+            exit 1
+          fi
+          echo "$backup_output"
+          backup_path=$(printf '%s\n' "$backup_output" | sed -n 's/^database backed up to //p' | tail -n 1)
+
+          if ! docker compose up -d --no-build; then
+            notify_deploy "ktk-schedule deploy failed: docker compose up failed"
+            exit 1
+          fi
+
+          if wait_for_health 30; then
+            short_sha=$(printf '%s' "$SOURCE_SHA" | cut -c1-12)
+            short_digest=$(printf '%s' "$IMAGE_DIGEST" | cut -c8-19)
+            backup_note=${backup_path:-backup skipped}
+            notify_deploy "ktk-schedule deploy succeeded: ${short_sha} ${short_digest}; backup: ${backup_note}"
+            docker image prune --filter "until=168h" -f || true
+            docker builder prune --filter "until=168h" -f || true
+            exit 0
+          fi
+
+          echo "container failed to become healthy"
+          docker compose logs --tail=50 || true
+
+          if [ -n "$previous_image" ]; then
+            echo "rolling back to previous image"
+            export KTK_SCHEDULE_IMAGE="$previous_image"
+            docker pull "$KTK_SCHEDULE_IMAGE" || true
+
+            if docker compose up -d --no-build && wait_for_health 15; then
+              notify_deploy "ktk-schedule deploy failed and rolled back: ${SOURCE_SHA}"
+              exit 1
+            fi
+
+            echo "rollback container failed to become healthy"
+            docker compose logs --tail=50 || true
+          fi
+          notify_deploy "ktk-schedule deploy failed and rollback did not recover: ${SOURCE_SHA}"
+          exit 1

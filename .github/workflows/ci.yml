@@ -1,5 +1,5 @@
-name: CI/CD
-run-name: CI/CD / ${{ github.ref_name }}
+name: Continuous Integration
+run-name: CI / ${{ github.ref_name }}
 
 on:
   push:
@@ -24,358 +24,90 @@ on:
   schedule:
     - cron: "17 2 * * *"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  packages: write
 
 env:
   GO_VERSION: "1.26.4"
   GOLANGCI_LINT_VERSION: v2.12.2
   GOVULNCHECK_VERSION: v1.3.0
-  TRIVY_IMAGE: aquasec/trivy:0.71.0
-  REGISTRY: ghcr.io
-  REGISTRY_USERNAME: ${{ github.actor }}
-  DEPLOY_DIR: /home/github-runner/ktk-schedule
-  COMPOSE_PROJECT_NAME: ktk-schedule
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  quick:
-    name: Quick Go checks
+  code-quality:
+    name: Code Quality
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Download Go modules
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then
-              exit 0
-            fi
-            sleep "$((attempt * 5))"
-          done
-          go mod download
-
-      - run: go mod tidy -diff
-
-      - run: go vet ./...
-
-      - name: Test with coverage
-        run: |
-          mkdir -p artifacts
-          go test -count=1 -shuffle=on -coverprofile=artifacts/coverage.out ./...
-          go tool cover -func=artifacts/coverage.out | tee artifacts/coverage.txt
-
-      - run: go build -trimpath -ldflags="-s -w" -o /tmp/ktk-schedule ./cmd/bot
-
-  lint:
-    name: golangci-lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Install golangci-lint
-        run: |
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
-
-      - name: Download Go modules
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then
-              exit 0
-            fi
-            sleep "$((attempt * 5))"
-          done
-          go mod download
-
-      - run: golangci-lint run
-
-  race:
-    name: Race tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Download Go modules
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then
-              exit 0
-            fi
-            sleep "$((attempt * 5))"
-          done
-          go mod download
-
-      - run: go test -count=1 -race ./...
-
-  security:
-    name: Go security scan
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Install govulncheck
-        run: |
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
-
-      - name: Download Go modules
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then
-              exit 0
-            fi
-            sleep "$((attempt * 5))"
-          done
-          go mod download
-
-      - run: govulncheck ./...
-
-  image:
-    name: Build and publish image
-    needs: [quick, lint, race, security]
-    if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    outputs:
-      image-ref: ${{ steps.publish.outputs.image-ref }}
-      digest: ${{ steps.publish.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ env.REGISTRY_USERNAME }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        id: publish
-        run: |
-          set -eu
-
-          image_owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          image_name="${REGISTRY}/${image_owner}/ktk-schedule"
-          image_sha="${image_name}:${GITHUB_SHA}"
-          image_latest="${image_name}:latest"
-          image_cache="${image_name}:buildcache"
-
-          docker buildx build \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --cache-from "type=registry,ref=${image_cache}" \
-            --cache-to "type=registry,ref=${image_cache},mode=max" \
-            --sbom=true \
-            --provenance=true \
-            -t "$image_sha" \
-            -t "$image_latest" \
-            --push \
-            .
-
-          digest=$(docker buildx imagetools inspect "$image_sha" | awk '/^Digest:/ {print $2; exit}')
-          if [ -z "$digest" ]; then
-            echo "failed to resolve pushed image digest"
-            exit 1
-          fi
-
-          image_ref="${image_name}@${digest}"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "image-ref=$image_ref" >> "$GITHUB_OUTPUT"
-          mkdir -p artifacts
-          {
-            echo "image=$image_ref"
-            echo "sha-tag=$image_sha"
-            echo "latest-tag=$image_latest"
-          } | tee artifacts/image-summary.txt
-
-      - name: Scan image for critical CVEs
-        env:
-          IMAGE_REF: ${{ steps.publish.outputs.image-ref }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p artifacts "$HOME/.cache/trivy"
-          docker run --rm \
-            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
-            -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
-            -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
-            "$TRIVY_IMAGE" image --scanners vuln --severity CRITICAL --exit-code 1 "$IMAGE_REF"
-          docker run --rm \
-            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
-            -e TRIVY_USERNAME="$REGISTRY_USERNAME" \
-            -e TRIVY_PASSWORD="$REGISTRY_TOKEN" \
-            "$TRIVY_IMAGE" image --scanners vuln --severity HIGH,CRITICAL --exit-code 0 "$IMAGE_REF" | tee artifacts/trivy-report.txt
-
-      - uses: sigstore/cosign-installer@v3
-
-      - name: Sign image
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
-            echo "COSIGN_PRIVATE_KEY is not set; skipping image signing"
-            exit 0
-          fi
-
-          key_file=$(mktemp)
-          trap 'rm -f "$key_file"' EXIT
-          printf '%s' "$COSIGN_PRIVATE_KEY" > "$key_file"
-          cosign sign --yes --key "$key_file" "${{ steps.publish.outputs.image-ref }}"
-
-  deploy:
-    name: Deploy to VDS
-    needs: image
-    if: success() && github.ref == 'refs/heads/master' && github.event_name == 'push'
-    runs-on: [self-hosted, native]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Deploy to VDS
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEPLOY_NOTIFY_BOT_TOKEN: ${{ secrets.DEPLOY_NOTIFY_BOT_TOKEN }}
-          DEPLOY_NOTIFY_CHAT_ID: ${{ secrets.DEPLOY_NOTIFY_CHAT_ID }}
-          IMAGE_REF: ${{ needs.image.outputs.image-ref }}
-          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Add Go tools to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Download packages
         run: |
-          set -eu
-
-          notify_deploy() {
-            if [ -z "${DEPLOY_NOTIFY_BOT_TOKEN:-}" ] || [ -z "${DEPLOY_NOTIFY_CHAT_ID:-}" ]; then
-              return 0
+          for attempt in 1 2 3; do
+            if go mod download; then
+              exit 0
             fi
+            sleep "$((attempt * 5))"
+          done
+          go mod download
 
-            curl -fsS -X POST "https://api.telegram.org/bot${DEPLOY_NOTIFY_BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${DEPLOY_NOTIFY_CHAT_ID}" \
-              --data-urlencode "text=$1" >/dev/null || true
-          }
+      - name: Install tools
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 
-          wait_for_health() {
-            attempts="$1"
-            for i in $(seq 1 "$attempts"); do
-              health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' ktk-schedule 2>/dev/null || true)
-              if [ "$health" = "healthy" ]; then
-                echo "container is healthy"
-                return 0
-              fi
-              echo "waiting for healthcheck: ${health:-missing} ($i/$attempts)"
-              sleep 2
-            done
-            return 1
-          }
+      - name: Check module files
+        run: go mod tidy -diff
 
-          if [ -z "${IMAGE_REF:-}" ]; then
-            echo "image digest output is empty"
-            notify_deploy "ktk-schedule deploy failed: image digest output is empty"
-            exit 1
-          fi
+      - name: Vet
+        run: go vet ./...
 
-          if [ -z "${REGISTRY_TOKEN:-}" ]; then
-            echo "GITHUB_TOKEN is not available for registry login"
-            notify_deploy "ktk-schedule deploy failed: registry token is not available"
-            exit 1
-          fi
+      - name: Lint
+        run: golangci-lint run
 
-          if [ ! -f "$DEPLOY_DIR/.env" ]; then
-            echo "$DEPLOY_DIR/.env is missing"
-            notify_deploy "ktk-schedule deploy failed: .env is missing on VDS"
-            exit 1
-          fi
+      - name: Vulnerability scan
+        if: github.event_name != 'pull_request'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          govulncheck ./...
 
-          mkdir -p "$DEPLOY_DIR/scripts" "$DEPLOY_DIR/backups"
-          install -m 0644 docker-compose.yml "$DEPLOY_DIR/docker-compose.yml"
-          install -m 0755 scripts/backup-sqlite.sh "$DEPLOY_DIR/scripts/backup-sqlite.sh"
+      - name: Compile
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/ktk-schedule ./cmd/bot
 
-          cd "$DEPLOY_DIR"
-          export KTK_SCHEDULE_IMAGE="$IMAGE_REF"
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
-          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-          previous_image=$(docker inspect ktk-schedule --format '{{.Config.Image}}' 2>/dev/null || true)
-          echo "previous image: ${previous_image:-none}"
-          echo "deploying image: $KTK_SCHEDULE_IMAGE"
-
-          if ! docker pull "$KTK_SCHEDULE_IMAGE"; then
-            notify_deploy "ktk-schedule deploy failed: image pull failed"
-            exit 1
-          fi
-
-          if ! backup_output=$(BACKUP_DIR="$DEPLOY_DIR/backups" \
-            BACKUP_KEEP_COUNT=10 \
-            BACKUP_KEEP_DAYS=30 \
-            BACKUP_VERIFY=true \
-            BACKUP_HELPER_IMAGE="$KTK_SCHEDULE_IMAGE" \
-            scripts/backup-sqlite.sh 2>&1); then
-            echo "$backup_output"
-            notify_deploy "ktk-schedule deploy failed: backup failed"
-            exit 1
-          fi
-          echo "$backup_output"
-          backup_path=$(printf '%s\n' "$backup_output" | sed -n 's/^database backed up to //p' | tail -n 1)
-
-          if ! docker compose up -d --no-build; then
-            notify_deploy "ktk-schedule deploy failed: docker compose up failed"
-            exit 1
-          fi
-
-          if wait_for_health 30; then
-            short_sha=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
-            short_digest=$(printf '%s' "$IMAGE_DIGEST" | cut -c8-19)
-            backup_note=${backup_path:-backup skipped}
-            notify_deploy "ktk-schedule deploy succeeded: ${short_sha} ${short_digest}; backup: ${backup_note}"
-            docker image prune --filter "until=168h" -f || true
-            docker builder prune --filter "until=168h" -f || true
-            exit 0
-          fi
-
-          echo "container failed to become healthy"
-          docker compose logs --tail=50 || true
-
-          if [ -n "$previous_image" ]; then
-            echo "rolling back to previous image"
-            export KTK_SCHEDULE_IMAGE="$previous_image"
-            docker pull "$KTK_SCHEDULE_IMAGE" || true
-
-            if docker compose up -d --no-build && wait_for_health 15; then
-              notify_deploy "ktk-schedule deploy failed and rolled back: ${GITHUB_SHA}"
-              exit 1
+      - name: Download packages
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              exit 0
             fi
+            sleep "$((attempt * 5))"
+          done
+          go mod download
 
-            echo "rollback container failed to become healthy"
-            docker compose logs --tail=50 || true
-          fi
-          notify_deploy "ktk-schedule deploy failed and rollback did not recover: ${GITHUB_SHA}"
-          exit 1
+      - name: Test
+        run: go test -count=1 -race -shuffle=on ./...
