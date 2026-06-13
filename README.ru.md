@@ -5,7 +5,7 @@
 
 [English version](./README.md)
 
-Telegram-бот для расписания [КТК](ktk-45.ru).
+Telegram-бот для расписания [КТК](https://ktk-45.ru).
 
 ## Возможности
 

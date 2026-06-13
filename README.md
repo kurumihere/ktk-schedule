@@ -5,7 +5,7 @@
 
 [Russian version](./README.ru.md)
 
-Telegram bot for the [KTK](ktk-45.ru) schedule.
+Telegram bot for the [KTK](https://ktk-45.ru) schedule.
 
 ## Features
 
