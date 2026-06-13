@@ -1,10 +1,6 @@
 name: Deploy
 
 on:
-  workflow_run:
-    workflows: ["Continuous Integration"]
-    types: [completed]
-    branches: [master]
   workflow_dispatch:
 
 concurrency:
@@ -20,16 +16,12 @@ env:
   IMAGE_NAME: ktk-schedule
   DEPLOY_DIR: /home/github-runner/ktk-schedule
   COMPOSE_PROJECT_NAME: ktk-schedule
-  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  SOURCE_SHA: ${{ github.sha }}
 
 jobs:
   image:
     name: Build image
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -70,7 +62,6 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://t.me/ktk45_schedule_bot
     steps:
       - name: Checkout
         uses: actions/checkout@v6
