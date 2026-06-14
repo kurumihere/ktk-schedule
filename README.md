@@ -15,19 +15,6 @@ Telegram bot for the [KTK](https://ktk-45.ru) schedule.
 - Assignment attachments and files by day
 - Morning notifications
 
-## Configuration
-
-All variables are listed in [.env.example](./.env.example). Main ones:
-
-| Variable | Purpose |
-|---|---|
-| `BOT_TOKEN` | Telegram bot token |
-| `CREDENTIALS_SECRET` | password encryption secret |
-| `OWNER_TELEGRAM_ID` | owner of the `/announce` and `/stats` commands |
-| `DATABASE_PATH` | SQLite path |
-| `NOTIFY_TIME` | morning notification time |
-| `TIMEZONE` | time zone |
-
 ## License
 
 [BSD 3-Clause](./LICENSE)
