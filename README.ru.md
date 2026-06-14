@@ -15,19 +15,6 @@ Telegram-бот для расписания [КТК](https://ktk-45.ru).
 - Вложения к заданиям и файлы по дням
 - Утренние уведомления
 
-## Конфигурация
-
-Все переменные лежат в [.env.example](./.env.example). Основные:
-
-| Переменная | Назначение |
-|---|---|
-| `BOT_TOKEN` | токен Telegram-бота |
-| `CREDENTIALS_SECRET` | секрет для шифрования паролей |
-| `OWNER_TELEGRAM_ID` | владелец команд `/announce` и `/stats` |
-| `DATABASE_PATH` | путь к SQLite |
-| `NOTIFY_TIME` | время утренней рассылки |
-| `TIMEZONE` | часовой пояс |
-
 ## Лицензия
 
 [BSD 3-Clause](./LICENSE)
