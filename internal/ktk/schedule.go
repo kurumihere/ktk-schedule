@@ -1451,8 +1451,8 @@ func CalculatePairTiming(preset CallPreset, pairNumber int) (PairTiming, bool) {
 		return PairTiming{}, false
 	}
 
-	hour, min := parseBeginTime(preset.Begin)
-	totalMin := hour*60 + min
+	hour, minute := parseBeginTime(preset.Begin)
+	totalMin := hour*60 + minute
 
 	for i := range idx {
 		totalMin += preset.CallSet[i].Break + preset.CallSet[i].Duration
@@ -1515,8 +1515,8 @@ func parseBeginTime(value string) (int, int) {
 		return 0, 0
 	}
 	hour, _ := strconv.Atoi(timeParts[0])
-	min, _ := strconv.Atoi(timeParts[1])
-	return hour, min
+	minute, _ := strconv.Atoi(timeParts[1])
+	return hour, minute
 }
 
 func formatDuration(d time.Duration) string {
@@ -1730,6 +1730,12 @@ func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHal
 
 	b.WriteString("🏫 Кабинет: " + FormatLectureHall(subject.LectureHall, halls) + "\n")
 
+	writeHomeworkAndFiles(b, subject, options)
+
+	b.WriteByte('\n')
+}
+
+func writeHomeworkAndFiles(b *strings.Builder, subject ScheduleItem, options FormatOptions) {
 	if subject.ExtraData.Homework.Task != nil && strings.TrimSpace(*subject.ExtraData.Homework.Task) != "" {
 		b.WriteString("Задание: " + strings.TrimSpace(*subject.ExtraData.Homework.Task) + "\n")
 	}
@@ -1770,8 +1776,6 @@ func writeSubjectBody(b *strings.Builder, subject ScheduleItem, halls LectureHal
 			}
 		}
 	}
-
-	b.WriteByte('\n')
 }
 
 func writeAppraisal(b *strings.Builder, subject ScheduleItem) {

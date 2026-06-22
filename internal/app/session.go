@@ -205,10 +205,10 @@ func (a *App) modifySession(telegramID int64, fn func(*Session)) {
 		if old == nil {
 			return
 		}
-		new := old.copy()
-		fn(new)
-		new.touchLastAccess()
-		if p.CompareAndSwap(old, new) {
+		newSession := old.copy()
+		fn(newSession)
+		newSession.touchLastAccess()
+		if p.CompareAndSwap(old, newSession) {
 			return
 		}
 	}

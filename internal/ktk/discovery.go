@@ -82,6 +82,14 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		slog.Warn("no schedule endpoint with grades found, grades will be unavailable")
 	}
 
+	c.resolveSecondaryEndpoints(ctx, &next, candidates)
+
+	c.setEndpoints(next)
+	c.logEndpoints(next)
+	return nil
+}
+
+func (c *Client) resolveSecondaryEndpoints(ctx context.Context, next *Endpoints, candidates endpointCandidates) {
 	branchID := next.BranchID
 	if len(candidates.branchIDs) > 0 {
 		branchID = candidates.branchIDs[0]
@@ -120,8 +128,9 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 	if len(candidates.homeworkHashes) > 0 {
 		next.HomeworkHash = candidates.homeworkHashes[0]
 	}
+}
 
-	c.setEndpoints(next)
+func (c *Client) logEndpoints(next Endpoints) {
 	slog.Debug("endpoints refreshed",
 		"schedule_path", next.SchedulePath,
 		"group_schedule_path", next.GroupSchedulePath,
@@ -134,7 +143,6 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		"homework_hash", next.HomeworkHash,
 		"branch_id", next.BranchID,
 	)
-	return nil
 }
 
 func (c *Client) refreshAuxiliaryEndpoints(ctx context.Context) error {

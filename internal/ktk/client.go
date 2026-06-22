@@ -37,7 +37,7 @@ type signInRequest struct {
 	Device   string `json:"Device"`
 }
 
-type accountInfo struct {
+type AccountInfo struct {
 	Hash      string `json:"Hash"`
 	Group     any    `json:"Group"`
 	IsStudent *bool  `json:"IsStudent"`
@@ -134,6 +134,14 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sign in failed: %s", resp.Status)
 	}
+
+	c.processSignInResponse(ctx, body)
+
+	slog.Info("sign in successful", "teacher", c.teacherHash != "")
+	return nil
+}
+
+func (c *Client) processSignInResponse(ctx context.Context, body []byte) {
 	if subgroup := extractPersonalSubgroup(body); subgroup != "" {
 		slog.Debug("subgroup detected", "subgroup", subgroup)
 		c.subgroup = subgroup
@@ -173,12 +181,9 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 		}
 		slog.Debug("sign in response body", "body", preview)
 	}
-
-	slog.Info("sign in successful", "teacher", c.teacherHash != "")
-	return nil
 }
 
-func (c *Client) GetAccountInfo(ctx context.Context) (accountInfo, []byte, error) {
+func (c *Client) GetAccountInfo(ctx context.Context) (AccountInfo, []byte, error) {
 	paths := c.cachedAccountInfoPaths()
 	var err error
 	if len(paths) > 0 {
@@ -191,7 +196,7 @@ func (c *Client) GetAccountInfo(ctx context.Context) (accountInfo, []byte, error
 
 	discoveredPaths, discoveryErr := c.discoveredAccountInfoPaths(ctx)
 	if discoveryErr != nil && len(paths) == 0 {
-		return accountInfo{}, nil, discoveryErr
+		return AccountInfo{}, nil, discoveryErr
 	}
 	checked := len(paths)
 	paths = appendInfoPaths(paths, discoveredPaths...)
@@ -200,20 +205,20 @@ func (c *Client) GetAccountInfo(ctx context.Context) (accountInfo, []byte, error
 		if retryErr == nil {
 			return info, body, nil
 		}
-		return accountInfo{}, nil, retryErr
+		return AccountInfo{}, nil, retryErr
 	}
 	if err != nil {
-		return accountInfo{}, nil, err
+		return AccountInfo{}, nil, err
 	}
 	if discoveryErr != nil {
-		return accountInfo{}, nil, discoveryErr
+		return AccountInfo{}, nil, discoveryErr
 	}
-	return accountInfo{}, nil, fmt.Errorf("account info endpoint not found")
+	return AccountInfo{}, nil, fmt.Errorf("account info endpoint not found")
 }
 
-func (c *Client) firstValidAccountInfo(ctx context.Context, paths []string) (accountInfo, []byte, error) {
+func (c *Client) firstValidAccountInfo(ctx context.Context, paths []string) (AccountInfo, []byte, error) {
 	if len(paths) == 0 {
-		return accountInfo{}, nil, nil
+		return AccountInfo{}, nil, nil
 	}
 
 	var lastErr error
@@ -232,16 +237,16 @@ func (c *Client) firstValidAccountInfo(ctx context.Context, paths []string) (acc
 		c.setEndpoints(endpoint)
 		return info, body, nil
 	}
-	return accountInfo{}, nil, lastErr
+	return AccountInfo{}, nil, lastErr
 }
 
-func (c *Client) getAccountInfo(ctx context.Context, path string) (accountInfo, []byte, error) {
+func (c *Client) getAccountInfo(ctx context.Context, path string) (AccountInfo, []byte, error) {
 	infoURL, err := c.resolveURL(path)
 	if err != nil {
-		return accountInfo{}, nil, err
+		return AccountInfo{}, nil, err
 	}
 
-	var info accountInfo
+	var info AccountInfo
 	var body []byte
 	err = retryGet(ctx, 3, func(retryCtx context.Context) error {
 		req, err := http.NewRequestWithContext(retryCtx, http.MethodGet, infoURL, nil)
@@ -434,7 +439,7 @@ func findPersonalGroupID(value any) int {
 	return 0
 }
 
-func accountInfoGroupID(info accountInfo, body []byte) int {
+func accountInfoGroupID(info AccountInfo, body []byte) int {
 	if groupID := groupIDFromValue(info.Group); groupID > 0 {
 		return groupID
 	}

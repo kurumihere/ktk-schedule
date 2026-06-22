@@ -18,49 +18,7 @@ const groupScheduleCacheKey = "__group_schedule__"
 func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, error) {
 	if session := a.getSession(user.TelegramID); session != nil && session.Client != nil {
 		a.syncTeacherHash(user, session.Client.TeacherHash())
-
-		var halls ktk.LectureHallMap
-		var callPresets ktk.CallPresetMap
-		var absenceMarks []ktk.AbsenceMark
-		var pairTypes ktk.PairTypeMap
-
-		if session.Halls == nil {
-			halls, _ = a.loadLectureHalls(ctx, session.Client, user.GroupID)
-			if halls == nil {
-				halls = make(ktk.LectureHallMap)
-			}
-		}
-		if session.CallPresets == nil {
-			callPresets = a.loadCallPresets(ctx, session.Client)
-		}
-		if session.AbsenceMarks == nil {
-			absenceMarks = a.loadAbsenceMarks(ctx, session.Client)
-		}
-		if session.PairTypes == nil {
-			pairTypes = a.loadPairTypes(ctx, session.Client)
-		}
-		if user.PasswordLegacy {
-			a.migrateLegacyPassword(user)
-		}
-
-		a.modifySession(user.TelegramID, func(s *Session) {
-			s.Subgroup = user.Subgroup
-			s.ShowAllSubgroups = user.ShowAllSubgroups
-			s.TeacherHash = user.TeacherHash
-			if s.Halls == nil && halls != nil {
-				s.Halls = halls
-			}
-			if s.CallPresets == nil && callPresets != nil {
-				s.CallPresets = callPresets
-			}
-			if s.AbsenceMarks == nil && absenceMarks != nil {
-				s.AbsenceMarks = absenceMarks
-			}
-			if s.PairTypes == nil && pairTypes != nil {
-				s.PairTypes = pairTypes
-			}
-		})
-
+		a.updateSessionWithUser(ctx, session, user)
 		return a.getSession(user.TelegramID), nil
 	}
 
@@ -73,17 +31,7 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 	}
 	a.syncTeacherHash(user, client.TeacherHash())
 
-	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
-	if err != nil {
-		slog.Warn("lecture halls load", "error", err)
-	}
-	if halls == nil {
-		halls = make(ktk.LectureHallMap)
-	}
-
-	callPresets := a.loadCallPresets(ctx, client)
-	absenceMarks := a.loadAbsenceMarks(ctx, client)
-	pairTypes := a.loadPairTypes(ctx, client)
+	halls, callPresets, absenceMarks, pairTypes := a.loadSessionData(ctx, client, user.GroupID)
 
 	session := &Session{
 		Client:           client,
@@ -99,6 +47,64 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 
 	a.setSession(user.TelegramID, session)
 	return session, nil
+}
+
+func (a *App) loadSessionData(ctx context.Context, client *ktk.Client, groupID int) (ktk.LectureHallMap, ktk.CallPresetMap, []ktk.AbsenceMark, ktk.PairTypeMap) {
+	halls, err := a.loadLectureHalls(ctx, client, groupID)
+	if err != nil {
+		slog.Warn("lecture halls load", "error", err)
+	}
+	if halls == nil {
+		halls = make(ktk.LectureHallMap)
+	}
+	callPresets := a.loadCallPresets(ctx, client)
+	absenceMarks := a.loadAbsenceMarks(ctx, client)
+	pairTypes := a.loadPairTypes(ctx, client)
+	return halls, callPresets, absenceMarks, pairTypes
+}
+
+func (a *App) updateSessionWithUser(ctx context.Context, session *Session, user *storage.User) {
+	var halls ktk.LectureHallMap
+	var callPresets ktk.CallPresetMap
+	var absenceMarks []ktk.AbsenceMark
+	var pairTypes ktk.PairTypeMap
+
+	if session.Halls == nil {
+		halls, _ = a.loadLectureHalls(ctx, session.Client, user.GroupID)
+		if halls == nil {
+			halls = make(ktk.LectureHallMap)
+		}
+	}
+	if session.CallPresets == nil {
+		callPresets = a.loadCallPresets(ctx, session.Client)
+	}
+	if session.AbsenceMarks == nil {
+		absenceMarks = a.loadAbsenceMarks(ctx, session.Client)
+	}
+	if session.PairTypes == nil {
+		pairTypes = a.loadPairTypes(ctx, session.Client)
+	}
+	if user.PasswordLegacy {
+		a.migrateLegacyPassword(user)
+	}
+
+	a.modifySession(user.TelegramID, func(s *Session) {
+		s.Subgroup = user.Subgroup
+		s.ShowAllSubgroups = user.ShowAllSubgroups
+		s.TeacherHash = user.TeacherHash
+		if s.Halls == nil && halls != nil {
+			s.Halls = halls
+		}
+		if s.CallPresets == nil && callPresets != nil {
+			s.CallPresets = callPresets
+		}
+		if s.AbsenceMarks == nil && absenceMarks != nil {
+			s.AbsenceMarks = absenceMarks
+		}
+		if s.PairTypes == nil && pairTypes != nil {
+			s.PairTypes = pairTypes
+		}
+	})
 }
 
 func (a *App) syncTeacherHash(user *storage.User, teacherHash string) {

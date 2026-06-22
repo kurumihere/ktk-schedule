@@ -37,13 +37,13 @@ func withRetry(ctx context.Context, fn func() error) error {
 			}
 		}
 
-		if err := fn(); err == nil {
+		err := fn()
+		if err == nil {
 			return nil
 		} else if !isRateLimited(err) {
 			return err
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 	}
 	return lastErr
 }
