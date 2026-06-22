@@ -43,8 +43,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Secret Scanning (Gitleaks)
-        uses: gitleaks/gitleaks-action@v3
+      - name: Secret Scanning (Betterleaks)
+        uses: dortort/betterleaks-action@v0.1.0
+        with:
+          version: 'latest'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
