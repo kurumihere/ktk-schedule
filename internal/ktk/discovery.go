@@ -191,21 +191,26 @@ func (c *Client) pickScheduleEndpoint(ctx context.Context, paths []string, group
 	return
 }
 
+type candidate struct {
+	path       string
+	days       []ScheduleDay
+	raw        []byte
+	count      int
+	hasGrades  bool
+	groupAware bool
+}
+
 func (c *Client) pickScheduleEndpoints(ctx context.Context, paths []string, groupID int, teacherHash string, weekMillis int64, preferGrades bool) (bestPath string, groupPath string, hasGrades bool) {
 	if teacherHash != "" {
 		bestPath, hasGrades, _ = c.pickScheduleEndpoint(ctx, paths, groupID, teacherHash, weekMillis, preferGrades)
 		return bestPath, "", hasGrades
 	}
 
-	type candidate struct {
-		path       string
-		days       []ScheduleDay
-		raw        []byte
-		count      int
-		hasGrades  bool
-		groupAware bool
-	}
+	candidates := c.evaluateScheduleCandidates(ctx, paths, groupID, weekMillis)
+	return c.selectBestCandidates(candidates, preferGrades)
+}
 
+func (c *Client) evaluateScheduleCandidates(ctx context.Context, paths []string, groupID int, weekMillis int64) []candidate {
 	candidates := make([]candidate, 0, len(paths))
 	for _, p := range paths {
 		days, raw, err := c.validateScheduleEndpoint(ctx, p, groupID, "", weekMillis)
@@ -223,7 +228,10 @@ func (c *Client) pickScheduleEndpoints(ctx context.Context, paths []string, grou
 		item.groupAware = c.schedulePathVariesByGroup(ctx, p, groupID, weekMillis, item.days)
 		candidates = append(candidates, item)
 	}
+	return candidates
+}
 
+func (c *Client) selectBestCandidates(candidates []candidate, preferGrades bool) (bestPath string, groupPath string, hasGrades bool) {
 	bestPersonal := -1
 	bestGroup := -1
 	for i, item := range candidates {

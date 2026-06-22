@@ -10,39 +10,7 @@ import (
 func TestGetScheduleRefreshesStaleEndpointFromWorkspaceAssets(t *testing.T) {
 	const weekMillis int64 = 1777240800000
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/":
-			_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
-		case "/assets/app.js":
-			_, _ = w.Write([]byte(`
-				const emptySchedule = "/v0/root/tenant/empty-schedule";
-				const schedule = "/v0/root/tenant/schedule-new";
-				const halls = "/v0/root/tenant/lecture-hall?Branch=newbranch123";
-			`))
-		case "/old/schedule", "/old/lecture-hall":
-			http.NotFound(w, r)
-		case "/v0/root/tenant/empty-schedule":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Today":true,"Subjects":[]}]`))
-		case "/v0/root/tenant/schedule-new":
-			if r.URL.Query().Get("Group") != "269" || r.URL.Query().Get("Week") != "1777240800000" {
-				http.Error(w, "bad schedule query", http.StatusBadRequest)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Today":true,"Subjects":[{"Discipline":"Math","Teacher":"Teacher","LectureHall":42,"Pair":1}]}]`))
-		case "/v0/root/tenant/lecture-hall":
-			if r.URL.Query().Get("Branch") != "newbranch123" {
-				http.Error(w, "bad branch", http.StatusBadRequest)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"LectureHalls":{"1":[{"ID":42,"Housing":1,"Level":2,"Number":"202","Virtual":false}]}}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	server := httptest.NewServer(http.HandlerFunc(discoveryTestMockServer))
 	defer server.Close()
 
 	client, err := NewClient(server.URL, WithEndpoints(Endpoints{
@@ -323,4 +291,75 @@ func TestTeacherScheduleEndpointDoesNotRequireGrades(t *testing.T) {
 	if client.Endpoints().SchedulePath != "/v0/root/tenant/teacher-schedule" {
 		t.Fatalf("unexpected schedule path: %s", client.Endpoints().SchedulePath)
 	}
+}
+
+func discoveryTestMockServer(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/":
+		_, _ = w.Write([]byte(`<html><body><script type="module" src="/assets/app.js"></script></body></html>`))
+	case "/assets/app.js":
+		_, _ = w.Write([]byte(`
+			const emptySchedule = "/v0/root/tenant/empty-schedule";
+			const schedule = "/v0/root/tenant/schedule-new";
+			const halls = "/v0/root/tenant/lecture-hall?Branch=newbranch123";
+		`))
+	case "/old/schedule", "/old/lecture-hall":
+		http.NotFound(w, r)
+	case "/v0/root/tenant/empty-schedule":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Today":true,"Subjects":[]}]`))
+	case "/v0/root/tenant/schedule-new":
+		if r.URL.Query().Get("Group") != "269" || r.URL.Query().Get("Week") != "1777240800000" {
+			http.Error(w, "bad schedule query", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Today":true,"Subjects":[{"Discipline":"Math","Teacher":"Teacher","LectureHall":42,"Pair":1}]}]`))
+	case "/v0/root/tenant/lecture-hall":
+		if r.URL.Query().Get("Branch") != "newbranch123" {
+			http.Error(w, "bad branch", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"LectureHalls":{"1":[{"ID":42,"Housing":1,"Level":2,"Number":"202","Virtual":false}]}}`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func discoveryTestMockServerPersonal(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/":
+		_, _ = w.Write([]byte(`<html><body><script src="/assets/app.js"></script></body></html>`))
+	case "/assets/app.js":
+		_, _ = w.Write([]byte(`
+			const s1 = "/v0/schedule-bad";
+			const s2 = "/v0/schedule-group";
+			const s3 = "/v0/schedule-personal";
+		`))
+	case "/v0/schedule-bad":
+		http.Error(w, "error", http.StatusInternalServerError)
+	case "/v0/schedule-group":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[
+			{"Discipline":"Math","Teacher":"Teacher","Pair":1,"Mark":0}
+		]}]`))
+	case "/v0/schedule-personal":
+		if r.URL.Query().Get("TeacherHash") == "" {
+			http.Error(w, "need teacher hash", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"Date":"2026-04-27T00:00:00Z","Subjects":[
+			{"Discipline":"Math","Teacher":"Teacher","Pair":1,"Mark":5}
+		]}]`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func TestDiscovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(discoveryTestMockServerPersonal))
+	defer server.Close()
+	// ...
 }

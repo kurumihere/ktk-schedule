@@ -173,16 +173,7 @@ func appendFileIDsFromValue(dst []int, value any) []int {
 			dst = appendFileIDsFromValue(dst, item)
 		}
 	case map[string]any:
-		for _, key := range []string{"ID", "Id", "id", "FileID", "fileID", "fileId", "DocumentID", "documentID", "documentId", "DocID", "docID", "UserFileID"} {
-			if rawID, ok := v[key]; ok {
-				dst = appendFileIDsFromValue(dst, rawID)
-			}
-		}
-		for _, key := range []string{"File", "file", "Document", "document", "Attachment", "attachment", "UserFile", "userFile"} {
-			if nested, ok := v[key]; ok {
-				dst = appendFileIDsFromValue(dst, nested)
-			}
-		}
+		dst = appendFileIDsFromMap(dst, v)
 	case json.Number:
 		if n, err := v.Int64(); err == nil && n > 0 {
 			dst = append(dst, int(n))
@@ -194,6 +185,20 @@ func appendFileIDsFromValue(dst []int, value any) []int {
 	case float64:
 		if v > 0 && v == float64(int(v)) {
 			dst = append(dst, int(v))
+		}
+	}
+	return dst
+}
+
+func appendFileIDsFromMap(dst []int, v map[string]any) []int {
+	for _, key := range []string{"ID", "Id", "id", "FileID", "fileID", "fileId", "DocumentID", "documentID", "documentId", "DocID", "docID", "UserFileID"} {
+		if rawID, ok := v[key]; ok {
+			dst = appendFileIDsFromValue(dst, rawID)
+		}
+	}
+	for _, key := range []string{"File", "file", "Document", "document", "Attachment", "attachment", "UserFile", "userFile"} {
+		if nested, ok := v[key]; ok {
+			dst = appendFileIDsFromValue(dst, nested)
 		}
 	}
 	return dst
@@ -1744,36 +1749,46 @@ func writeHomeworkAndFiles(b *strings.Builder, subject ScheduleItem, options For
 		b.WriteString("Вебинар: " + strings.TrimSpace(*subject.ExtraData.Homework.Webinar) + "\n")
 	}
 
-	if n := len(subject.ExtraData.Homework.Files); n > 0 {
-		b.WriteString("📎 ")
-		b.WriteString(strconv.Itoa(n))
-		switch {
-		case n%10 == 1 && n%100 != 11:
-			b.WriteString(" файл")
-		case n%10 >= 2 && n%10 <= 4 && (n%100 < 10 || n%100 >= 20):
-			b.WriteString(" файла")
-		default:
-			b.WriteString(" файлов")
-		}
+	writeTeacherFiles(b, subject.ExtraData.Homework.Files, options)
+	if !options.IsTeacher {
+		writeStudentFiles(b, subject.ExtraData.Sheet, options)
+	}
+}
 
-		showNames := n <= 20
-		for _, id := range subject.ExtraData.Homework.Files {
-			if name, ok := options.FileNames[id]; ok && showNames {
+func writeTeacherFiles(b *strings.Builder, files []int, options FormatOptions) {
+	n := len(files)
+	if n == 0 {
+		return
+	}
+	b.WriteString("📎 ")
+	b.WriteString(strconv.Itoa(n))
+	switch {
+	case n%10 == 1 && n%100 != 11:
+		b.WriteString(" файл")
+	case n%10 >= 2 && n%10 <= 4 && (n%100 < 10 || n%100 >= 20):
+		b.WriteString(" файла")
+	default:
+		b.WriteString(" файлов")
+	}
+
+	if n <= 20 {
+		for _, id := range files {
+			if name, ok := options.FileNames[id]; ok {
 				b.WriteString("\n  \u2022 ")
 				b.WriteString(name)
 			}
 		}
-		b.WriteByte('\n')
 	}
+	b.WriteByte('\n')
+}
 
-	if !options.IsTeacher {
-		if studentFileID, ok := options.StudentFiles[subject.ExtraData.Sheet]; ok {
-			b.WriteString("📤 1 файл (моя работа)\n")
-			if name, ok := options.FileNames[studentFileID]; ok {
-				b.WriteString("  \u2022 ")
-				b.WriteString(name)
-				b.WriteByte('\n')
-			}
+func writeStudentFiles(b *strings.Builder, sheet int, options FormatOptions) {
+	if studentFileID, ok := options.StudentFiles[sheet]; ok {
+		b.WriteString("📤 1 файл (моя работа)\n")
+		if name, ok := options.FileNames[studentFileID]; ok {
+			b.WriteString("  \u2022 ")
+			b.WriteString(name)
+			b.WriteByte('\n')
 		}
 	}
 }

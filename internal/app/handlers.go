@@ -465,103 +465,19 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 
 	chatID := message.Chat.ID
-	session := a.getSession(chatID)
-	if session == nil || len(session.Schedule) == 0 {
-		user, err := a.storage.GetUser(chatID)
-		if err != nil {
-			a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
-			return
-		}
-		if user == nil {
-			a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
-			return
-		}
-
-		session, err = a.ensureSession(ctx, user)
-		if err != nil {
-			slog.Error("session recovery failed", "chat_id", chatID, "error", err)
-			a.send(ctx, chatID, "Не удалось восстановить сессию. Попробуй /login.")
-			return
-		}
-
-		targetDate := a.extractDateFromMessage(message.Text)
-		if targetDate.IsZero() {
-			if !session.WeekStart.IsZero() {
-				targetDate = session.WeekStart
-			} else {
-				targetDate = time.Now()
-			}
-		}
-
-		if _, _, err := a.refreshSessionSchedule(ctx, user, session, targetDate); err != nil {
-			slog.Error("schedule recovery failed", "chat_id", chatID, "error", err)
-			a.send(ctx, chatID, "Не удалось загрузить расписание после долгого бездействия. Введи /schedule.")
-			return
-		}
-	}
-	if session.WeekStart.IsZero() {
-		session.WeekStart = ktk.WeekStart(time.Now(), a.location)
+	session, err := a.loadOrRecoverSession(ctx, chatID, message.Text)
+	if err != nil {
+		return
 	}
 
 	data := callback.Data
 	oldIndex := session.CurrentIndex
 
-	switch {
-	case data == "schedule:my":
-		a.handleCallbackMy(ctx, bot, chatID, message.ID, session)
+	handled, shouldUpdate := a.processCallbackAction(ctx, bot, chatID, message.ID, data, session)
+	if handled && !shouldUpdate {
 		return
-	case data == "schedule:group:select":
-		a.handleCallbackGroupSelect(ctx, bot, chatID, message.ID, session)
-		return
-	case data == "schedule:subgroup:left":
-		a.handleCallbackSubgroup(ctx, bot, chatID, message.ID, session, "left", false)
-		return
-	case data == "schedule:subgroup:right":
-		a.handleCallbackSubgroup(ctx, bot, chatID, message.ID, session, "right", false)
-		return
-	case data == "schedule:subgroup:all":
-		a.handleCallbackSubgroup(ctx, bot, chatID, message.ID, session, "", true)
-		return
-	case data == "schedule:week:select":
-		a.handleCallbackWeekSelect(ctx, bot, chatID, message.ID, session)
-		return
-	case strings.HasPrefix(data, "schedule:week:page:"):
-		a.handleCallbackWeekPage(ctx, bot, chatID, message.ID, data, session)
-		return
-	case data == "schedule:back":
-		a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
-		return
-	case data == "schedule:week:prev":
-		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, a.selectedScheduleDate(session).AddDate(0, 0, -7))
-		return
-	case data == "schedule:week:next":
-		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, a.selectedScheduleDate(session).AddDate(0, 0, 7))
-		return
-	case data == "schedule:week:today":
-		a.loadScheduleForCallback(ctx, bot, chatID, message.ID, session, time.Now())
-		return
-	case strings.HasPrefix(data, "schedule:week:open:"):
-		a.handleCallbackWeekOpen(ctx, bot, chatID, message.ID, data, session)
-		return
-	case data == "schedule:prev":
-		a.handleCallbackPrev(session)
-	case data == "schedule:next":
-		a.handleCallbackNext(session)
-	case data == "schedule:today":
-		if !a.handleCallbackToday(ctx, bot, chatID, message.ID, session) {
-			return
-		}
-	case data == "schedule:refresh":
-		a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
-		return
-	case strings.HasPrefix(data, "schedule:day:"):
-		if !a.handleCallbackDay(data, session) {
-			return
-		}
-	case data == "schedule:download":
-		a.handleCallbackDownload(ctx, bot, chatID, session)
-		return
-	default:
+	}
+	if !handled {
 		return
 	}
 
@@ -573,6 +489,151 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 	a.setSession(chatID, session)
 	a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
+}
+
+func (a *App) loadOrRecoverSession(ctx context.Context, chatID int64, messageText string) (*Session, error) {
+	session := a.getSession(chatID)
+	if session != nil && len(session.Schedule) > 0 {
+		if session.WeekStart.IsZero() {
+			session.WeekStart = ktk.WeekStart(time.Now(), a.location)
+		}
+		return session, nil
+	}
+
+	user, err := a.storage.GetUser(chatID)
+	if err != nil {
+		a.send(ctx, chatID, "Ошибка базы данных: "+err.Error())
+		return nil, err
+	}
+	if user == nil {
+		a.send(ctx, chatID, "Сначала авторизуйся:\n/login логин пароль")
+		return nil, fmt.Errorf("user not found")
+	}
+
+	session, err = a.ensureSession(ctx, user)
+	if err != nil {
+		slog.Error("session recovery failed", "chat_id", chatID, "error", err)
+		a.send(ctx, chatID, "Не удалось восстановить сессию. Попробуй /login.")
+		return nil, err
+	}
+
+	targetDate := a.extractDateFromMessage(messageText)
+	if targetDate.IsZero() {
+		if !session.WeekStart.IsZero() {
+			targetDate = session.WeekStart
+		} else {
+			targetDate = time.Now()
+		}
+	}
+
+	if _, _, err := a.refreshSessionSchedule(ctx, user, session, targetDate); err != nil {
+		slog.Error("schedule recovery failed", "chat_id", chatID, "error", err)
+		a.send(ctx, chatID, "Не удалось загрузить расписание после долгого бездействия. Введи /schedule.")
+		return nil, err
+	}
+
+	if session.WeekStart.IsZero() {
+		session.WeekStart = ktk.WeekStart(time.Now(), a.location)
+	}
+	return session, nil
+}
+
+func (a *App) processCallbackAction(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) (bool, bool) {
+	if handled, shouldUpdate := a.processMiscCallback(ctx, bot, chatID, messageID, data, session); handled {
+		return true, shouldUpdate
+	}
+	if handled, shouldUpdate := a.processSubgroupCallback(ctx, bot, chatID, messageID, data, session); handled {
+		return true, shouldUpdate
+	}
+	if handled, shouldUpdate := a.processWeekCallback(ctx, bot, chatID, messageID, data, session); handled {
+		return true, shouldUpdate
+	}
+	if handled, shouldUpdate := a.processDayCallback(ctx, bot, chatID, messageID, data, session); handled {
+		return true, shouldUpdate
+	}
+	return false, false
+}
+
+func (a *App) processMiscCallback(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) (bool, bool) {
+	switch data {
+	case "schedule:my":
+		a.handleCallbackMy(ctx, bot, chatID, messageID, session)
+		return true, false
+	case "schedule:group:select":
+		a.handleCallbackGroupSelect(ctx, bot, chatID, messageID, session)
+		return true, false
+	case "schedule:download":
+		a.handleCallbackDownload(ctx, bot, chatID, session)
+		return true, false
+	}
+	return false, false
+}
+
+func (a *App) processSubgroupCallback(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) (bool, bool) {
+	switch data {
+	case "schedule:subgroup:left":
+		a.handleCallbackSubgroup(ctx, bot, chatID, messageID, session, "left", false)
+		return true, false
+	case "schedule:subgroup:right":
+		a.handleCallbackSubgroup(ctx, bot, chatID, messageID, session, "right", false)
+		return true, false
+	case "schedule:subgroup:all":
+		a.handleCallbackSubgroup(ctx, bot, chatID, messageID, session, "", true)
+		return true, false
+	}
+	return false, false
+}
+
+func (a *App) processWeekCallback(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) (bool, bool) {
+	switch {
+	case data == "schedule:week:select":
+		a.handleCallbackWeekSelect(ctx, bot, chatID, messageID, session)
+		return true, false
+	case strings.HasPrefix(data, "schedule:week:page:"):
+		a.handleCallbackWeekPage(ctx, bot, chatID, messageID, data, session)
+		return true, false
+	case data == "schedule:week:prev":
+		a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, a.selectedScheduleDate(session).AddDate(0, 0, -7))
+		return true, false
+	case data == "schedule:week:next":
+		a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, a.selectedScheduleDate(session).AddDate(0, 0, 7))
+		return true, false
+	case data == "schedule:week:today":
+		a.loadScheduleForCallback(ctx, bot, chatID, messageID, session, time.Now())
+		return true, false
+	case strings.HasPrefix(data, "schedule:week:open:"):
+		a.handleCallbackWeekOpen(ctx, bot, chatID, messageID, data, session)
+		return true, false
+	}
+	return false, false
+}
+
+func (a *App) processDayCallback(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, data string, session *Session) (bool, bool) {
+	switch {
+	case data == "schedule:back":
+		a.editScheduleMessage(ctx, bot, chatID, messageID, session)
+		return true, false
+	case data == "schedule:prev":
+		a.handleCallbackPrev(session)
+		return true, true
+	case data == "schedule:next":
+		a.handleCallbackNext(session)
+		return true, true
+	case data == "schedule:today":
+		if a.handleCallbackToday(ctx, bot, chatID, messageID, session) {
+			return true, true
+		}
+		return true, false
+	case data == "schedule:refresh":
+		a.editScheduleMessage(ctx, bot, chatID, messageID, session)
+		return true, false
+	case strings.HasPrefix(data, "schedule:day:"):
+		if a.handleCallbackDay(data, session) {
+			return true, true
+		}
+		return true, false
+	}
+	return false, false
 }
 
 func (a *App) handleCallbackWeekSelect(ctx context.Context, bot *telegram.Bot, chatID int64, messageID int, session *Session) {
@@ -651,6 +712,12 @@ func (a *App) handleCallbackDay(data string, session *Session) bool {
 	return true
 }
 
+type fileInfo struct {
+	ID      int
+	Caption string
+	Icon    string
+}
+
 func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, chatID int64, session *Session) {
 	if session.CurrentIndex < 0 || session.CurrentIndex >= len(session.Schedule) {
 		return
@@ -660,41 +727,12 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 		return
 	}
 
-	type fileInfo struct {
-		ID      int
-		Caption string
-		Icon    string
-	}
-
 	var infos []fileInfo
 	seen := make(map[int]bool)
 
 	for _, s := range session.Schedule[session.CurrentIndex].Subjects {
-		for _, docID := range s.ExtraData.Homework.Files {
-			if seen[docID] {
-				continue
-			}
-			seen[docID] = true
-			meta, err := a.documentMetadata(ctx, session, docID)
-			if err != nil {
-				slog.Error("get file metadata", "doc_id", docID, "error", err)
-				infos = append(infos, fileInfo{ID: docID, Caption: fmt.Sprintf("file_%d", docID)})
-			} else {
-				infos = append(infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
-			}
-		}
-
-		if s.ExtraData.Sheet != 0 {
-			if fileID, ok := session.getHomeworkFileID(ctx, s.ExtraData.Sheet); ok && fileID != 0 && !seen[fileID] {
-				seen[fileID] = true
-				meta, err := a.documentMetadata(ctx, session, fileID)
-				if err != nil {
-					infos = append(infos, fileInfo{ID: fileID, Caption: fmt.Sprintf("file_%d", fileID)})
-				} else {
-					infos = append(infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
-				}
-			}
-		}
+		a.gatherHomeworkFiles(ctx, session, s, seen, &infos)
+		a.gatherStudentFiles(ctx, session, s, seen, &infos)
 	}
 
 	if len(infos) == 0 {
@@ -729,6 +767,37 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 	}
 
 	wg.Wait()
+}
+
+func (a *App) gatherHomeworkFiles(ctx context.Context, session *Session, s ktk.ScheduleItem, seen map[int]bool, infos *[]fileInfo) {
+	for _, docID := range s.ExtraData.Homework.Files {
+		if seen[docID] {
+			continue
+		}
+		seen[docID] = true
+		meta, err := a.documentMetadata(ctx, session, docID)
+		if err != nil {
+			slog.Error("get file metadata", "doc_id", docID, "error", err)
+			*infos = append(*infos, fileInfo{ID: docID, Caption: fmt.Sprintf("file_%d", docID)})
+		} else {
+			*infos = append(*infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
+		}
+	}
+}
+
+func (a *App) gatherStudentFiles(ctx context.Context, session *Session, s ktk.ScheduleItem, seen map[int]bool, infos *[]fileInfo) {
+	if s.ExtraData.Sheet == 0 {
+		return
+	}
+	if fileID, ok := session.getHomeworkFileID(ctx, s.ExtraData.Sheet); ok && fileID != 0 && !seen[fileID] {
+		seen[fileID] = true
+		meta, err := a.documentMetadata(ctx, session, fileID)
+		if err != nil {
+			*infos = append(*infos, fileInfo{ID: fileID, Caption: fmt.Sprintf("file_%d", fileID)})
+		} else {
+			*infos = append(*infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
+		}
+	}
 }
 
 func fileIconEmoji(icon string) string {
