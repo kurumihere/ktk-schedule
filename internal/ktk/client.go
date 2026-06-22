@@ -128,7 +128,7 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ = readLimitedBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
@@ -263,7 +263,7 @@ func (c *Client) getAccountInfo(ctx context.Context, path string) (AccountInfo, 
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ = readLimitedBody(resp)
 		if resp.StatusCode != http.StatusOK {

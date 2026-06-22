@@ -143,7 +143,7 @@ func TestSaveUserSubgroupModeKeepsPersonalSubgroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user := storage.User{
 		TelegramID:       101,
@@ -630,7 +630,7 @@ func TestLoadScheduleUsesPersistentCacheWithoutClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	app := &App{
 		storage:       store,

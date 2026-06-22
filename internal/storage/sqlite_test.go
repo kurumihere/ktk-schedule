@@ -13,7 +13,7 @@ const storageTestSecret = "storage-test-secret-with-32-characters"
 
 func TestSaveUserEncryptsPassword(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user := User{
 		TelegramID:       1001,
@@ -66,7 +66,7 @@ func TestSaveUserEncryptsPassword(t *testing.T) {
 
 func TestLegacyPlaintextPasswordMigration(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	_, err := store.db.Exec(`
 	INSERT INTO users (telegram_id, login, password, group_id, notify)
@@ -122,7 +122,7 @@ func TestLegacyPlaintextPasswordMigration(t *testing.T) {
 
 func TestSubgroupSettings(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user := User{
 		TelegramID:       1003,
@@ -159,7 +159,7 @@ func TestSubgroupSettings(t *testing.T) {
 
 func TestSetTeacherHash(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user := User{
 		TelegramID: 150,
@@ -186,7 +186,7 @@ func TestSetTeacherHash(t *testing.T) {
 
 func TestListUserIDs(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	for _, id := range []int64{3002, 3001} {
 		if err := store.SaveUser(User{
@@ -211,7 +211,7 @@ func TestListUserIDs(t *testing.T) {
 
 func TestScheduleCacheRoundTrip(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	updatedAt := time.Date(2026, 6, 1, 10, 30, 0, 0, time.UTC)
 	entry := CachedSchedule{
@@ -280,7 +280,7 @@ func rawStoredPassword(t *testing.T, store *Storage, telegramID int64) string {
 
 func TestListNotifyUsersReturnsOnlyEnabled(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	for _, u := range []User{
 		{TelegramID: 1, Login: "a", Password: "p", GroupID: 1, Notify: true, Subgroup: "left"},
@@ -308,7 +308,7 @@ func TestListNotifyUsersReturnsOnlyEnabled(t *testing.T) {
 
 func TestCountUsersAndNotifyUsers(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	for _, u := range []User{
 		{TelegramID: 10, Login: "a", Password: "p", GroupID: 1, Notify: true, Subgroup: "left"},
@@ -340,7 +340,7 @@ func TestCountUsersAndNotifyUsers(t *testing.T) {
 
 func TestSetNotify(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user := User{TelegramID: 100, Login: "a", Password: "p", GroupID: 1, Notify: false, Subgroup: "left"}
 	if err := store.SaveUser(user); err != nil {
@@ -374,7 +374,7 @@ func TestSetNotify(t *testing.T) {
 
 func TestGetUserReturnsNilForUnknown(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user, err := store.GetUser(99999)
 	if err != nil {
@@ -387,7 +387,7 @@ func TestGetUserReturnsNilForUnknown(t *testing.T) {
 
 func TestSaveUserUpsertsExisting(t *testing.T) {
 	store := newTestStorage(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	user := User{TelegramID: 500, Login: "old", Password: "p1", GroupID: 1, Subgroup: "left"}
 	if err := store.SaveUser(user); err != nil {

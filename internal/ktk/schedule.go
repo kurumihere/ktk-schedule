@@ -490,7 +490,7 @@ func (c *Client) getSchedule(ctx context.Context, path string, groupID int, teac
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := readLimitedBody(resp)
 
@@ -557,7 +557,7 @@ func (c *Client) getLectureHalls(ctx context.Context) (LectureHallMap, error) {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := readLimitedBody(resp)
 
@@ -633,7 +633,7 @@ func (c *Client) getCallPresets(ctx context.Context, path string) (CallPresetMap
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := readLimitedBody(resp)
 
@@ -698,7 +698,7 @@ func (c *Client) GetPairTypes(ctx context.Context) (PairTypeMap, error) {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := readLimitedBody(resp)
 
@@ -744,7 +744,7 @@ func (c *Client) getAbsenceMarks(ctx context.Context, path string) ([]AbsenceMar
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := readLimitedBody(resp)
 
@@ -870,7 +870,7 @@ func (c *Client) GetDocumentMetadata(ctx context.Context, docID int) (*DocumentM
 			if err != nil {
 				return err
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			body, _ := readLimitedBody(resp)
 			if resp.StatusCode != http.StatusOK {
@@ -914,7 +914,7 @@ func (c *Client) DownloadFile(ctx context.Context, link string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := readDownloadBody(resp)
 	if resp.StatusCode != http.StatusOK {
@@ -951,7 +951,7 @@ func (c *Client) GetFileLink(ctx context.Context, docID int) (link string, capti
 			if err != nil {
 				return err
 			}
-			defer r.Body.Close()
+			defer func() { _ = r.Body.Close() }()
 
 			body, _ := readLimitedBody(r)
 			if r.StatusCode != http.StatusOK {
@@ -1020,7 +1020,7 @@ func (c *Client) GetHomeworkSubmission(ctx context.Context, sheetID int) (*Homew
 			if err != nil {
 				return err
 			}
-			defer r.Body.Close()
+			defer func() { _ = r.Body.Close() }()
 
 			body, _ := readLimitedBody(r)
 			if r.StatusCode != http.StatusOK {
@@ -1138,7 +1138,7 @@ func logScheduleDebug(body []byte) {
 			Mark      int `json:"Mark"`
 		}
 		allRaw, _ := json.Marshal(day.Subjects)
-		json.Unmarshal(allRaw, &subjects)
+		_ = json.Unmarshal(allRaw, &subjects)
 		for _, s := range subjects {
 			if s.Appraisal != 0 {
 				gradeCount++

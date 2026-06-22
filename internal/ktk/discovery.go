@@ -323,7 +323,7 @@ func (c *Client) fetchText(ctx context.Context, requestURL string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := readLimitedBody(resp)
 	if resp.StatusCode != http.StatusOK {
@@ -440,7 +440,7 @@ func (c *Client) getJSON(ctx context.Context, requestURL string) ([]byte, int, s
 	if err != nil {
 		return nil, 0, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := readLimitedBody(resp)
 	return body, resp.StatusCode, resp.Status, nil

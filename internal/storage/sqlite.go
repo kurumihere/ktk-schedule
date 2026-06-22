@@ -231,7 +231,7 @@ func (s *Storage) ForEachNotifyUser(fn func(*User) error) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var user User
@@ -273,7 +273,7 @@ func (s *Storage) ListUserIDs() ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {
@@ -301,7 +301,7 @@ func (s *Storage) addColumnIfMissing(table, column, definition string) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var cid int

@@ -84,7 +84,7 @@ func New(cfg config.Config) (*App, error) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"status":"ok"}`)
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/health/extended", func(w http.ResponseWriter, r *http.Request) {
 		activeSessions := app.sessionCount()
