@@ -1520,7 +1520,7 @@ func parseBeginTime(value string) (int, int) {
 }
 
 func formatDuration(d time.Duration) string {
-	totalMin := int(d.Minutes())
+	totalMin := int((d + 30*time.Second) / time.Minute)
 	if totalMin < 0 {
 		totalMin = 0
 	}

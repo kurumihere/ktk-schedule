@@ -333,9 +333,10 @@ func (a *App) handleStats(ctx context.Context, _ *telegram.Bot, update *models.U
 }
 
 func formatUptime(d time.Duration) string {
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	mins := int(d.Minutes()) % 60
+	totalMin := int(d / time.Minute)
+	days := totalMin / (24 * 60)
+	hours := (totalMin % (24 * 60)) / 60
+	mins := totalMin % 60
 
 	if days > 0 {
 		return fmt.Sprintf("%dд %dч %dмин", days, hours, mins)
