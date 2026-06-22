@@ -24,7 +24,7 @@ import (
 const (
 	weekSelectPageSize     = 5
 	announceSendDelay      = 50 * time.Millisecond
-	sessionMaxAge          = 30 * time.Minute
+	sessionMaxAge          = 24 * time.Hour
 	sessionCleanupInterval = 10 * time.Minute
 	notifyConcurrency      = 5
 	announceConcurrency    = 10

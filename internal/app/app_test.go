@@ -611,7 +611,7 @@ func TestSessionCleanup(t *testing.T) {
 
 	app.sessions.Range(func(key, value any) bool {
 		ptr := value.(*atomic.Pointer[Session])
-		ptr.Store(&Session{lastAccessUnix: time.Now().Add(-1 * time.Hour).Unix()})
+		ptr.Store(&Session{lastAccessUnix: time.Now().Add(-48 * time.Hour).Unix()})
 		return true
 	})
 

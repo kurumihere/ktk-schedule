@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -482,6 +483,21 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 			a.send(ctx, chatID, "Не удалось восстановить сессию. Попробуй /login.")
 			return
 		}
+
+		targetDate := a.extractDateFromMessage(message.Text)
+		if targetDate.IsZero() {
+			if !session.WeekStart.IsZero() {
+				targetDate = session.WeekStart
+			} else {
+				targetDate = time.Now()
+			}
+		}
+
+		if _, _, err := a.refreshSessionSchedule(ctx, user, session, targetDate); err != nil {
+			slog.Error("schedule recovery failed", "chat_id", chatID, "error", err)
+			a.send(ctx, chatID, "Не удалось загрузить расписание после долгого бездействия. Введи /schedule.")
+			return
+		}
 	}
 	if session.WeekStart.IsZero() {
 		session.WeekStart = ktk.WeekStart(time.Now(), a.location)
@@ -840,6 +856,15 @@ func (a *App) selectedScheduleDate(session *Session) time.Time {
 		index = 0
 	}
 	return weekStart.AddDate(0, 0, index)
+}
+
+func (a *App) extractDateFromMessage(text string) time.Time {
+	re := regexp.MustCompile(`\b(\d{2})\.(\d{2})\.(\d{4})\b`)
+	if match := re.FindStringSubmatch(text); match != nil {
+		t, _ := time.ParseInLocation("02.01.2006", match[0], a.location)
+		return t
+	}
+	return time.Time{}
 }
 
 func (a *App) handleDefault(ctx context.Context, _ *telegram.Bot, update *models.Update) {
