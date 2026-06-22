@@ -42,9 +42,17 @@ func ScheduleKeyboard(days []ktk.ScheduleDay, currentIndex int, weekStart time.T
 		nextText = "⛔"
 	}
 
+	todayIdx := ktk.FindDateIndex(days, time.Now(), loc)
+	midText := "Сегодня"
+	midData := "schedule:today"
+	if currentIndex == todayIdx {
+		midText = "🔄 Обновить"
+		midData = "schedule:refresh"
+	}
+
 	rows = append(rows, []models.InlineKeyboardButton{
 		{Text: prevText, CallbackData: "schedule:prev"},
-		{Text: "Сегодня", CallbackData: "schedule:today"},
+		{Text: midText, CallbackData: midData},
 		{Text: nextText, CallbackData: "schedule:next"},
 	})
 

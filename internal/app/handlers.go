@@ -535,6 +535,9 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		if !a.handleCallbackToday(ctx, bot, chatID, message.ID, session) {
 			return
 		}
+	case data == "schedule:refresh":
+		a.editScheduleMessage(ctx, bot, chatID, message.ID, session)
+		return
 	case strings.HasPrefix(data, "schedule:day:"):
 		if !a.handleCallbackDay(data, session) {
 			return
