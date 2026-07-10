@@ -27,9 +27,6 @@ logs:
 clean:
     rm -f ktk-schedule ktk-schedule.db *.log
 
-backup:
-    BACKUP_VOLUME_NAME=ktk-schedule_ktk_schedule_data BACKUP_DIR=backups scripts/backup-sqlite.sh
-
 setup:
     git config core.hooksPath .githooks
     @echo "git hooks configured"
