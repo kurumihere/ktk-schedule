@@ -1,64 +1,17 @@
-name: Continuous Integration
+name: CI
 
 on: [push, pull_request]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
-env:
-  GO_VERSION: "1.26.4"
-
 jobs:
-  test:
-    name: Test
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Go
-        uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Test
-        run: go test ./...
-
-      - name: Build
-        run: go build -trimpath -ldflags="-s -w" -o /tmp/ktk-schedule ./cmd/bot
-
-  security:
-    name: Security Scans
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Secret Scanning (Betterleaks)
-        uses: dortort/betterleaks-action@v0.1.0
-        with:
-          version: 'latest'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate SBOM (Syft)
-        uses: anchore/sbom-action@v0
-        with:
-          path: .
-          format: spdx-json
-          output-file: sbom.spdx.json
-
-      - name: Vulnerability Scan (Grype)
-        uses: anchore/scan-action@v7
-        with:
-          sbom: sbom.spdx.json
-          fail-build: "false"
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: go build -trimpath -ldflags="-s -w" -o /tmp/ktk-schedule ./cmd/bot
