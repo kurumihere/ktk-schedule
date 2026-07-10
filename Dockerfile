@@ -31,17 +31,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:3.22
 
-RUN apk add --no-cache tzdata curl su-exec sqlite \
+RUN apk add --no-cache tzdata curl \
     && adduser -D -h /app app \
-    && mkdir -p /app/data
+    && mkdir -p /app/data \
+    && chown app:app /app/data
 
 WORKDIR /app
 
 COPY --from=builder --chown=app:app /out/ktk-schedule /app/ktk-schedule
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
+USER app
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://localhost:8080/health || exit 1

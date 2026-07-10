@@ -2,12 +2,14 @@ services:
   ktk-schedule:
     build: .
     image: ${KTK_SCHEDULE_IMAGE:-ktk-schedule:local}
-    container_name: ktk-schedule
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_PATH: /app/data/ktk-schedule.db
     volumes:
-      - ktk_schedule_data:/app/data
+      - data:/app/data
 
 volumes:
-  ktk_schedule_data:
+  data:
+    name: ktk-schedule-data
