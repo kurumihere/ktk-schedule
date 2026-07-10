@@ -7,6 +7,5 @@
 ktk-schedule
 tmp/
 backups/
-Justfile
 LICENSE
 README*.md
