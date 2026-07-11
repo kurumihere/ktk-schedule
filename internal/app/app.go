@@ -2,12 +2,9 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"ktk-schedule/internal/logger"
-	"net/http"
-	_ "net/http/pprof"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +37,6 @@ type App struct {
 	endpoints   ktk.Endpoints
 
 	sessions       sync.Map
-	healthServer   *http.Server
 	rateLimiter    *rateLimiter
 	loginLimiter   *rateLimiter
 	circuitBreaker *circuitBreaker
@@ -78,43 +74,6 @@ func New(cfg config.Config) (*App, error) {
 		circuitBreaker: newCircuitBreaker(5, 30*time.Second),
 		scheduleCache:  newScheduleCache(),
 		startedAt:      time.Now(),
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
-	})
-	mux.HandleFunc("/health/extended", func(w http.ResponseWriter, r *http.Request) {
-		activeSessions := app.sessionCount()
-
-		totalUsers, _ := app.storage.CountUsers()
-		notifyUsers, _ := app.storage.CountNotifyUsers()
-
-		resp := map[string]any{
-			"status":          "ok",
-			"uptime":          formatUptime(time.Since(app.startedAt)),
-			"total_users":     totalUsers,
-			"notify_users":    notifyUsers,
-			"active_sessions": activeSessions,
-			"timezone":        app.cfg.Timezone,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	if cfg.PprofEnabled {
-		mux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
-			http.DefaultServeMux.ServeHTTP(w, r)
-		})
-	}
-	app.healthServer = &http.Server{
-		Addr:         cfg.HealthAddr,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
 	}
 
 	bot, err := telegram.New(
@@ -159,12 +118,6 @@ func (a *App) Close() {
 		logger.Warn("Timeout waiting for handlers, forcing shutdown")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("health server shutdown: %v", err)
-	}
-
 	if err := a.storage.Close(); err != nil {
 		logger.Error("storage close: %v", err)
 	}
@@ -182,11 +135,6 @@ func (a *App) Run(ctx context.Context) error {
 
 	go a.runNotifier(a.botCtx)
 	go a.sessionCleanupLoop(a.botCtx)
-	go func() {
-		if err := a.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("health server: %v", err)
-		}
-	}()
 	a.bot.Start(a.botCtx)
 
 	return nil

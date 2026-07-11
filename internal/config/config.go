@@ -2,8 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -25,9 +23,6 @@ type Config struct {
 	NotifyTime        string
 	Timezone          string
 	LogLevel          logger.Level
-	HealthPort        string
-	HealthAddr        string
-	PprofEnabled      bool
 }
 
 func Load() (Config, error) {
@@ -41,10 +36,6 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	pprofEnabled, err := getenvBool("PPROF_ENABLED", false)
-	if err != nil {
-		return Config{}, err
-	}
 	ownerTelegramID, err := getenvInt64("OWNER_TELEGRAM_ID", 0)
 	if err != nil {
 		return Config{}, err
@@ -54,11 +45,6 @@ func Load() (Config, error) {
 	}
 
 	logLevel := logger.ParseLevel(os.Getenv("LOG_LEVEL"))
-	healthPort := getenv("HEALTH_PORT", "8080")
-	healthAddr, err := normalizeHealthAddr(os.Getenv("HEALTH_ADDR"), healthPort)
-	if err != nil {
-		return Config{}, err
-	}
 
 	cfg := Config{
 		BotToken:          strings.TrimSpace(os.Getenv("BOT_TOKEN")),
@@ -66,8 +52,6 @@ func Load() (Config, error) {
 		DatabasePath:      getenv("DATABASE_PATH", "ktk-schedule.db"),
 		CredentialsSecret: strings.TrimSpace(os.Getenv("CREDENTIALS_SECRET")),
 		LogLevel:          logLevel,
-		HealthPort:        healthPort,
-		HealthAddr:        healthAddr,
 		KTKDeviceName:     getenv("KTK_DEVICE_NAME", "ktk-schedule"),
 		KTKDebugSchedule:  debugSchedule,
 		DefaultGroup:      defaultGroup,
@@ -75,7 +59,6 @@ func Load() (Config, error) {
 		OwnerTelegramID:   ownerTelegramID,
 		NotifyTime:        getenv("NOTIFY_TIME", "07:30"),
 		Timezone:          getenv("TIMEZONE", "Asia/Yekaterinburg"),
-		PprofEnabled:      pprofEnabled,
 	}
 
 	if cfg.BotToken == "" {
@@ -89,25 +72,6 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func normalizeHealthAddr(addr, port string) (string, error) {
-	addr = strings.TrimSpace(addr)
-	if addr != "" {
-		if _, _, err := net.SplitHostPort(addr); err != nil {
-			return "", fmt.Errorf("health address (HEALTH_ADDR) must be host:port: %w", err)
-		}
-		return addr, nil
-	}
-
-	port = strings.TrimSpace(port)
-	if port == "" {
-		port = "8080"
-	}
-	if _, err := strconv.Atoi(port); err != nil {
-		return "", fmt.Errorf("health port (HEALTH_PORT) must be a port number: %w", err)
-	}
-	return net.JoinHostPort("127.0.0.1", port), nil
 }
 
 func getenv(key, fallback string) string {
