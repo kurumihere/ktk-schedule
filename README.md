@@ -10,7 +10,7 @@ The bot is written in [Go](https://go.dev) using [go-telegram/bot](https://githu
 
 - Schedule for the current week or a selected date
 - Convenient navigation between days and weeks
-- Student and teacher authentication using workspace data
+- Student and teacher authentication using workspace login credentials
 - Group and subgroup selection and viewing schedules of other groups
 - Assignments, attachments, and files by day
 - Morning schedule notifications
