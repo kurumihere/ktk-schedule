@@ -125,7 +125,7 @@ func New(cfg config.Config) (*App, error) {
 		}),
 		telegram.WithDefaultHandler(app.handleDefault),
 		telegram.WithErrorsHandler(func(err error) {
-			logger.Error("Telegram error: %v", err)
+			logger.Error("telegram error: %v", err)
 		}),
 	)
 	if err != nil {
@@ -162,11 +162,11 @@ func (a *App) Close() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Health server shutdown: %v", err)
+		logger.Error("health server shutdown: %v", err)
 	}
 
 	if err := a.storage.Close(); err != nil {
-		logger.Error("Storage close: %v", err)
+		logger.Error("storage close: %v", err)
 	}
 	logger.Info("Shutdown complete")
 }
@@ -184,7 +184,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.sessionCleanupLoop(a.botCtx)
 	go func() {
 		if err := a.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Health server: %v", err)
+			logger.Error("health server: %v", err)
 		}
 	}()
 	a.bot.Start(a.botCtx)
@@ -210,13 +210,13 @@ func (a *App) cacheEndpoints(endpoints ktk.Endpoints) {
 
 func (a *App) send(ctx context.Context, chatID int64, text string) {
 	if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{ChatID: chatID, Text: text}); err != nil {
-		logger.Error("Send message for chat %v: %v", chatID, err)
+		logger.Error("send message for chat %v: %v", chatID, err)
 	}
 }
 
 func (a *App) sendMessage(ctx context.Context, params *telegram.SendMessageParams) {
 	if err := sendMessageWithRetry(ctx, a.bot, params); err != nil {
-		logger.Error("Send message for chat %v: %v", params.ChatID, err)
+		logger.Error("send message for chat %v: %v", params.ChatID, err)
 	}
 }
 

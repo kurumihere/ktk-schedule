@@ -47,6 +47,8 @@ const (
 )
 const maxDebugScheduleItemBytes = 4096
 
+var ErrFileTooLarge = errors.New("file exceeds download limit")
+
 var shortWeekdayNames = [...]string{"Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"}
 
 var MonthGenitive = [...]string{
@@ -902,7 +904,7 @@ func (c *Client) GetDocumentMetadata(ctx context.Context, docID int) (*DocumentM
 	return &meta, nil
 }
 
-func (c *Client) DownloadFile(ctx context.Context, link string) ([]byte, error) {
+func (c *Client) DownloadFile(ctx context.Context, link string) (io.ReadCloser, error) {
 	absURL, err := c.workspaceFileURL(link)
 	if err != nil {
 		return nil, err
@@ -919,17 +921,49 @@ func (c *Client) DownloadFile(ctx context.Context, link string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := readDownloadBody(resp)
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		return nil, endpointError{operation: "file download", statusCode: resp.StatusCode, status: resp.Status}
 	}
-	return body, nil
+	if resp.ContentLength > maxDownloadBodyBytes {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w: maximum is %d bytes", ErrFileTooLarge, maxDownloadBodyBytes)
+	}
+	return newLimitedReadCloser(resp.Body, maxDownloadBodyBytes), nil
 }
 
-func readDownloadBody(resp *http.Response) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(resp.Body, maxDownloadBodyBytes))
+type limitedReadCloser struct {
+	body      io.ReadCloser
+	remaining int64
+	limit     int64
+}
+
+func newLimitedReadCloser(body io.ReadCloser, limit int64) io.ReadCloser {
+	return &limitedReadCloser{body: body, remaining: limit, limit: limit}
+}
+
+func (r *limitedReadCloser) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.remaining == 0 {
+		var extra [1]byte
+		n, err := r.body.Read(extra[:])
+		if n > 0 {
+			return 0, fmt.Errorf("%w: maximum is %d bytes", ErrFileTooLarge, r.limit)
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:int(r.remaining)]
+	}
+	n, err := r.body.Read(p)
+	r.remaining -= int64(n)
+	return n, err
+}
+
+func (r *limitedReadCloser) Close() error {
+	return r.body.Close()
 }
 
 func (c *Client) GetFileLink(ctx context.Context, docID int) (link string, caption string, err error) {

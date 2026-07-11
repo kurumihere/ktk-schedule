@@ -1,10 +1,38 @@
 package ktk
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestLimitedReadCloserAcceptsExactLimit(t *testing.T) {
+	reader := newLimitedReadCloser(io.NopCloser(strings.NewReader("abc")), 3)
+	defer func() { _ = reader.Close() }()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "abc" {
+		t.Fatalf("data = %q, want %q", data, "abc")
+	}
+}
+
+func TestLimitedReadCloserRejectsOversizedData(t *testing.T) {
+	reader := newLimitedReadCloser(io.NopCloser(strings.NewReader("abcd")), 3)
+	defer func() { _ = reader.Close() }()
+
+	data, err := io.ReadAll(reader)
+	if !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("error = %v, want ErrFileTooLarge", err)
+	}
+	if string(data) != "abc" {
+		t.Fatalf("data = %q, want %q", data, "abc")
+	}
+}
 
 func TestFindDateIndexPrefersLocalDateOverTodayFlag(t *testing.T) {
 	loc := time.FixedZone("test", 5*60*60)

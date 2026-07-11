@@ -16,7 +16,7 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("Config load: %v", err)
+		logger.Error("config load: %v", err)
 		stop()
 		return
 	}
@@ -25,13 +25,13 @@ func main() {
 
 	application, err := app.New(cfg)
 	if err != nil {
-		logger.Error("App init: %v", err)
+		logger.Error("app init: %v", err)
 		stop()
 		return
 	}
 
 	if err := application.Run(ctx); err != nil {
-		logger.Error("App run: %v", err)
+		logger.Error("app run: %v", err)
 	}
 
 	application.Close()

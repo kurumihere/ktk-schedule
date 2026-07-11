@@ -103,7 +103,7 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		return nil
 	})
 	if err != nil {
-		logger.Error("Iterate notify users: %v", err)
+		logger.Error("iterate notify users: %v", err)
 	}
 
 	wg.Wait()
@@ -117,7 +117,7 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 	session, err := a.ensureSession(ctx, user)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		logger.Error("Daily schedule session error for chat %v: %v", user.TelegramID, err)
+		logger.Error("daily schedule session error for chat %v: %v", user.TelegramID, err)
 		a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание. Попробуй позже.")
 		return
 	}
@@ -125,7 +125,7 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 	displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		logger.Error("Daily schedule fetch error for chat %v: %v", user.TelegramID, err)
+		logger.Error("daily schedule fetch error for chat %v: %v", user.TelegramID, err)
 		a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание. Попробуй позже.")
 		return
 	}
@@ -149,6 +149,6 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 		Text:        text,
 		ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location, fileCount, 0, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	}); err != nil {
-		logger.Error("Daily schedule delivery for chat %v: %v", user.TelegramID, err)
+		logger.Error("daily schedule delivery for chat %v: %v", user.TelegramID, err)
 	}
 }

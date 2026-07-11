@@ -50,7 +50,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if ownerTelegramID < 0 {
-		return Config{}, errors.New("OWNER_TELEGRAM_ID must be positive")
+		return Config{}, errors.New("owner telegram ID (OWNER_TELEGRAM_ID) must be positive")
 	}
 
 	logLevel := logger.ParseLevel(os.Getenv("LOG_LEVEL"))
@@ -79,13 +79,13 @@ func Load() (Config, error) {
 	}
 
 	if cfg.BotToken == "" {
-		return Config{}, errors.New("BOT_TOKEN is empty")
+		return Config{}, errors.New("bot token (BOT_TOKEN) is empty")
 	}
 	if err := validateBotToken(cfg.BotToken); err != nil {
 		return Config{}, err
 	}
 	if len(cfg.CredentialsSecret) < 32 {
-		return Config{}, errors.New("CREDENTIALS_SECRET must be at least 32 characters")
+		return Config{}, errors.New("credentials secret (CREDENTIALS_SECRET) must be at least 32 characters")
 	}
 
 	return cfg, nil
@@ -95,7 +95,7 @@ func normalizeHealthAddr(addr, port string) (string, error) {
 	addr = strings.TrimSpace(addr)
 	if addr != "" {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
-			return "", fmt.Errorf("HEALTH_ADDR must be host:port: %w", err)
+			return "", fmt.Errorf("health address (HEALTH_ADDR) must be host:port: %w", err)
 		}
 		return addr, nil
 	}
@@ -105,7 +105,7 @@ func normalizeHealthAddr(addr, port string) (string, error) {
 		port = "8080"
 	}
 	if _, err := strconv.Atoi(port); err != nil {
-		return "", fmt.Errorf("HEALTH_PORT must be a port number: %w", err)
+		return "", fmt.Errorf("health port (HEALTH_PORT) must be a port number: %w", err)
 	}
 	return net.JoinHostPort("127.0.0.1", port), nil
 }
@@ -143,12 +143,12 @@ func getenvInt64(key string, fallback int64) (int64, error) {
 func validateBotToken(token string) error {
 	botID, secret, ok := strings.Cut(token, ":")
 	if !ok || botID == "" || secret == "" {
-		return errors.New("BOT_TOKEN has invalid format; expected token from @BotFather like 123456:ABC")
+		return errors.New("bot token (BOT_TOKEN) has invalid format; expected token from @BotFather like 123456:ABC")
 	}
 
 	for _, r := range botID {
 		if r < '0' || r > '9' {
-			return errors.New("BOT_TOKEN has invalid bot id; copy the full token from @BotFather")
+			return errors.New("bot token (BOT_TOKEN) has invalid bot ID; copy the full token from @BotFather")
 		}
 	}
 

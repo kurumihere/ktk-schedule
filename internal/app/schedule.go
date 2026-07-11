@@ -123,7 +123,7 @@ func (a *App) syncTeacherHash(user *storage.User, teacherHash string) {
 
 func (a *App) migrateLegacyPassword(user *storage.User) {
 	if err := a.storage.SaveUser(*user); err != nil {
-		logger.Error("Legacy password migration: %v", err)
+		logger.Error("legacy password migration: %v", err)
 	}
 }
 
