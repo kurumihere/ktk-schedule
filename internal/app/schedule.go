@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"time"
 
 	telegram "github.com/go-telegram/bot"
@@ -52,7 +52,7 @@ func (a *App) ensureSession(ctx context.Context, user *storage.User) (*Session, 
 func (a *App) loadSessionData(ctx context.Context, client *ktk.Client, groupID int) (ktk.LectureHallMap, ktk.CallPresetMap, []ktk.AbsenceMark, ktk.PairTypeMap) {
 	halls, err := a.loadLectureHalls(ctx, client, groupID)
 	if err != nil {
-		slog.Warn("lecture halls load", "error", err)
+		logger.Warn("Lecture halls load: %v", err)
 	}
 	if halls == nil {
 		halls = make(ktk.LectureHallMap)
@@ -117,13 +117,13 @@ func (a *App) syncTeacherHash(user *storage.User, teacherHash string) {
 		return
 	}
 	if err := a.storage.SetTeacherHash(user.TelegramID, teacherHash); err != nil {
-		slog.Warn("teacher hash save", "telegram_id", user.TelegramID, "error", err)
+		logger.Warn("Could not save teacher identifier for user %d: %v", user.TelegramID, err)
 	}
 }
 
 func (a *App) migrateLegacyPassword(user *storage.User) {
 	if err := a.storage.SaveUser(*user); err != nil {
-		slog.Error("legacy password migration", "error", err)
+		logger.Error("Legacy password migration: %v", err)
 	}
 }
 
@@ -156,7 +156,7 @@ func (a *App) authClient(ctx context.Context, login, password string, groupID in
 	}
 
 	if err := client.RefreshEndpoints(requestCtx, groupID, weekMillis, teacherHash); err != nil {
-		slog.Warn("endpoint discovery", "error", err)
+		logger.Warn("Endpoint discovery: %v", err)
 		return client, nil
 	}
 	a.cacheEndpoints(client.Endpoints())
@@ -228,7 +228,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 	defer cancel()
 
 	if !a.circuitBreaker.Allow() {
-		slog.Warn("circuit breaker open, rejecting schedule load", "chat_id", chatID)
+		logger.Warn("Schedule service is unavailable; rejected request from chat %d", chatID)
 		a.send(ctx, chatID, "Сервер расписания временно недоступен. Попробуй через минуту.")
 		return
 	}
@@ -237,7 +237,7 @@ func (a *App) loadScheduleForCallback(ctx context.Context, bot *telegram.Bot, ch
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
 		if errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("schedule load timeout for callback", "chat_id", chatID)
+			logger.Warn("Schedule request from chat %d timed out", chatID)
 			a.send(ctx, chatID, "Расписание загружается слишком долго. Попробуй ещё раз.")
 			return
 		}
@@ -351,11 +351,11 @@ func (a *App) loadSchedule(ctx context.Context, client *ktk.Client, groupID int,
 
 	cachedDays, cacheErr := a.loadPersistentScheduleCache(groupID, weekKey, cacheTeacherHash)
 	if cacheErr != nil {
-		slog.Warn("persistent schedule cache load", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", cacheErr)
+		logger.Warn("Could not load cached schedule for group %d, week %s (teacher: %t): %v", groupID, weekKey, teacherHash != "", cacheErr)
 		return days, err
 	}
 	if cachedDays != nil {
-		slog.Warn("using persistent schedule cache", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
+		logger.Warn("Using cached schedule for group %d, week %s (teacher: %t) because the server failed: %v", groupID, weekKey, teacherHash != "", err)
 		if hasScheduledSubjects(cachedDays) {
 			a.scheduleCache.setWithMode(groupID, weekKey, teacherHash, useGroupSchedule, cachedDays)
 		}
@@ -377,7 +377,7 @@ func (a *App) savePersistentScheduleCache(groupID int, weekKey string, teacherHa
 	}
 	data, err := json.Marshal(days)
 	if err != nil {
-		slog.Warn("persistent schedule cache marshal", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
+		logger.Warn("Could not encode schedule cache for group %d, week %s (teacher: %t): %v", groupID, weekKey, teacherHash != "", err)
 		return
 	}
 	if err := a.storage.SaveScheduleCache(storage.CachedSchedule{
@@ -386,7 +386,7 @@ func (a *App) savePersistentScheduleCache(groupID int, weekKey string, teacherHa
 		TeacherHash: teacherHash,
 		Data:        data,
 	}); err != nil {
-		slog.Warn("persistent schedule cache save", "group_id", groupID, "week_start", weekKey, "teacher", teacherHash != "", "error", err)
+		logger.Warn("Could not save schedule cache for group %d, week %s (teacher: %t): %v", groupID, weekKey, teacherHash != "", err)
 	}
 }
 
@@ -420,7 +420,7 @@ func (a *App) loadCallPresets(ctx context.Context, client *ktk.Client) ktk.CallP
 
 	presets, err := client.GetCallPresets(requestCtx)
 	if err != nil {
-		slog.Warn("call presets load", "error", err)
+		logger.Warn("Call presets load: %v", err)
 		return nil
 	}
 	return presets
@@ -432,7 +432,7 @@ func (a *App) loadPairTypes(ctx context.Context, client *ktk.Client) ktk.PairTyp
 
 	types, err := client.GetPairTypes(requestCtx)
 	if err != nil {
-		slog.Warn("pair types load", "error", err)
+		logger.Warn("Pair types load: %v", err)
 		return nil
 	}
 	return types
@@ -444,7 +444,7 @@ func (a *App) loadAbsenceMarks(ctx context.Context, client *ktk.Client) []ktk.Ab
 
 	marks, err := client.GetAbsenceMarks(requestCtx)
 	if err != nil {
-		slog.Warn("absence marks load", "error", err)
+		logger.Warn("Absence marks load: %v", err)
 		return nil
 	}
 	return marks

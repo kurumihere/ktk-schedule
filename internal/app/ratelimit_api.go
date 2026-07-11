@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"time"
 
 	telegram "github.com/go-telegram/bot"
@@ -64,7 +64,7 @@ func handleRateLimit(ctx context.Context, err error) bool {
 		wait = baseRetryDelay
 	}
 
-	slog.Warn("rate limited, waiting", "retry_after", tooMany.RetryAfter)
+	logger.Warn("Telegram rate limit reached; waiting %d seconds", tooMany.RetryAfter)
 
 	select {
 	case <-ctx.Done():

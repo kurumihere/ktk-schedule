@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"net/http"
 	_ "net/http/pprof"
 	"strings"
@@ -125,7 +125,7 @@ func New(cfg config.Config) (*App, error) {
 		}),
 		telegram.WithDefaultHandler(app.handleDefault),
 		telegram.WithErrorsHandler(func(err error) {
-			slog.Error("telegram error", "error", err)
+			logger.Error("Telegram error: %v", err)
 		}),
 	)
 	if err != nil {
@@ -146,7 +146,7 @@ func (a *App) Close() {
 		a.botCancel()
 	}
 
-	slog.Info("shutting down, waiting for active handlers")
+	logger.Info("Shutting down, waiting for active handlers")
 	done := make(chan struct{})
 	go func() {
 		a.activeHandlers.Wait()
@@ -154,37 +154,37 @@ func (a *App) Close() {
 	}()
 	select {
 	case <-done:
-		slog.Info("all handlers completed")
+		logger.Info("All handlers completed")
 	case <-time.After(5 * time.Second):
-		slog.Warn("timeout waiting for handlers, forcing shutdown")
+		logger.Warn("Timeout waiting for handlers, forcing shutdown")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := a.healthServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("health server shutdown", "error", err)
+		logger.Error("Health server shutdown: %v", err)
 	}
 
 	if err := a.storage.Close(); err != nil {
-		slog.Error("storage close", "error", err)
+		logger.Error("Storage close: %v", err)
 	}
-	slog.Info("shutdown complete")
+	logger.Info("Shutdown complete")
 }
 
 func (a *App) Run(ctx context.Context) error {
 	a.botCtx, a.botCancel = context.WithCancel(ctx)
 
 	if me, err := a.bot.GetMe(a.botCtx); err == nil {
-		slog.Info("bot started", "username", me.Username)
+		logger.Info("Bot started as @%s", me.Username)
 	} else {
-		slog.Warn("bot started", "error", err)
+		logger.Warn("Bot started: %v", err)
 	}
 
 	go a.runNotifier(a.botCtx)
 	go a.sessionCleanupLoop(a.botCtx)
 	go func() {
 		if err := a.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("health server", "error", err)
+			logger.Error("Health server: %v", err)
 		}
 	}()
 	a.bot.Start(a.botCtx)
@@ -210,13 +210,13 @@ func (a *App) cacheEndpoints(endpoints ktk.Endpoints) {
 
 func (a *App) send(ctx context.Context, chatID int64, text string) {
 	if err := sendMessageWithRetry(ctx, a.bot, &telegram.SendMessageParams{ChatID: chatID, Text: text}); err != nil {
-		slog.Error("send message", "chat_id", chatID, "error", err)
+		logger.Error("Send message for chat %v: %v", chatID, err)
 	}
 }
 
 func (a *App) sendMessage(ctx context.Context, params *telegram.SendMessageParams) {
 	if err := sendMessageWithRetry(ctx, a.bot, params); err != nil {
-		slog.Error("send message", "chat_id", params.ChatID, "error", err)
+		logger.Error("Send message for chat %v: %v", params.ChatID, err)
 	}
 }
 
@@ -325,7 +325,7 @@ func (a *App) fetchFileNames(ctx context.Context, session *Session, day ktk.Sche
 			defer func() { <-sem }()
 			meta, err := session.Client.GetDocumentMetadata(ctx, docID)
 			if err != nil {
-				slog.Debug("fetch file name", "doc_id", docID, "error", err)
+				logger.Debug("Fetch file name for document %v: %v", docID, err)
 				return
 			}
 			results <- result{meta.ID, meta.Caption, meta.Icon}

@@ -3,13 +3,13 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
+	"ktk-schedule/internal/logger"
 )
 
 type Config struct {
@@ -24,7 +24,7 @@ type Config struct {
 	OwnerTelegramID   int64
 	NotifyTime        string
 	Timezone          string
-	LogLevel          slog.Level
+	LogLevel          logger.Level
 	HealthPort        string
 	HealthAddr        string
 	PprofEnabled      bool
@@ -53,7 +53,7 @@ func Load() (Config, error) {
 		return Config{}, errors.New("OWNER_TELEGRAM_ID must be positive")
 	}
 
-	logLevel := parseLogLevel(os.Getenv("LOG_LEVEL"))
+	logLevel := logger.ParseLevel(os.Getenv("LOG_LEVEL"))
 	healthPort := getenv("HEALTH_PORT", "8080")
 	healthAddr, err := normalizeHealthAddr(os.Getenv("HEALTH_ADDR"), healthPort)
 	if err != nil {
@@ -153,19 +153,4 @@ func validateBotToken(token string) error {
 	}
 
 	return nil
-}
-
-func parseLogLevel(value string) slog.Level {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

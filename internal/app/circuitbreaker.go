@@ -1,7 +1,7 @@
 package app
 
 import (
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"sync"
 	"time"
 )
@@ -41,7 +41,7 @@ func (cb *circuitBreaker) Allow() bool {
 	case stateOpen:
 		if time.Since(cb.lastFailure) > cb.resetTimeout {
 			cb.state = stateHalfOpen
-			slog.Info("circuit breaker transitioning to half-open")
+			logger.Info("Circuit breaker transitioning to half-open")
 			return true
 		}
 		return false
@@ -56,7 +56,7 @@ func (cb *circuitBreaker) RecordSuccess() {
 	defer cb.mu.Unlock()
 
 	if cb.state == stateHalfOpen {
-		slog.Info("circuit breaker closed after half-open success")
+		logger.Info("Circuit breaker closed after half-open success")
 	}
 	cb.failures = 0
 	cb.state = stateClosed
@@ -71,7 +71,7 @@ func (cb *circuitBreaker) RecordFailure() {
 
 	if cb.failures >= cb.threshold && cb.state != stateOpen {
 		cb.state = stateOpen
-		slog.Warn("circuit breaker opened", "failures", cb.failures)
+		logger.Warn("Circuit breaker opened after %d failures", cb.failures)
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -137,30 +137,30 @@ func (c *Client) SignIn(ctx context.Context, login, password string) error {
 
 	c.processSignInResponse(ctx, body)
 
-	slog.Info("sign in successful", "teacher", c.teacherHash != "")
+	logger.Info("Signed in successfully (teacher: %t)", c.teacherHash != "")
 	return nil
 }
 
 func (c *Client) processSignInResponse(ctx context.Context, body []byte) {
 	if subgroup := extractPersonalSubgroup(body); subgroup != "" {
-		slog.Debug("subgroup detected", "subgroup", subgroup)
+		logger.Debug("Detected subgroup %s", subgroup)
 		c.subgroup = subgroup
 	}
 	if groupID := extractPersonalGroupID(body); groupID > 0 {
-		slog.Debug("group detected", "group_id", groupID)
+		logger.Debug("Detected group %d", groupID)
 		c.groupID = groupID
 	}
 
 	if info, infoBody, err := c.GetAccountInfo(ctx); err == nil && info.IsStudent != nil {
 		if groupID := accountInfoGroupID(info, infoBody); groupID > 0 {
-			slog.Debug("account info detected group", "group_id", groupID)
+			logger.Debug("Detected group %d from account information", groupID)
 			c.groupID = groupID
 		}
 		if *info.IsStudent {
-			slog.Debug("account info detected student")
+			logger.Debug("Account info detected student")
 			c.teacherHash = ""
 		} else {
-			slog.Debug("account info detected teacher")
+			logger.Debug("Account info detected teacher")
 			if info.Hash != "" {
 				c.teacherHash = info.Hash
 			}
@@ -169,9 +169,9 @@ func (c *Client) processSignInResponse(ctx context.Context, body []byte) {
 			}
 		}
 	} else if err != nil {
-		slog.Warn("account info unavailable", "error", err)
+		logger.Warn("Account info unavailable: %v", err)
 	} else {
-		slog.Warn("account info response has no IsStudent field")
+		logger.Warn("Account info response has no IsStudent field")
 	}
 
 	if c.debugSchedule {
@@ -179,7 +179,7 @@ func (c *Client) processSignInResponse(ctx context.Context, body []byte) {
 		if len(preview) > 2000 {
 			preview = preview[:2000]
 		}
-		slog.Debug("sign in response body", "body", preview)
+		logger.Debug("Sign-in response: %s", preview)
 	}
 }
 

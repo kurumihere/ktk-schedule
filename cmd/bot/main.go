@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"os/signal"
 	"syscall"
 
 	"ktk-schedule/internal/app"
 	"ktk-schedule/internal/config"
+	"ktk-schedule/internal/logger"
 )
 
 func main() {
@@ -17,26 +16,24 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("config load", "error", err)
+		logger.Error("Config load: %v", err)
 		stop()
 		return
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: cfg.LogLevel,
-	})))
+	logger.SetLevel(cfg.LogLevel)
 
 	application, err := app.New(cfg)
 	if err != nil {
-		slog.Error("app init", "error", err)
+		logger.Error("App init: %v", err)
 		stop()
 		return
 	}
 
 	if err := application.Run(ctx); err != nil {
-		slog.Error("app run", "error", err)
+		logger.Error("App run: %v", err)
 	}
 
 	application.Close()
-	slog.Info("bot stopped gracefully")
+	logger.Info("Bot stopped gracefully")
 }

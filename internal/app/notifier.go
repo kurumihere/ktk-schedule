@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"sync"
 	"time"
 
@@ -45,14 +45,14 @@ func (a *App) runDailyScheduleOnce(ctx context.Context) (string, bool) {
 	now := time.Now().In(a.location)
 	currentDate, shouldRun, err := startupNotificationDate(now, a.cfg.NotifyTime, a.location)
 	if err != nil {
-		slog.Warn("parse notify time", "error", err)
+		logger.Warn("Parse notify time: %v", err)
 		return "", false
 	}
 	if !shouldRun {
 		return "", false
 	}
 
-	slog.Info("running startup notification", "current_time", now.Format("15:04"), "notify_time", a.cfg.NotifyTime)
+	logger.Info("Running startup notifications at %s (scheduled for %s)", now.Format("15:04"), a.cfg.NotifyTime)
 	a.sendDailySchedules(ctx)
 	return currentDate, true
 }
@@ -74,7 +74,7 @@ func startupNotificationDate(now time.Time, notifyTime string, loc *time.Locatio
 
 func (a *App) sendDailySchedules(ctx context.Context) {
 	if !a.circuitBreaker.Allow() {
-		slog.Warn("circuit breaker open, skipping daily notifications")
+		logger.Warn("Circuit breaker open, skipping daily notifications")
 		return
 	}
 
@@ -84,7 +84,7 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 
 	err := a.storage.ForEachNotifyUser(func(u *storage.User) error {
 		if !a.circuitBreaker.Allow() {
-			slog.Warn("circuit breaker opened during daily notifications")
+			logger.Warn("Circuit breaker opened during daily notifications")
 			stopped = true
 			return nil
 		}
@@ -100,13 +100,13 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 		return nil
 	})
 	if err != nil {
-		slog.Error("iterate notify users", "error", err)
+		logger.Error("Iterate notify users: %v", err)
 	}
 
 	wg.Wait()
 
 	if stopped {
-		slog.Warn("daily notifications stopped early due to circuit breaker")
+		logger.Warn("Daily notifications stopped early due to circuit breaker")
 	}
 }
 
@@ -114,7 +114,7 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 	session, err := a.ensureSession(ctx, user)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		slog.Error("daily schedule session error", "chat_id", user.TelegramID, "error", err)
+		logger.Error("Daily schedule session error for chat %v: %v", user.TelegramID, err)
 		a.send(ctx, user.TelegramID, "Не удалось обновить утреннее расписание. Попробуй позже.")
 		return
 	}
@@ -122,7 +122,7 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 	displayDays, index, err := a.refreshSessionSchedule(ctx, user, session, time.Now())
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		slog.Error("daily schedule fetch error", "chat_id", user.TelegramID, "error", err)
+		logger.Error("Daily schedule fetch error for chat %v: %v", user.TelegramID, err)
 		a.send(ctx, user.TelegramID, "Не удалось получить утреннее расписание. Попробуй позже.")
 		return
 	}
@@ -146,6 +146,6 @@ func (a *App) sendDailyScheduleToUser(ctx context.Context, user *storage.User) {
 		Text:        text,
 		ReplyMarkup: tg.ScheduleKeyboard(displayDays, index, session.WeekStart, a.location, fileCount, 0, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	}); err != nil {
-		slog.Error("daily schedule delivery", "chat_id", user.TelegramID, "error", err)
+		logger.Error("Daily schedule delivery for chat %v: %v", user.TelegramID, err)
 	}
 }

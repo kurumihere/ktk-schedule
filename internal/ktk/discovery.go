@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -79,7 +79,7 @@ func (c *Client) RefreshEndpoints(ctx context.Context, groupID int, weekMillis i
 		next.InfoPath = DeriveInfoPath(next.SchedulePath)
 	}
 	if !isTeacher && !foundGrades {
-		slog.Warn("no schedule endpoint with grades found, grades will be unavailable")
+		logger.Warn("No schedule endpoint with grades found, grades will be unavailable")
 	}
 
 	c.resolveSecondaryEndpoints(ctx, &next, candidates)
@@ -131,18 +131,10 @@ func (c *Client) resolveSecondaryEndpoints(ctx context.Context, next *Endpoints,
 }
 
 func (c *Client) logEndpoints(next Endpoints) {
-	slog.Debug("endpoints refreshed",
-		"schedule_path", next.SchedulePath,
-		"group_schedule_path", next.GroupSchedulePath,
-		"info_path", next.InfoPath,
-		"lecture_hall_path", next.LectureHallPath,
-		"call_preset_path", next.CallPresetPath,
-		"absence_mark_path", next.AbsenceMarkPath,
-		"pair_type_path", next.PairTypePath,
-		"file_hash", next.FileHash,
-		"homework_hash", next.HomeworkHash,
-		"branch_id", next.BranchID,
-	)
+	logger.Debug("Refreshed endpoints: schedule %s, group schedule %s, info %s, lecture halls %s, calls %s, absence marks %s, pair types %s, files %s, homework %s, branch %s",
+		next.SchedulePath, next.GroupSchedulePath, next.InfoPath, next.LectureHallPath,
+		next.CallPresetPath, next.AbsenceMarkPath, next.PairTypePath, next.FileHash,
+		next.HomeworkHash, next.BranchID)
 }
 
 func (c *Client) refreshAuxiliaryEndpoints(ctx context.Context) error {
@@ -166,7 +158,7 @@ func (c *Client) refreshAuxiliaryEndpoints(ctx context.Context) error {
 	}
 
 	c.setEndpoints(next)
-	slog.Debug("auxiliary endpoints refreshed", "file_hash", next.FileHash, "homework_hash", next.HomeworkHash)
+	logger.Debug("Refreshed auxiliary endpoints: files %s, homework %s", next.FileHash, next.HomeworkHash)
 	return nil
 }
 

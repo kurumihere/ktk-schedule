@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"regexp"
 	"strings"
 	"time"
@@ -66,10 +66,10 @@ func (s *Storage) Close() error {
 
 func (s *Storage) init() error {
 	if _, err := s.db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		slog.Warn("failed to set journal mode", "error", err)
+		logger.Warn("Failed to set journal mode: %v", err)
 	}
 	if _, err := s.db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		slog.Warn("failed to set busy timeout", "error", err)
+		logger.Warn("Failed to set busy timeout: %v", err)
 	}
 
 	if _, err := s.db.Exec(`
@@ -98,7 +98,7 @@ func (s *Storage) init() error {
 	}
 
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_notify ON users (notify)`); err != nil {
-		slog.Warn("failed to create notify index", "error", err)
+		logger.Warn("Failed to create notify index: %v", err)
 	}
 	if _, err := s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS schedule_cache (

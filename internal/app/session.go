@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"sync/atomic"
 	"time"
 
@@ -128,7 +128,7 @@ func (s *Session) getHomeworkFileID(ctx context.Context, sheet int) (fileID int,
 	}
 	sub, err := s.Client.GetHomeworkSubmission(ctx, sheet)
 	if err != nil {
-		slog.Debug("homework submission fetch", "sheet", sheet, "error", err)
+		logger.Debug("Could not fetch homework submission for sheet %d: %v", sheet, err)
 		return 0, false
 	}
 	if s.homeworkCache == nil {

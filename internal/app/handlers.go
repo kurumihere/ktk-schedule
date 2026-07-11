@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"regexp"
 	"strconv"
 	"strings"
@@ -103,7 +103,7 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 
 	client, err := a.authClient(ctx, login, password, user.GroupID)
 	if err != nil {
-		slog.Error("login failed", "chat_id", chatID, "error", err)
+		logger.Error("Login failed for chat %v: %v", chatID, err)
 		a.send(ctx, chatID, "Не удалось войти. Проверь логин и пароль.")
 		return
 	}
@@ -123,7 +123,7 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 
 	halls, err := a.loadLectureHalls(ctx, client, user.GroupID)
 	if err != nil {
-		slog.Warn("lecture halls load", "error", err)
+		logger.Warn("Lecture halls load: %v", err)
 		halls = make(ktk.LectureHallMap)
 	}
 
@@ -158,7 +158,7 @@ func (a *App) deleteUserMessage(ctx context.Context, bot *telegram.Bot, message 
 		ChatID:    message.Chat.ID,
 		MessageID: message.ID,
 	}); err != nil {
-		slog.Warn("delete user message", "chat_id", message.Chat.ID, "message_id", message.ID, "error", err)
+		logger.Warn("Could not delete message %d from chat %d: %v", message.ID, message.Chat.ID, err)
 	}
 }
 
@@ -185,7 +185,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 
 	session, err := a.ensureSession(ctx, user)
 	if err != nil {
-		slog.Warn("schedule session unavailable, trying persistent cache", "chat_id", chatID, "error", err)
+		logger.Warn("Schedule session unavailable, trying persistent cache for chat %v: %v", chatID, err)
 		if a.sendCachedSchedule(ctx, chatID, user, targetDate, "Сайт расписания недоступен, показываю сохранённое расписание.") {
 			return
 		}
@@ -196,7 +196,7 @@ func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *model
 	displayDays, currentIndex, err := a.refreshSessionSchedule(ctx, user, session, targetDate)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		slog.Error("schedule fetch failed", "chat_id", chatID, "error", err)
+		logger.Error("Schedule fetch failed for chat %v: %v", chatID, err)
 		a.send(ctx, chatID, "Не удалось получить расписание. Попробуй позже.")
 		return
 	}
@@ -237,7 +237,7 @@ func (a *App) sendCachedSchedule(ctx context.Context, chatID int64, user *storag
 	cacheTeacherHash := scheduleCacheTeacherHash(user.TeacherHash, user.TeacherHash == "" && a.shouldUseGroupSchedule(user))
 	days, err := a.loadPersistentScheduleCache(user.GroupID, weekKey, cacheTeacherHash)
 	if err != nil {
-		slog.Warn("cached schedule fallback", "chat_id", chatID, "week_start", weekKey, "error", err)
+		logger.Warn("Could not load cached schedule for chat %d and week %s: %v", chatID, weekKey, err)
 		return false
 	}
 	if len(days) == 0 {
@@ -439,7 +439,7 @@ func (a *App) broadcastAnnouncement(ctx context.Context, bot *telegram.Bot, reci
 
 			if err != nil {
 				failed.Add(1)
-				slog.Error("announcement delivery", "chat_id", id, "error", err)
+				logger.Error("Announcement delivery for chat %v: %v", id, err)
 			} else {
 				sent.Add(1)
 			}
@@ -512,7 +512,7 @@ func (a *App) loadOrRecoverSession(ctx context.Context, chatID int64, messageTex
 
 	session, err = a.ensureSession(ctx, user)
 	if err != nil {
-		slog.Error("session recovery failed", "chat_id", chatID, "error", err)
+		logger.Error("Session recovery failed for chat %v: %v", chatID, err)
 		a.send(ctx, chatID, "Не удалось восстановить сессию. Попробуй /login.")
 		return nil, err
 	}
@@ -527,7 +527,7 @@ func (a *App) loadOrRecoverSession(ctx context.Context, chatID int64, messageTex
 	}
 
 	if _, _, err := a.refreshSessionSchedule(ctx, user, session, targetDate); err != nil {
-		slog.Error("schedule recovery failed", "chat_id", chatID, "error", err)
+		logger.Error("Schedule recovery failed for chat %v: %v", chatID, err)
 		a.send(ctx, chatID, "Не удалось загрузить расписание после долгого бездействия. Введи /schedule.")
 		return nil, err
 	}
@@ -761,7 +761,7 @@ func (a *App) handleCallbackDownload(ctx context.Context, bot *telegram.Bot, cha
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			if err := a.downloadAndSendFile(ctx, bot, chatID, session.Client, id, name); err != nil {
-				slog.Error("file download", "doc_id", id, "error", err)
+				logger.Error("File download for document %v: %v", id, err)
 			}
 		}(fi.ID, fi.Caption)
 	}
@@ -777,7 +777,7 @@ func (a *App) gatherHomeworkFiles(ctx context.Context, session *Session, s ktk.S
 		seen[docID] = true
 		meta, err := a.documentMetadata(ctx, session, docID)
 		if err != nil {
-			slog.Error("get file metadata", "doc_id", docID, "error", err)
+			logger.Error("Get file metadata for document %v: %v", docID, err)
 			*infos = append(*infos, fileInfo{ID: docID, Caption: fmt.Sprintf("file_%d", docID)})
 		} else {
 			*infos = append(*infos, fileInfo{ID: meta.ID, Caption: meta.Caption, Icon: meta.Icon})
@@ -870,7 +870,7 @@ func (a *App) editScheduleMessage(ctx context.Context, bot *telegram.Bot, chatID
 		if isMessageNotModified(err) {
 			return
 		}
-		slog.Error("edit message", "chat_id", chatID, "error", err)
+		logger.Error("Edit message for chat %v: %v", chatID, err)
 	}
 }
 
@@ -885,7 +885,7 @@ func (a *App) editWeekSelectMessage(ctx context.Context, bot *telegram.Bot, chat
 		if isMessageNotModified(err) {
 			return
 		}
-		slog.Error("edit week select message", "chat_id", chatID, "error", err)
+		logger.Error("Edit week select message for chat %v: %v", chatID, err)
 	}
 }
 
@@ -897,7 +897,7 @@ func (a *App) editEmptyWeekMessage(ctx context.Context, bot *telegram.Bot, chatI
 		ReplyMarkup: tg.ScheduleKeyboard(nil, 0, session.WeekStart, a.location, 0, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 	if err != nil && !isMessageNotModified(err) {
-		slog.Error("edit empty week message", "chat_id", chatID, "error", err)
+		logger.Error("Edit empty week message for chat %v: %v", chatID, err)
 	}
 }
 
@@ -910,7 +910,7 @@ func (a *App) editNonSchoolDayMessage(ctx context.Context, bot *telegram.Bot, ch
 		ReplyMarkup: tg.ScheduleKeyboard(session.Schedule, session.CurrentIndex, session.WeekStart, a.location, 0, session.ViewingGroupID, session.TeacherHash != "", session.Subgroup, session.ShowAllSubgroups),
 	})
 	if err != nil && !isMessageNotModified(err) {
-		slog.Error("edit message", "chat_id", chatID, "error", err)
+		logger.Error("Edit message for chat %v: %v", chatID, err)
 	}
 }
 
@@ -1080,7 +1080,7 @@ func (a *App) handleCallbackGroupSelect(ctx context.Context, bot *telegram.Bot, 
 		},
 	})
 	if err != nil && !isMessageNotModified(err) {
-		slog.Error("edit group select message", "chat_id", chatID, "error", err)
+		logger.Error("Edit group select message for chat %v: %v", chatID, err)
 	}
 }
 
@@ -1133,7 +1133,7 @@ func (a *App) loadGroupScheduleForUser(ctx context.Context, user *storage.User, 
 	days, err := a.loadSchedule(ctx, session.Client, groupID, "", weekStart, true)
 	if err != nil {
 		a.circuitBreaker.RecordFailure()
-		slog.Error("group schedule fetch failed", "chat_id", chatID, "group_id", groupID, "error", err)
+		logger.Error("Could not fetch schedule for group %d in chat %d: %v", groupID, chatID, err)
 		a.send(ctx, chatID, "Не удалось получить расписание группы. Попробуй позже.")
 		return
 	}

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+	"ktk-schedule/internal/logger"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1122,7 +1122,7 @@ func logScheduleDebug(body []byte) {
 		Subjects []json.RawMessage `json:"Subjects"`
 	}
 	if err := json.Unmarshal(body, &days); err != nil {
-		slog.Warn("schedule debug decode", "error", err)
+		logger.Warn("Schedule debug decode: %v", err)
 		return
 	}
 
@@ -1155,10 +1155,9 @@ func logScheduleDebug(body []byte) {
 		}
 	}
 
-	slog.Debug("schedule debug", "days", len(days), "subjects", subjectCount,
-		"non_zero_appraisal", gradeCount, "non_zero_mark", markCount)
+	logger.Debug("Decoded schedule: %d days, %d subjects, %d appraisals, %d marks", len(days), subjectCount, gradeCount, markCount)
 	if len(markValues) > 0 {
-		slog.Debug("schedule mark values", "marks", fmt.Sprintf("%v", markValues))
+		logger.Debug("Schedule mark values: %v", markValues)
 	}
 	if len(firstSubject) == 0 {
 		return
@@ -1168,7 +1167,7 @@ func logScheduleDebug(body []byte) {
 	if len(item) > maxDebugScheduleItemBytes {
 		item = item[:maxDebugScheduleItemBytes] + "..."
 	}
-	slog.Debug("schedule debug item", "day", firstSubjectDay, "item", item)
+	logger.Debug("First schedule item for day %d: %s", firstSubjectDay, item)
 }
 
 type endpointError struct {
@@ -1879,7 +1878,7 @@ func retryGet(ctx context.Context, maxAttempts int, fn func(context.Context) err
 	var lastErr error
 	for attempt := range maxAttempts {
 		if attempt > 0 {
-			slog.Debug("retry", "attempt", attempt, "max_attempts", maxAttempts, "error", lastErr)
+			logger.Debug("Retrying request (attempt %d of %d) after error: %v", attempt, maxAttempts, lastErr)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
