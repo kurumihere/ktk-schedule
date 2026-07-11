@@ -54,7 +54,26 @@ jobs:
 
           cd "$DEPLOY_DIR"
           export KTK_SCHEDULE_IMAGE="$IMAGE:$GITHUB_SHA"
-          trap 'docker compose logs --tail=100 || true' ERR
+          on_error() {
+            docker compose start >/dev/null 2>&1 || true
+            docker compose logs --tail=100 || true
+          }
+          trap on_error ERR
           docker compose pull
+
+          if docker volume inspect ktk-schedule-data >/dev/null 2>&1; then
+            install -d -m 0700 "$DEPLOY_DIR/backups"
+            docker compose stop --timeout 15
+
+            backup_file="ktk-schedule-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+            docker run --rm \
+              --volume ktk-schedule-data:/data:ro \
+              --volume "$DEPLOY_DIR/backups:/backup" \
+              alpine:3.24.1 \
+              tar -czf "/backup/$backup_file" -C /data .
+
+            find "$DEPLOY_DIR/backups" -type f -name 'ktk-schedule-*.tar.gz' -mtime +14 -delete
+          fi
+
           docker compose up -d --wait --wait-timeout 90 --remove-orphans --no-build
           docker image prune -af --filter "label=org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"

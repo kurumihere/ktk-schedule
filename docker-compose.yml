@@ -1,8 +1,11 @@
 services:
   ktk-schedule:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: ${KTK_SCHEDULE_IMAGE:-ktk-schedule:local}
     restart: unless-stopped
+    read_only: true
     env_file:
       - .env
     environment:

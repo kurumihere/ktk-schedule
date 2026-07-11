@@ -1,47 +1,42 @@
-# syntax=docker/dockerfile:1.7
-
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.4-alpine3.24 AS builder
 
 WORKDIR /src
 
-ARG GOPROXY=https://proxy.golang.org,direct
-ENV GOPROXY=$GOPROXY
+ENV GOTOOLCHAIN=local
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    set -eux; \
-    for attempt in 1 2 3; do \
-        if go mod download; then \
-            exit 0; \
-        fi; \
-        sleep "$((attempt * 5))"; \
-    done; \
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     go mod download
 
 COPY . .
 
-RUN --mount=type=cache,target=/go/pkg/mod \
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -buildvcs=false \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/ktk-schedule \
     ./cmd/bot
 
-FROM alpine:3.22
+FROM alpine:3.24.1
 
-RUN apk add --no-cache tzdata curl \
-    && adduser -D -h /app app \
+LABEL org.opencontainers.image.source="https://github.com/kurumihere/ktk-schedule" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -g 1000 app \
+    && adduser -D -H -h /app -u 1000 -G app app \
     && mkdir -p /app/data \
     && chown app:app /app/data
 
 WORKDIR /app
 
 COPY --from=builder --chown=app:app /out/ktk-schedule /app/ktk-schedule
+COPY --chown=app:app LICENSE /app/LICENSE
 USER app
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf http://localhost:8080/health || exit 1
 
 CMD ["/app/ktk-schedule"]
