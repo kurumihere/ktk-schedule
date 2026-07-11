@@ -83,6 +83,9 @@ func (a *App) sendDailySchedules(ctx context.Context) {
 	stopped := false
 
 	err := a.storage.ForEachNotifyUser(func(u *storage.User) error {
+		if u.TelegramID <= 0 {
+			return nil
+		}
 		if !a.circuitBreaker.Allow() {
 			logger.Warn("Circuit breaker opened during daily notifications")
 			stopped = true

@@ -72,6 +72,46 @@ func TestTelegramSenderID(t *testing.T) {
 	}
 }
 
+func TestIsPrivateUserMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		message *models.Message
+		want    bool
+	}{
+		{
+			name: "private chat owner",
+			message: &models.Message{
+				From: &models.User{ID: 123},
+				Chat: models.Chat{ID: 123, Type: models.ChatTypePrivate},
+			},
+			want: true,
+		},
+		{
+			name: "group chat",
+			message: &models.Message{
+				From: &models.User{ID: 123},
+				Chat: models.Chat{ID: -456, Type: models.ChatTypeGroup},
+			},
+		},
+		{
+			name: "different sender",
+			message: &models.Message{
+				From: &models.User{ID: 123},
+				Chat: models.Chat{ID: 456, Type: models.ChatTypePrivate},
+			},
+		},
+		{name: "missing message"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPrivateUserMessage(tt.message); got != tt.want {
+				t.Fatalf("isPrivateUserMessage() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientSubgroupOrDefault(t *testing.T) {
 	if got := clientSubgroupOrDefault(nil, "2"); got != "right" {
 		t.Errorf("expected right, got %s", got)

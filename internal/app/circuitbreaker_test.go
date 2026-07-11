@@ -65,7 +65,7 @@ func TestCircuitBreakerClosesOnHalfOpenSuccess(t *testing.T) {
 	cb.RecordFailure()
 	cb.RecordFailure()
 	time.Sleep(60 * time.Millisecond)
-	cb.Allow() // transitions to half-open
+	cb.Allow()
 
 	cb.RecordSuccess()
 
@@ -80,7 +80,7 @@ func TestCircuitBreakerReopensOnHalfOpenFailure(t *testing.T) {
 	cb.RecordFailure()
 	cb.RecordFailure()
 	time.Sleep(60 * time.Millisecond)
-	cb.Allow() // transitions to half-open
+	cb.Allow()
 
 	cb.RecordFailure()
 

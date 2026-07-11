@@ -25,9 +25,9 @@ type Session struct {
 	Subgroup           string
 	ShowAllSubgroups   bool
 	TeacherHash        string
-	ViewingGroupID     int   // >0 — просматриваем чужую группу, 0 — своё расписание
-	AwaitingGroupInput bool  // ждём ввода номера группы текстом
-	lastAccessUnix     int64 // atomic
+	ViewingGroupID     int
+	AwaitingGroupInput bool
+	lastAccessUnix     int64
 }
 
 func (s *Session) copy() *Session {
@@ -114,9 +114,6 @@ func copyScheduleSubjects(dst, src []ktk.ScheduleDay) {
 	}
 }
 
-// getHomeworkFileID returns the cached file ID for a sheet, or fetches it via API.
-// Returns 0 if no file is attached. The ok result is false only on API error
-// (caller should retry later), true if the cache was updated (even if fileID is 0).
 func (s *Session) getHomeworkFileID(ctx context.Context, sheet int) (fileID int, ok bool) {
 	if s.Client == nil {
 		return 0, false

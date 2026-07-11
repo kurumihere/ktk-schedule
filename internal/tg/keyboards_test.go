@@ -42,7 +42,6 @@ func TestScheduleKeyboardNoSelectedDay(t *testing.T) {
 	if kb.InlineKeyboard[1][2].Text != "➡️" {
 		t.Fatalf("expected next button to stay enabled, got %q", kb.InlineKeyboard[1][2].Text)
 	}
-	// дни идут после строк навигации, группы и подгрупп — ищем только кнопки с callback schedule:day:
 	for _, row := range kb.InlineKeyboard {
 		for _, btn := range row {
 			if strings.HasPrefix(btn.CallbackData, "schedule:day:") && strings.HasPrefix(btn.Text, "✅ ") {

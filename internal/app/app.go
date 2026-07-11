@@ -39,7 +39,7 @@ type App struct {
 	endpointsMu sync.RWMutex
 	endpoints   ktk.Endpoints
 
-	sessions       sync.Map // telegramID → *atomic.Pointer[Session]
+	sessions       sync.Map
 	healthServer   *http.Server
 	rateLimiter    *rateLimiter
 	loginLimiter   *rateLimiter

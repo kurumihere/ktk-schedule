@@ -361,5 +361,4 @@ func discoveryTestMockServerPersonal(w http.ResponseWriter, r *http.Request) {
 func TestDiscovery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(discoveryTestMockServerPersonal))
 	defer server.Close()
-	// ...
 }

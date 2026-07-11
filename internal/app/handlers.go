@@ -68,6 +68,10 @@ func (a *App) handleLogin(ctx context.Context, bot *telegram.Bot, update *models
 	if update.Message == nil {
 		return
 	}
+	if !isPrivateUserMessage(update.Message) {
+		a.send(ctx, update.Message.Chat.ID, "Авторизация доступна только в личном чате с ботом.")
+		return
+	}
 
 	chatID := update.Message.Chat.ID
 	a.deleteUserMessage(ctx, bot, update.Message)
@@ -164,6 +168,10 @@ func (a *App) deleteUserMessage(ctx context.Context, bot *telegram.Bot, message 
 
 func (a *App) handleSchedule(ctx context.Context, _ *telegram.Bot, update *models.Update) {
 	if update.Message == nil {
+		return
+	}
+	if !isPrivateUserMessage(update.Message) {
+		a.send(ctx, update.Message.Chat.ID, "Персональное расписание доступно только в личном чате с ботом.")
 		return
 	}
 
@@ -349,6 +357,14 @@ func formatUptime(d time.Duration) string {
 }
 
 func (a *App) handleNotify(ctx context.Context, update *models.Update, enabled bool) {
+	if update.Message == nil {
+		return
+	}
+	if !isPrivateUserMessage(update.Message) {
+		a.send(ctx, update.Message.Chat.ID, "Настройки уведомлений доступны только в личном чате с ботом.")
+		return
+	}
+
 	user, ok := a.requireUser(ctx, update.Message)
 	if !ok {
 		return
@@ -456,8 +472,6 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 		return
 	}
 
-	_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{CallbackQueryID: callback.ID})
-
 	message := callback.Message.Message
 	if message == nil {
 		a.send(ctx, callback.From.ID, "Сообщение устарело. Напиши /schedule ещё раз.")
@@ -465,6 +479,15 @@ func (a *App) handleCallback(ctx context.Context, bot *telegram.Bot, update *mod
 	}
 
 	chatID := message.Chat.ID
+	if message.Chat.Type != models.ChatTypePrivate || callback.From.ID != chatID {
+		_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{
+			CallbackQueryID: callback.ID,
+			Text:            "Персональные кнопки доступны только владельцу в личном чате.",
+			ShowAlert:       true,
+		})
+		return
+	}
+	_, _ = bot.AnswerCallbackQuery(ctx, &telegram.AnswerCallbackQueryParams{CallbackQueryID: callback.ID})
 	session, err := a.loadOrRecoverSession(ctx, chatID, message.Text)
 	if err != nil {
 		return
@@ -946,8 +969,10 @@ func (a *App) handleDefault(ctx context.Context, _ *telegram.Bot, update *models
 		return
 	}
 
-	// Сначала проверяем ожидание ввода группы — для всех, включая owner
-	session := a.getSession(chatID)
+	var session *Session
+	if isPrivateUserMessage(update.Message) {
+		session = a.getSession(chatID)
+	}
 	if session != nil && session.AwaitingGroupInput {
 		groupID, err := strconv.Atoi(strings.TrimSpace(update.Message.Text))
 		if err != nil || groupID <= 0 || groupID > 100000 {
@@ -1001,7 +1026,6 @@ func (a *App) handleCallbackMy(ctx context.Context, bot *telegram.Bot, chatID in
 		}
 	}
 
-	// Полностью сбрасываем состояние просмотра и возвращаем привязанную подгруппу.
 	sess.ViewingGroupID = 0
 	sess.Subgroup = user.Subgroup
 	sess.ShowAllSubgroups = user.ShowAllSubgroups
@@ -1094,19 +1118,16 @@ func (a *App) handleCallbackSubgroup(ctx context.Context, bot *telegram.Bot, cha
 	targetDate := a.selectedScheduleDate(session)
 
 	if session.ViewingGroupID > 0 {
-		// просмотр чужой группы — не трогаем БД, меняем только в памяти сессии
 		session.Subgroup = subgroup
 		session.ShowAllSubgroups = showAll
 		session.Schedule = ktk.FilterScheduleDays(session.AllSchedule, subgroup, showAll)
 		session.CurrentIndex = ktk.FindDateIndex(session.Schedule, targetDate, a.location)
 		a.setSession(chatID, session)
 	} else {
-		// своё расписание — сохраняем в БД и перезагружаем
 		if err := a.saveUserSubgroupMode(user, subgroup, showAll, session); err != nil {
 			a.send(ctx, chatID, "Не удалось сохранить подгруппу.")
 			return
 		}
-		// сбрасываем кеш — иначе loadSchedule вернёт старые данные с персонального эндпоинта
 		a.scheduleCache.invalidate(user.GroupID)
 		sess, err := a.ensureSession(ctx, user)
 		if err != nil {
@@ -1180,6 +1201,12 @@ func telegramSenderID(message *models.Message) int64 {
 		return message.From.ID
 	}
 	return message.Chat.ID
+}
+
+func isPrivateUserMessage(message *models.Message) bool {
+	return message != nil &&
+		message.Chat.Type == models.ChatTypePrivate &&
+		telegramSenderID(message) == message.Chat.ID
 }
 
 func clientSubgroupOrDefault(client *ktk.Client, fallback string) string {
