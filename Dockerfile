@@ -1,4 +1,4 @@
-FROM golang:1.26.4-alpine3.24 AS builder
+FROM golang:1.26.5-alpine3.24 AS builder
 
 WORKDIR /src
 
@@ -8,7 +8,8 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     go mod download
 
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -38,5 +39,7 @@ WORKDIR /app
 COPY --from=builder --chown=app:app /out/ktk-schedule /app/ktk-schedule
 COPY --chown=app:app LICENSE /app/LICENSE
 USER app
+
+STOPSIGNAL SIGTERM
 
 CMD ["/app/ktk-schedule"]

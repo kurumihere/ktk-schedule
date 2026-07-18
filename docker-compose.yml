@@ -5,13 +5,23 @@ services:
       dockerfile: Dockerfile
     image: ${KTK_SCHEDULE_IMAGE:-ktk-schedule:local}
     restart: unless-stopped
+    stop_grace_period: 30s
     read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env
     environment:
       DATABASE_PATH: /app/data/ktk-schedule.db
     volumes:
       - data:/app/data
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
 
 volumes:
   data:
