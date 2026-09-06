@@ -1,10 +1,6 @@
 #!/bin/sh
 set -eu
-case "${SSH_ORIGINAL_COMMAND:-}" in
-    check) printf 'KTK deploy ready\n'; exit 0 ;;
-    deploy) ;;
-    *) exit 1 ;;
-esac
+test "$#" = 0
 umask 077
 exec 9>/run/lock/ktk-schedule-deploy.lock
 flock -w 120 9

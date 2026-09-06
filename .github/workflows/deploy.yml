@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     container: debian:13-slim
@@ -20,7 +20,7 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends build-essential cmake curl git ca-certificates openssh-client
+          apt-get install -y --no-install-recommends build-essential cmake curl git ca-certificates
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
@@ -36,21 +36,26 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --all-targets
           cargo build --locked --release
-      - name: Deploy and restart
-        env:
-          VDS_HOST: ${{ secrets.VDS_HOST }}
-          VDS_PORT: ${{ secrets.VDS_PORT }}
-          VDS_USER: ${{ secrets.VDS_USER }}
-          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
-          VDS_KNOWN_HOSTS: ${{ secrets.VDS_KNOWN_HOSTS }}
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bot
+          path: target/release/ktk-schedule
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, ktk-deploy]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: bot
+          path: release
+      - name: Install and restart
         run: |
-          umask 077
-          key="$RUNNER_TEMP/ktk-deploy-key"
-          hosts="$RUNNER_TEMP/ktk-known-hosts"
-          trap 'rm -f "$key" "$hosts"' EXIT
-          printf '%s\n' "$VDS_SSH_KEY" > "$key"
-          printf '%s\n' "$VDS_KNOWN_HOSTS" > "$hosts"
-          ssh -i "$key" -p "$VDS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
-            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-            "$VDS_USER@$VDS_HOST" deploy < target/release/ktk-schedule
+          sudo -n /usr/local/sbin/ktk-schedule-deploy < release/ktk-schedule
+      - name: Clean workspace
+        if: always()
+        run: rm -rf release
