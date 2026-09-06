@@ -1,0 +1,40 @@
+[package]
+name = "ktk-schedule"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "BSD-3-Clause"
+description = "Telegram schedule bot for KTK"
+
+[dependencies]
+aes-gcm = "0.11.1"
+anyhow = "1"
+base64 = "0.23.1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+dotenvy = "0.15"
+futures = "0.3"
+moka = { version = "0.12", features = ["future"] }
+regex = "1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "cookies", "stream", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+teloxide = { version = "0.17", default-features = false, features = ["rustls", "ctrlc_handler", "throttle"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "io-util"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[lints.rust]
+unsafe_code = "forbid"

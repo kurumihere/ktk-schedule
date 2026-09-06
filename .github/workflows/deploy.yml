@@ -1,140 +1,56 @@
-name: deploy
+name: Deploy to VDS
 
 on:
   workflow_dispatch:
 
-concurrency:
-  group: production
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-  DEPLOY_DIR: /home/github-runner/ktk-schedule
+concurrency:
+  group: deploy-vds
+  cancel-in-progress: false
 
 jobs:
-  build:
-    if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: build and push docker-image
-        run: |
-          docker buildx build \
-            --push \
-            --pull \
-            --platform linux/amd64 \
-            --cache-from type=gha \
-            --cache-to type=gha,mode=max \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --tag "$IMAGE:$GITHUB_SHA" \
-            --tag "$IMAGE:latest" \
-            .
-
   deploy:
-    needs: build
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 10
-    environment: production
-    permissions:
-      contents: read
-      packages: read
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    container: debian:13-slim
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: deploy
-        env:
-          PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
+      - name: Install build tools
         run: |
-          set -Eeuo pipefail
-          test -n "$PRODUCTION_ENV"
-
-          install -d -m 0750 "$DEPLOY_DIR"
-          install -m 0644 docker-compose.yml "$DEPLOY_DIR/docker-compose.yml"
-          cd "$DEPLOY_DIR"
+          apt-get update -qq
+          apt-get install -y --no-install-recommends build-essential cmake curl git ca-certificates openssh-client
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Check and build
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          cargo build --locked --release
+      - name: Deploy and restart
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_PORT: ${{ secrets.VDS_PORT }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_KNOWN_HOSTS: ${{ secrets.VDS_KNOWN_HOSTS }}
+        run: |
           umask 077
-
-          rollback_env="$DEPLOY_DIR/.env.rollback"
-          next_env="$DEPLOY_DIR/.env.next"
-          rm -f "$rollback_env" "$next_env"
-
-          previous_image=""
-          if [ -f .env ]; then
-            previous_container="$(docker compose ps -q ktk-schedule 2>/dev/null || true)"
-            if [ -n "$previous_container" ]; then
-              previous_image="$(docker inspect --format '{{.Config.Image}}' "$previous_container")"
-            fi
-
-            cp .env "$rollback_env"
-            if [ -n "$previous_image" ]; then
-              printf '\nKTK_SCHEDULE_IMAGE=%s\n' "$previous_image" >> "$rollback_env"
-            fi
-          fi
-
-          printf '%s\nKTK_SCHEDULE_IMAGE=%s\n' \
-            "$PRODUCTION_ENV" "$IMAGE:$GITHUB_SHA" > "$next_env"
-          mv "$next_env" .env
-
-          rollback() {
-            status=$?
-            trap - ERR
-            docker compose logs --tail=100 || true
-            if [ -f "$rollback_env" ]; then
-              echo "Deployment failed; restoring $previous_image"
-              mv "$rollback_env" .env
-              docker compose up -d --remove-orphans --no-build || true
-            else
-              docker compose stop --timeout 15 || true
-            fi
-            exit "$status"
-          }
-          trap rollback ERR
-
-          docker compose pull
-
-          if docker volume inspect ktk-schedule-data >/dev/null 2>&1; then
-            install -d -m 0700 "$DEPLOY_DIR/backups"
-            docker compose stop --timeout 30
-
-            backup_file="ktk-schedule-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
-            docker run --rm \
-              --volume ktk-schedule-data:/data:ro \
-              --volume "$DEPLOY_DIR/backups:/backup" \
-              alpine:3.24.1 \
-              tar -czf "/backup/$backup_file" -C /data .
-
-            find "$DEPLOY_DIR/backups" -type f -name 'ktk-schedule-*.tar.gz' -mtime +14 -delete
-          fi
-
-          docker compose up -d --remove-orphans --no-build
-
-          container_id="$(docker compose ps -q ktk-schedule)"
-          test -n "$container_id"
-          for attempt in $(seq 1 15); do
-            sleep 2
-            test "$(docker inspect --format '{{.State.Running}}' "$container_id")" = "true"
-            test "$(docker inspect --format '{{.RestartCount}}' "$container_id")" = "0"
-          done
-
-          trap - ERR
-          rm -f "$rollback_env"
-          docker image prune -af \
-            --filter "until=168h" \
-            --filter "label=org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+          key="$RUNNER_TEMP/ktk-deploy-key"
+          hosts="$RUNNER_TEMP/ktk-known-hosts"
+          trap 'rm -f "$key" "$hosts"' EXIT
+          printf '%s\n' "$VDS_SSH_KEY" > "$key"
+          printf '%s\n' "$VDS_KNOWN_HOSTS" > "$hosts"
+          ssh -i "$key" -p "$VDS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$VDS_USER@$VDS_HOST" deploy < target/release/ktk-schedule
