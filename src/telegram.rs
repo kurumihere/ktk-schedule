@@ -240,7 +240,15 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
                     .await?;
                 return Ok(());
             }
-            let _ = app.bot.delete_message(message.chat.id, message.id).await;
+            if app
+                .bot
+                .delete_message(message.chat.id, message.id)
+                .await
+                .is_err()
+            {
+                app.send(id, "Не удалось удалить сообщение с паролем, поэтому вход отменён. Удали сообщение вручную и попробуй снова.").await?;
+                return Ok(());
+            }
             if !app.allow(id, true).await {
                 app.send(id, "Слишком много попыток входа. Попробуй позже.")
                     .await?;

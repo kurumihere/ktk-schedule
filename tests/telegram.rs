@@ -146,3 +146,52 @@ async fn start_keeps_the_help_text_and_commands_for_other_bots_are_ignored() {
     let response: Value = requests[0].body_json().unwrap();
     assert_eq!(response["text"], ktk_schedule::render::HELP);
 }
+
+#[tokio::test]
+async fn login_stops_if_the_credential_message_cannot_be_deleted() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    wiremock::Mock::given(wiremock::matchers::path_regex(
+        "(?i)/bot123456:TEST/deletemessage",
+    ))
+    .respond_with(wiremock::ResponseTemplate::new(400).set_body_json(json!({
+        "ok": false, "error_code": 400, "description": "Bad Request: message can't be deleted"
+    })))
+    .with_priority(1)
+    .mount(&server)
+    .await;
+    let app = Arc::new(app(&college, &server).await);
+    handle_message(app.clone(), message(42, "/login user password"))
+        .await
+        .unwrap();
+    assert!(college.server.received_requests().await.unwrap().is_empty());
+    assert!(app.storage.account(42).await.unwrap().is_none());
+    let requests = server.received_requests().await.unwrap();
+    let response: Value = requests
+        .iter()
+        .find(|r| r.url.path().to_lowercase().ends_with("/sendmessage"))
+        .unwrap()
+        .body_json()
+        .unwrap();
+    assert!(response["text"].as_str().unwrap().contains("вход отменён"));
+    assert!(!response["text"].as_str().unwrap().contains("password"));
+}
+
+#[tokio::test]
+async fn login_succeeds_after_deleting_the_credential_message() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    handle_message(app.clone(), message(42, "/login user password"))
+        .await
+        .unwrap();
+    assert!(app.storage.account(42).await.unwrap().is_some());
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests[0]
+            .url
+            .path()
+            .to_lowercase()
+            .ends_with("/deletemessage")
+    );
+}
