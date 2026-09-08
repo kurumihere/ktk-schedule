@@ -104,6 +104,15 @@ impl Storage {
         Ok(())
     }
 
+    pub async fn delete_account(&self, id: i64) -> Result<()> {
+        // Foreign keys also remove this user's persisted schedules and views.
+        sqlx::query("DELETE FROM accounts WHERE telegram_id=?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_notify(&self, id: i64, enabled: bool) -> Result<()> {
         sqlx::query("UPDATE accounts SET notify=? WHERE telegram_id=?")
             .bind(enabled)

@@ -195,3 +195,52 @@ async fn login_succeeds_after_deleting_the_credential_message() {
             .ends_with("/deletemessage")
     );
 }
+
+#[tokio::test]
+async fn logout_removes_credentials_and_all_user_state_and_disables_old_buttons() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    let a = app.sign_in(42, "user", "password").await.unwrap();
+    app.sign_in(43, "other", "password").await.unwrap();
+    let view = View::own(&a, date());
+    app.show(&a, &view, None, false).await.unwrap();
+    app.storage.set_notify(42, true).await.unwrap();
+    app.pending_groups.insert(42, 100).await;
+    handle_message(app.clone(), message(-100, "/logout"))
+        .await
+        .unwrap();
+    assert!(app.storage.account(42).await.unwrap().is_some());
+    handle_message(app.clone(), message(42, "/logout"))
+        .await
+        .unwrap();
+    assert!(app.storage.account(42).await.unwrap().is_none());
+    assert!(app.storage.view(42, 100).await.unwrap().is_none());
+    assert!(
+        app.storage
+            .schedule(42, &view.scope(&a), &view.week().to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(app.pending_groups.get(&42).await.is_none());
+    assert!(
+        app.storage
+            .notification_ids("2026-09-01")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(app.storage.account(43).await.unwrap().is_some());
+    let requests_before = college.server.received_requests().await.unwrap().len();
+    handle_callback(app.clone(), callback(42, 100, "schedule:refresh"))
+        .await
+        .unwrap();
+    handle_message(app.clone(), message(42, "/logout"))
+        .await
+        .unwrap();
+    assert_eq!(
+        college.server.received_requests().await.unwrap().len(),
+        requests_before
+    );
+}

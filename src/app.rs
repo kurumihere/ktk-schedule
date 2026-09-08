@@ -280,6 +280,17 @@ impl App {
             .map_err(|e| anyhow!("{e}"))
     }
 
+    // The caller holds lock_user, as for login, callbacks and notifications.
+    pub async fn sign_out(&self, id: i64) -> Result<()> {
+        self.storage.delete_account(id).await?;
+        self.sessions.invalidate(&id).await;
+        self.pending_groups.invalidate(&id).await;
+        self.schedules
+            .invalidate_entries_if(move |(user, _, _), _| *user == id)
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
+    }
+
     pub async fn load(&self, account: &Account, view: &View, refresh: bool) -> Result<Loaded> {
         let scope = view.scope(account);
         let key = (account.id, scope.clone(), view.week());

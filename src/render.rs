@@ -3,7 +3,7 @@ use chrono::{DateTime, Datelike, Days, NaiveDate, Timelike};
 use chrono_tz::Tz;
 use std::{collections::HashMap, fmt::Write};
 
-pub const HELP: &str = "Привет! Я ktk-schedule\n\nКоманды:\n/start (Показать список команд)\n/login логин пароль (Авторизоваться в workspace)\n/schedule [дата] (Показать расписание на текущую неделю или дату)\n/notify_on || _off (Включить || Отключить утренние уведомления)\n";
+pub const HELP: &str = "Привет! Я ktk-schedule\n\nКоманды:\n/start (Показать список команд)\n/login логин пароль (Авторизоваться в workspace)\n/logout (Выйти и удалить сохранённые данные)\n/schedule [дата] (Показать расписание на текущую неделю или дату)\n/notify_on || _off (Включить || Отключить утренние уведомления)\n";
 const MONTHS: [&str; 12] = [
     "января",
     "февраля",

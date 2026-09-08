@@ -279,6 +279,15 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
                 }
             }
         }
+        "/logout" => {
+            if !private(message) {
+                app.send(id, "Выход доступен только в личном чате с ботом.")
+                    .await?;
+                return Ok(());
+            }
+            app.sign_out(id).await?;
+            app.send(id, "Ты вышел из аккаунта. Сохранённые данные входа и кеш удалены, уведомления отключены.").await?;
+        }
         "/schedule" => {
             if !private(message) {
                 app.send(
