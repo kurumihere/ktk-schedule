@@ -1,0 +1,34 @@
+name: Security audit
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install verified cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          audit_dir="$(mktemp -d "$RUNNER_TEMP/cargo-audit.XXXXXX")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz \
+            -o "$audit_dir/cargo-audit.tgz"
+          echo "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  $audit_dir/cargo-audit.tgz" | sha256sum --check --strict
+          tar -xzf "$audit_dir/cargo-audit.tgz" -C "$audit_dir" --strip-components=1
+          echo "$audit_dir" >> "$GITHUB_PATH"
+      - name: Check dependencies against RustSec
+        run: cargo audit --db "$RUNNER_TEMP/advisory-db" --deny unsound --deny yanked

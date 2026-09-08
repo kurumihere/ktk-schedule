@@ -11,7 +11,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  audit:
+    uses: ./.github/workflows/security.yml
+
   build:
+    needs: audit
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     container: debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
