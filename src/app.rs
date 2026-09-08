@@ -71,22 +71,26 @@ impl Session {
             .await
             .map_err(|e| anyhow!("{e}"))
     }
-    pub async fn assets(&self, subjects: &[&Subject], teacher: bool, refresh: bool) -> Assets {
+    pub async fn assets(
+        &self,
+        subjects: &[&Subject],
+        teacher: bool,
+        refresh: bool,
+    ) -> Result<Assets> {
         let mut assets = Assets::default();
         if teacher {
-            return assets;
+            return Ok(assets);
         }
         if refresh {
             self.submissions.invalidate_all();
             self.docs.invalidate_all();
         }
-        let mut sheets: Vec<_> = subjects
-            .iter()
-            .map(|s| s.extra_data.sheet)
-            .filter(|n| *n > 0)
-            .collect();
-        sheets.sort_unstable();
-        sheets.dedup();
+        let sheets = limited_file_ids(subjects.iter().map(|s| s.extra_data.sheet))?;
+        let files = limited_file_ids(
+            subjects
+                .iter()
+                .flat_map(|s| s.extra_data.homework.files.iter().copied()),
+        )?;
         let results = stream::iter(
             sheets
                 .into_iter()
@@ -102,13 +106,11 @@ impl Session {
                 assets.submissions.insert(sheet, id);
             }
         }
-        let mut ids: Vec<_> = subjects
-            .iter()
-            .flat_map(|s| s.extra_data.homework.files.iter().copied())
-            .chain(assets.submissions.values().copied())
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
+        let ids = limited_file_ids(
+            files
+                .into_iter()
+                .chain(assets.submissions.values().copied()),
+        )?;
         let results = stream::iter(
             ids.into_iter()
                 .map(|id| async move { self.document(id).await }),
@@ -120,7 +122,7 @@ impl Session {
         for doc in results.into_iter().flatten() {
             assets.documents.insert(doc.id, doc);
         }
-        assets
+        Ok(assets)
     }
 }
 
@@ -441,7 +443,7 @@ impl App {
                         session.references(),
                         session.assets(&subjects, teacher, refresh)
                     );
-                    (refs, assets)
+                    (refs, assets?)
                 } else {
                     (Arc::new(ReferenceData::default()), Assets::default())
                 };

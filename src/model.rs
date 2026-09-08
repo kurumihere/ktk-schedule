@@ -1,9 +1,13 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+// Bound both persisted attachment lists and the work done by a single command.
+pub const MAX_ATTACHMENTS: usize = 64;
+const MAX_ATTACHMENT_NODES: usize = 4096;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
@@ -79,7 +83,7 @@ impl<'de> Deserialize<'de> for Homework {
             deadline: v["Deadline"].as_str().map(Into::into),
             webinar: v["Webinar"].as_str().map(Into::into),
             lock_upload: v["LockUpload"].as_bool(),
-            files: attachment_ids(&v),
+            files: attachment_ids(&v).map_err(serde::de::Error::custom)?,
         })
     }
 }
@@ -90,15 +94,24 @@ pub fn positive_id(v: &Value) -> Option<i64> {
         .filter(|n| *n > 0)
 }
 
-pub fn attachment_ids(value: &Value) -> Vec<i64> {
-    fn collect(v: &Value, out: &mut Vec<i64>, depth: usize) {
-        if depth > 32 {
-            return;
-        }
+pub fn attachment_ids(value: &Value) -> Result<Vec<i64>> {
+    fn collect(
+        v: &Value,
+        out: &mut Vec<i64>,
+        seen: &mut HashSet<i64>,
+        nodes: &mut usize,
+        depth: usize,
+    ) -> Result<()> {
+        ensure!(depth <= 32, "attachment nesting exceeds limit");
+        ensure!(
+            *nodes < MAX_ATTACHMENT_NODES,
+            "attachment structure exceeds limit"
+        );
+        *nodes += 1;
         match v {
             Value::Array(values) => {
                 for v in values {
-                    collect(v, out, depth + 1);
+                    collect(v, out, seen, nodes, depth + 1)?;
                 }
             }
             Value::Object(map) => {
@@ -125,20 +138,27 @@ pub fn attachment_ids(value: &Value) -> Vec<i64> {
                     "userFile",
                 ] {
                     if let Some(v) = map.get(key) {
-                        collect(v, out, depth + 1);
+                        collect(v, out, seen, nodes, depth + 1)?;
                     }
                 }
             }
             _ => {
                 if let Some(id) = positive_id(v)
-                    && !out.contains(&id)
+                    && seen.insert(id)
                 {
+                    ensure!(
+                        out.len() < MAX_ATTACHMENTS,
+                        "too many attachments (maximum {MAX_ATTACHMENTS})"
+                    );
                     out.push(id);
                 }
             }
         }
+        Ok(())
     }
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut nodes = 0;
     for key in [
         "Files",
         "FileIDs",
@@ -149,9 +169,24 @@ pub fn attachment_ids(value: &Value) -> Vec<i64> {
         "Documents",
         "Attachments",
     ] {
-        collect(&value[key], &mut out, 0);
+        collect(&value[key], &mut out, &mut seen, &mut nodes, 0)?;
     }
-    out
+    Ok(out)
+}
+
+/// Deduplicate before counting, and stop before allocating or requesting an oversized batch.
+pub fn limited_file_ids(ids: impl IntoIterator<Item = i64>) -> Result<Vec<i64>> {
+    let mut seen = HashSet::new();
+    for id in ids.into_iter().filter(|id| *id > 0) {
+        seen.insert(id);
+        ensure!(
+            seen.len() <= MAX_ATTACHMENTS,
+            "too many file references (maximum {MAX_ATTACHMENTS})"
+        );
+    }
+    let mut ids: Vec<_> = seen.into_iter().collect();
+    ids.sort_unstable();
+    Ok(ids)
 }
 
 pub fn parse_schedule(value: &Value) -> Result<Vec<ScheduleDay>> {

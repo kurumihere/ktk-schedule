@@ -50,7 +50,10 @@ fn dates_and_academic_weeks_match_the_existing_interface() {
 #[test]
 fn attachments_accept_alternate_api_shapes_without_duplicate_ids() {
     let value = json!({"Files": [{"ID": 101}, {"FileID":"102"}, {"Document":{"ID":103}}, 101, -1, 2.5], "FileID":104, "Documents":[{"DocumentID":105}], "Attachments":[{"File":{"ID":106}}]});
-    assert_eq!(attachment_ids(&value), [101, 102, 103, 104, 105, 106]);
+    assert_eq!(
+        attachment_ids(&value).unwrap(),
+        [101, 102, 103, 104, 105, 106]
+    );
     let homework: Homework = serde_json::from_value(value).unwrap();
     assert_eq!(homework.files, [101, 102, 103, 104, 105, 106]);
 }
@@ -318,4 +321,32 @@ fn invalid_configuration_fails_before_network_requests() {
             values.remove(key);
         }
     }
+}
+
+#[test]
+fn attachment_limits_reject_large_or_pathological_payloads() {
+    let accepted = json!({"Files":(1..=MAX_ATTACHMENTS).collect::<Vec<_>>()});
+    assert_eq!(attachment_ids(&accepted).unwrap().len(), MAX_ATTACHMENTS);
+    let huge = json!({"Files":(1..=320_000).collect::<Vec<_>>()});
+    assert!(
+        attachment_ids(&huge)
+            .unwrap_err()
+            .to_string()
+            .contains("too many attachments")
+    );
+    assert!(serde_json::from_value::<Homework>(huge).is_err());
+    let duplicates = json!({"Files":vec![1;10_000]});
+    assert!(
+        attachment_ids(&duplicates)
+            .unwrap_err()
+            .to_string()
+            .contains("structure exceeds limit")
+    );
+    let mut nested = json!(1);
+    for _ in 0..40 {
+        nested = json!([nested]);
+    }
+    assert!(attachment_ids(&json!({"Files":nested})).is_err());
+    assert_eq!(limited_file_ids([3, 1, 3, 2, 0, -1]).unwrap(), [1, 2, 3]);
+    assert!(limited_file_ids(1..=MAX_ATTACHMENTS as i64 + 1).is_err());
 }

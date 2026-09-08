@@ -669,14 +669,13 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
     let subjects = visible_subjects(day, view, !a.teacher_hash.is_empty());
     let assets = session
         .assets(&subjects, !a.teacher_hash.is_empty(), false)
-        .await;
-    let mut ids: Vec<_> = subjects
-        .iter()
-        .flat_map(|s| s.extra_data.homework.files.iter().copied())
-        .chain(assets.submissions.values().copied())
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
+        .await?;
+    let ids = limited_file_ids(
+        subjects
+            .iter()
+            .flat_map(|s| s.extra_data.homework.files.iter().copied())
+            .chain(assets.submissions.values().copied()),
+    )?;
     if ids.is_empty() {
         app.send(a.id, "Нет файлов для скачивания.").await?;
         return Ok(());

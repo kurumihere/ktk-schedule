@@ -413,3 +413,51 @@ async fn same_origin_file_redirects_are_followed() {
     let (file, _) = client.download(10).await.unwrap();
     assert_eq!(tokio::fs::read(file).await.unwrap(), b"PDF");
 }
+
+#[tokio::test]
+async fn attachment_batches_are_bounded_before_metadata_requests() {
+    use ktk_schedule::model::{MAX_ATTACHMENTS, Subject};
+    let college = College::start(false).await;
+    let telegram = telegram_server().await;
+    let app = app(&college, &telegram).await;
+    let account = app.sign_in(42, "user", "password").await.unwrap();
+    let session = app.session(&account).await.unwrap();
+    session.client.refresh(269, week(), false).await.unwrap();
+    let before = college.server.received_requests().await.unwrap().len();
+    let mut subjects = vec![Subject::default(); MAX_ATTACHMENTS + 1];
+    for (i, subject) in subjects.iter_mut().enumerate() {
+        subject.extra_data.homework.files = vec![i as i64 + 1];
+    }
+    let refs: Vec<_> = subjects.iter().collect();
+    assert!(session.assets(&refs, false, false).await.is_err());
+    assert_eq!(
+        college.server.received_requests().await.unwrap().len(),
+        before
+    );
+    for (i, subject) in subjects.iter_mut().enumerate() {
+        subject.extra_data.homework.files.clear();
+        subject.extra_data.sheet = i as i64 + 1;
+    }
+    assert!(
+        session
+            .assets(&subjects.iter().collect::<Vec<_>>(), false, false)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        college.server.received_requests().await.unwrap().len(),
+        before
+    );
+
+    // Homework and submission files share one budget, not separate allowances.
+    let mut subject = Subject::default();
+    subject.extra_data.sheet = 1;
+    subject.extra_data.homework.files = (100..100 + MAX_ATTACHMENTS as i64).collect();
+    assert!(session.assets(&[&subject], false, false).await.is_err());
+    let requests = college.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), before + 1);
+    assert_eq!(
+        requests.last().unwrap().url.path(),
+        "/v3/ws/home/homework/check"
+    );
+}

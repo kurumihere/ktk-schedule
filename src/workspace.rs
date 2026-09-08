@@ -637,7 +637,7 @@ impl Workspace {
         let v: Value = self
             .auxiliary(true, "homework/check", &[("JournalID", sheet.to_string())])
             .await?;
-        Ok(attachment_ids(&v).first().copied().unwrap_or(0))
+        Ok(attachment_ids(&v)?.first().copied().unwrap_or(0))
     }
     pub async fn download(&self, id: i64) -> Result<(tempfile::TempPath, String)> {
         let value: Value = self
