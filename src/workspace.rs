@@ -173,7 +173,10 @@ impl Workspace {
                 if attempt.previous().len() >= 5 {
                     attempt.error("too many redirects")
                 } else if attempt.url().origin() != origin {
-                    attempt.stop()
+                    attempt.error("cross-origin redirect is forbidden")
+                } else if !attempt.url().username().is_empty() || attempt.url().password().is_some()
+                {
+                    attempt.error("redirect credentials are forbidden")
                 } else {
                     attempt.follow()
                 }
@@ -646,8 +649,10 @@ impl Workspace {
             .context("file has no download link")?;
         let url = self.base.join(link)?;
         ensure!(
-            matches!(url.scheme(), "http" | "https"),
-            "invalid file link scheme"
+            url.origin() == self.base.origin()
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "file link must use the workspace origin without credentials"
         );
         let _permit = self.permits.acquire().await?;
         let response = self

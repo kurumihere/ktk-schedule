@@ -331,3 +331,85 @@ async fn oversized_responses_are_rejected_instead_of_truncated_and_parsed() {
             .contains("size limit")
     );
 }
+
+#[tokio::test]
+async fn file_links_cannot_target_another_origin_or_embed_credentials() {
+    let college = College::start(false).await;
+    let other = wiremock::MockServer::start().await;
+    let client = college.login().await;
+    client.refresh(269, week(), false).await.unwrap();
+    for (index, link) in [
+        format!("{}/private", other.uri()),
+        format!("//{}/private", other.address()),
+        "http://169.254.169.254/latest/meta-data/".into(),
+        "file:///etc/passwd".into(),
+        college
+            .server
+            .uri()
+            .replace("http://", "http://user:secret@"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mock = Mock::given(path("/v3/ws/files/open"))
+            .and(wiremock::matchers::query_param("ID", index.to_string()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Link":link})),
+            )
+            .with_priority(1)
+            .mount_as_scoped(&college.server)
+            .await;
+        assert!(
+            client.download(index as i64).await.is_err(),
+            "accepted {link}"
+        );
+        drop(mock);
+    }
+    assert!(other.received_requests().await.unwrap().is_empty());
+    assert!(
+        !college
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path() == "/download/task.pdf")
+    );
+}
+
+#[tokio::test]
+async fn file_redirects_stay_on_the_workspace_origin() {
+    let college = College::start(false).await;
+    let other = wiremock::MockServer::start().await;
+    let client = college.login().await;
+    client.refresh(269, week(), false).await.unwrap();
+    let redirect = Mock::given(path("/download/task.pdf"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/private", other.uri())),
+        )
+        .with_priority(1)
+        .mount_as_scoped(&college.server)
+        .await;
+    assert!(client.download(10).await.is_err());
+    assert!(other.received_requests().await.unwrap().is_empty());
+    drop(redirect);
+}
+
+#[tokio::test]
+async fn same_origin_file_redirects_are_followed() {
+    let college = College::start(false).await;
+    let client = college.login().await;
+    client.refresh(269, week(), false).await.unwrap();
+    Mock::given(path("/download/task.pdf"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", "/download/final.pdf"))
+        .with_priority(1)
+        .mount(&college.server)
+        .await;
+    Mock::given(path("/download/final.pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PDF".to_vec()))
+        .mount(&college.server)
+        .await;
+    let (file, _) = client.download(10).await.unwrap();
+    assert_eq!(tokio::fs::read(file).await.unwrap(), b"PDF");
+}
