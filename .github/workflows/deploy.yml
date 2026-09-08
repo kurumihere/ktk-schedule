@@ -14,21 +14,24 @@ jobs:
   build:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    container: debian:13-slim
+    container: debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
     timeout-minutes: 30
     steps:
       - name: Install build tools
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends build-essential cmake curl git ca-certificates
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Rust
         shell: bash
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
-          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init -o /tmp/rustup-init
+          echo "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/rustup-init" | sha256sum --check --strict
+          chmod 700 /tmp/rustup-init
+          /tmp/rustup-init -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Check and build
         run: |
@@ -36,7 +39,7 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --all-targets
           cargo build --locked --release
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bot
           path: target/release/ktk-schedule
@@ -49,7 +52,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, ktk-deploy]
     timeout-minutes: 5
     steps:
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: bot
           path: release
