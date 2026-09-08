@@ -17,6 +17,22 @@ impl Cipher {
     }
 
     pub fn encrypt(&self, account_id: i64, value: &str) -> Result<String> {
+        self.seal("v2:", &account_id.to_be_bytes(), value)
+    }
+
+    pub fn decrypt(&self, account_id: i64, value: &str) -> Result<String> {
+        self.open("v2:", &account_id.to_be_bytes(), value)
+    }
+
+    pub fn encrypt_cache(&self, context: &str, value: &str) -> Result<String> {
+        self.seal("cache:v1:", context.as_bytes(), value)
+    }
+
+    pub fn decrypt_cache(&self, context: &str, value: &str) -> Result<String> {
+        self.open("cache:v1:", context.as_bytes(), value)
+    }
+
+    fn seal(&self, prefix: &str, aad: &[u8], value: &str) -> Result<String> {
         let nonce =
             Nonce::try_generate().map_err(|_| anyhow!("credential randomness unavailable"))?;
         let sealed = self
@@ -25,18 +41,18 @@ impl Cipher {
                 &nonce,
                 Payload {
                     msg: value.as_bytes(),
-                    aad: &account_id.to_be_bytes(),
+                    aad,
                 },
             )
             .map_err(|_| anyhow!("credential encryption failed"))?;
         let mut data = nonce.to_vec();
         data.extend(sealed);
-        Ok(format!("v2:{}", STANDARD_NO_PAD.encode(data)))
+        Ok(format!("{prefix}{}", STANDARD_NO_PAD.encode(data)))
     }
 
-    pub fn decrypt(&self, account_id: i64, value: &str) -> Result<String> {
+    fn open(&self, prefix: &str, aad: &[u8], value: &str) -> Result<String> {
         let encoded = value
-            .strip_prefix("v2:")
+            .strip_prefix(prefix)
             .ok_or_else(|| anyhow!("unsupported credential format"))?;
         let bytes = STANDARD_NO_PAD.decode(encoded)?;
         ensure!(bytes.len() >= 28, "truncated credential");
@@ -48,7 +64,7 @@ impl Cipher {
                     .as_ref(),
                 Payload {
                     msg: &bytes[12..],
-                    aad: &account_id.to_be_bytes(),
+                    aad,
                 },
             )
             .map_err(|_| anyhow!("credential authentication failed; check CREDENTIALS_SECRET"))?;

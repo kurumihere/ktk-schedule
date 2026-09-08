@@ -40,6 +40,7 @@ impl Storage {
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
+            .pragma("secure_delete", "ON")
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_secs(5));
         // SQLite serializes writes. One asynchronous worker also avoids pool-level write contention.
@@ -48,6 +49,10 @@ impl Storage {
             .connect_with(options)
             .await?;
         sqlx::migrate!().run(&pool).await?;
+        // Remove checkpointed plaintext pages left by the cache-format migration.
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&pool)
+            .await?;
         Ok(Self { pool, cipher })
     }
 
@@ -158,8 +163,12 @@ impl Storage {
         week: &str,
         days: &[ScheduleDay],
     ) -> Result<()> {
+        let context = serde_json::to_string(&("schedules", id, scope, week))?;
+        let data = self
+            .cipher
+            .encrypt_cache(&context, &serde_json::to_string(days)?)?;
         sqlx::query("INSERT INTO schedules(telegram_id,scope,week,data) VALUES (?,?,?,?) ON CONFLICT(telegram_id,scope,week) DO UPDATE SET data=excluded.data,updated_at=unixepoch()")
-            .bind(id).bind(scope).bind(week).bind(serde_json::to_string(days)?).execute(&self.pool).await?;
+            .bind(id).bind(scope).bind(week).bind(data).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -177,12 +186,22 @@ impl Storage {
         .bind(week)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(data.map(|s| serde_json::from_str(&s)).transpose()?)
+        let context = serde_json::to_string(&("schedules", id, scope, week))?;
+        data.map(|s| {
+            Ok(serde_json::from_str(
+                &self.cipher.decrypt_cache(&context, &s)?,
+            )?)
+        })
+        .transpose()
     }
 
     pub async fn save_view(&self, id: i64, message: i32, view: &View) -> Result<()> {
+        let context = serde_json::to_string(&("views", id, message))?;
+        let data = self
+            .cipher
+            .encrypt_cache(&context, &serde_json::to_string(view)?)?;
         sqlx::query("INSERT INTO views(telegram_id,message_id,data) VALUES (?,?,?) ON CONFLICT(telegram_id,message_id) DO UPDATE SET data=excluded.data,updated_at=unixepoch()")
-            .bind(id).bind(message).bind(serde_json::to_string(view)?).execute(&self.pool).await?;
+            .bind(id).bind(message).bind(data).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -193,7 +212,13 @@ impl Storage {
                 .bind(message)
                 .fetch_optional(&self.pool)
                 .await?;
-        Ok(data.map(|s| serde_json::from_str(&s)).transpose()?)
+        let context = serde_json::to_string(&("views", id, message))?;
+        data.map(|s| {
+            Ok(serde_json::from_str(
+                &self.cipher.decrypt_cache(&context, &s)?,
+            )?)
+        })
+        .transpose()
     }
 
     pub async fn prune(&self) -> Result<()> {
