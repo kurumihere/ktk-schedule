@@ -302,6 +302,9 @@ fn invalid_configuration_fails_before_network_requests() {
         ("DEFAULT_SUBGROUP", "3"),
         ("DEFAULT_GROUP_ID", "-1"),
         ("KTK_BASE_URL", "file:///tmp"),
+        ("KTK_BASE_URL", "http://workspace.ktk-45.ru/"),
+        ("KTK_BASE_URL", "http://127.0.0.1/"),
+        ("KTK_BASE_URL", "https://user:password@workspace.ktk-45.ru/"),
         ("BOT_TOKEN", "invalid"),
     ] {
         let previous = values.insert(key, value);

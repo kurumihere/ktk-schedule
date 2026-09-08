@@ -191,14 +191,15 @@ pub async fn telegram_server() -> MockServer {
 }
 
 pub async fn app(college: &College, telegram: &MockServer) -> App {
-    let config = Config::from_values(|key| match key {
+    let mut config = Config::from_values(|key| match key {
         "BOT_TOKEN" => Some("123456:TEST".into()),
         "CREDENTIALS_SECRET" => Some("x".repeat(32)),
         "DATABASE_PATH" => Some(":memory:".into()),
-        "KTK_BASE_URL" => Some(college.server.uri()),
         _ => None,
     })
     .unwrap();
+    // Only test fixtures bypass the production HTTPS requirement for loopback mocks.
+    config.base_url = college.server.uri().parse().unwrap();
     let bot = Bot::new("123456:TEST")
         .set_api_url(telegram.uri().parse().unwrap())
         .throttle(Limits::default());

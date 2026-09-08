@@ -45,8 +45,8 @@ impl Config {
         );
         let base_url = Url::parse(&value("KTK_BASE_URL", "https://workspace.ktk-45.ru/"))?;
         ensure!(
-            matches!(base_url.scheme(), "https" | "http") && base_url.host_str().is_some(),
-            "KTK_BASE_URL must be an HTTP(S) URL"
+            base_url.scheme() == "https" && base_url.host_str().is_some(),
+            "KTK_BASE_URL must be an HTTPS URL"
         );
         ensure!(
             base_url.username().is_empty() && base_url.password().is_none(),
