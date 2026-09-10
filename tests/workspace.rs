@@ -343,6 +343,12 @@ async fn file_links_cannot_target_another_origin_or_embed_credentials() {
         format!("//{}/private", other.address()),
         "http://169.254.169.254/latest/meta-data/".into(),
         "file:///etc/passwd".into(),
+        "http://localhost/".into(),
+        "http://[::1]/".into(),
+        "https://evil.example/file".into(),
+        "https://workspace.ktk-45.ru@evil.example/".into(),
+        "https://workspace.ktk-45.ru.evil.example/".into(),
+        "https://evil.example/#https://workspace.ktk-45.ru/".into(),
         college
             .server
             .uri()
@@ -359,9 +365,10 @@ async fn file_links_cannot_target_another_origin_or_embed_credentials() {
             .with_priority(1)
             .mount_as_scoped(&college.server)
             .await;
+        let error = client.download(index as i64).await.unwrap_err();
         assert!(
-            client.download(index as i64).await.is_err(),
-            "accepted {link}"
+            error.to_string().contains("file link must use"),
+            "{link}: {error:#}"
         );
         drop(mock);
     }
@@ -460,4 +467,53 @@ async fn attachment_batches_are_bounded_before_metadata_requests() {
         requests.last().unwrap().url.path(),
         "/v3/ws/home/homework/check"
     );
+}
+
+#[tokio::test]
+async fn account_switch_replaces_session_and_clears_private_state() {
+    let college = College::start(false).await;
+    let telegram = telegram_server().await;
+    let app = app(&college, &telegram).await;
+    let first = app.sign_in(42, "first", "password").await.unwrap();
+    let old_session = app.session(&first).await.unwrap();
+    let view = View::own(&first, chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    app.load(&first, &view, false).await.unwrap();
+    app.storage.save_view(42, 100, &view).await.unwrap();
+    app.storage.set_notify(42, true).await.unwrap();
+    app.pending_groups.insert(42, 100).await;
+    college
+        .changed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let second = app.sign_in(42, "second", "password").await.unwrap();
+    assert!(!std::sync::Arc::ptr_eq(
+        &old_session,
+        &app.session(&second).await.unwrap()
+    ));
+    assert!(app.storage.view(42, 100).await.unwrap().is_none());
+    assert!(
+        app.storage
+            .schedule(42, "personal", &view.week().to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(app.pending_groups.get(&42).await.is_none());
+    assert!(app.storage.account(42).await.unwrap().unwrap().notify);
+    let loaded = app.load(&second, &view, false).await.unwrap();
+    assert_eq!(loaded.days[0].subjects[0].discipline, "Updated");
+}
+
+#[tokio::test]
+async fn file_redirect_loops_are_bounded() {
+    let college = College::start(false).await;
+    let client = college.login().await;
+    client.refresh(269, week(), false).await.unwrap();
+    Mock::given(path("/download/task.pdf"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", "/download/task.pdf"))
+        .with_priority(1)
+        .expect(5)
+        .mount(&college.server)
+        .await;
+    let error = client.download(10).await.unwrap_err();
+    assert!(format!("{error:#}").contains("too many redirects"));
 }

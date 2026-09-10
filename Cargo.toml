@@ -29,6 +29,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+flate2 = "1"
+tokio = { version = "1", features = ["net", "test-util"] }
 wiremock = "0.6"
 
 [profile.release]
