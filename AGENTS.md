@@ -19,8 +19,6 @@ Layout:
 - `tests/support/mod.rs` - `College` (wiremock Workspace), `telegram_server()`, `app()`; other `tests/*.rs` are integration tests.
 - `deploy/ktk-schedule.service`, `deploy/update.sh`, `deploy/receive.sh` - systemd and VDS deploy.
 - `.env.example` - config example; `.env` - local secret (gitignored); prod uses `/etc/ktk-schedule/bot.env`.
-- `SECURITY.md` - user-facing security guarantees, keep in sync when login/logout/encryption/download behavior changes.
-- `FEATURES.md` - user-facing feature list (English + Russian), keep in sync when commands/buttons change.
 
 Generated: `target/`, `data/*.sqlite*` - never commit, never read as source of truth.
 
@@ -173,7 +171,7 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 - `accounts`: password encrypted `v2:`, AAD=telegram_id. `login/group_id/personal_subgroup/subgroup/show_all/teacher_hash/notify` are open. `save_account` deletes the user's schedules+views (account switch = clean cache). `delete_account` cascade-cleans schedules+views (FK).
 - `schedules(telegram_id,scope,week)`: day JSON, `cache:v1:` cipher, context `("schedules",id,scope,week)`. `views(telegram_id,message_id)`: `View` JSON, context `("views",id,message)`. `prune`: views older than 30 days, schedules older than 90 days.
 - User settings: `subgroup/show_all` (`set_subgroup`), `notify` (`set_notify`), `notified_date` (`mark_notified`). Notifications: `notification_ids(date)` = `notify=1 AND notified_date<>date`.
-- Strings: all user-facing text in Russian lives in `render.rs` (+ `SECURITY.md` for guarantees). Do not scatter magic strings; pair-type emoji in `render::pair_type`, file icons in `file_icon`.
+- Strings: all user-facing text in Russian lives in `render.rs`. Do not scatter magic strings; pair-type emoji in `render::pair_type`, file icons in `file_icon`.
 - Homework assets: `assets.submissions(sheet->file_id)` TTL 60s, `docs(file_id->Document)` TTL 256/900s, `refs` TTL 1h. Teacher (`teacher_hash != ""`) gets no assets. Download: `downloads` semaphore 3, stream into `tempfile::NamedTempFile`, 50MiB limit, `PrivateTmp=true` in the unit.
 
 ## 10. Gotchas and pitfalls
@@ -210,8 +208,8 @@ Check order after a fix: `cargo fmt`, `cargo clippy --locked --all-targets -- -D
 
 ## 12. Self-maintenance
 
-- New env -> Config tables (section 8) + `.env.example` + `SECURITY.md` if secret.
-- New callback/command -> Naming table (section 2) + `HELP` if it is a command + `FEATURES.md`.
+- New env -> Config tables (section 8) + `.env.example`.
+- New callback/command -> Naming table (section 2) + `HELP` if it is a command.
 - New shared helper -> section 7; third copy -> consolidate.
 - New lifecycle method (background/fan-out/cache) -> section 8 table.
 - New SQLite table/column -> `migrations/` new file + section 9.
