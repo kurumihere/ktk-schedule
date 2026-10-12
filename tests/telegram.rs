@@ -244,3 +244,32 @@ async fn logout_removes_credentials_and_all_user_state_and_disables_old_buttons(
         requests_before
     );
 }
+
+#[tokio::test]
+async fn offline_schedule_keeps_hall_names_and_lesson_times() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    let a = app.sign_in(42, "user", "password").await.unwrap();
+    let view = View::own(&a, date());
+    app.show(&a, &view, None, false).await.unwrap();
+    college.offline.store(true, Ordering::SeqCst);
+    app.show(&a, &view, None, true).await.unwrap();
+    let texts: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().to_lowercase().ends_with("/sendmessage"))
+        .map(|r| {
+            let body: Value = r.body_json().unwrap();
+            body["text"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(texts.len(), 2);
+    assert!(texts[1].contains("Сайт расписания недоступен"));
+    for text in &texts {
+        assert!(text.contains("301"), "{text}");
+        assert!(text.contains("08:00-09:30"), "{text}");
+    }
+}

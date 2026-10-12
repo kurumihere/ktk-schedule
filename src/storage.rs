@@ -1,6 +1,6 @@
 use crate::{
     credentials::Cipher,
-    model::{ScheduleDay, View},
+    model::{ReferenceData, ScheduleDay, View},
 };
 use anyhow::Result;
 use sqlx::{
@@ -88,6 +88,10 @@ impl Storage {
             .bind(a.id).bind(&a.login).bind(password).bind(a.group_id).bind(&a.personal_subgroup).bind(&a.subgroup).bind(a.show_all).bind(&a.teacher_hash).bind(a.notify).execute(&mut *tx).await?;
         // A Telegram user may sign in to a different workspace account.
         sqlx::query("DELETE FROM schedules WHERE telegram_id=?")
+            .bind(a.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM reference_cache WHERE telegram_id=?")
             .bind(a.id)
             .execute(&mut *tx)
             .await?;
@@ -187,6 +191,31 @@ impl Storage {
         .fetch_optional(&self.pool)
         .await?;
         let context = serde_json::to_string(&("schedules", id, scope, week))?;
+        data.map(|s| {
+            Ok(serde_json::from_str(
+                &self.cipher.decrypt_cache(&context, &s)?,
+            )?)
+        })
+        .transpose()
+    }
+
+    pub async fn save_references(&self, id: i64, refs: &ReferenceData) -> Result<()> {
+        let context = serde_json::to_string(&("references", id))?;
+        let data = self
+            .cipher
+            .encrypt_cache(&context, &serde_json::to_string(refs)?)?;
+        sqlx::query("INSERT INTO reference_cache(telegram_id,data) VALUES (?,?) ON CONFLICT(telegram_id) DO UPDATE SET data=excluded.data,updated_at=unixepoch()")
+            .bind(id).bind(data).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn references(&self, id: i64) -> Result<Option<ReferenceData>> {
+        let data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM reference_cache WHERE telegram_id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let context = serde_json::to_string(&("references", id))?;
         data.map(|s| {
             Ok(serde_json::from_str(
                 &self.cipher.decrypt_cache(&context, &s)?,

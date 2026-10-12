@@ -443,9 +443,21 @@ impl App {
                         session.references(),
                         session.assets(&subjects, teacher, refresh)
                     );
-                    (refs, assets?)
+                    let assets = assets?;
+                    if let Err(error) = self.storage.save_references(account.id, &refs).await {
+                        tracing::warn!(account_id = account.id, error=%error, "could not persist reference cache");
+                    }
+                    (refs, assets)
                 } else {
-                    (Arc::new(ReferenceData::default()), Assets::default())
+                    let refs = self
+                        .storage
+                        .references(account.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(Arc::new)
+                        .unwrap_or_default();
+                    (refs, Assets::default())
                 };
                 if !teacher {
                     for s in visible_subjects(day, view, teacher) {

@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use ktk_schedule::{
     credentials::Cipher,
-    model::{ScheduleDay, Screen, View},
+    model::{Call, Hall, Preset, ReferenceData, ScheduleDay, Screen, View},
     storage::{Account, Storage},
 };
 
@@ -108,6 +108,50 @@ async fn private_and_group_caches_are_separate_for_every_account() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn reference_cache_survives_a_restart_and_clears_on_account_switch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("refs.db");
+    let store = Storage::open(path.to_str().unwrap(), cipher())
+        .await
+        .unwrap();
+    store.save_account(&account(42)).await.unwrap();
+    assert!(store.references(42).await.unwrap().is_none());
+    let mut refs = ReferenceData::default();
+    refs.halls.insert(
+        324,
+        Hall {
+            id: 324,
+            number: "324".into(),
+        },
+    );
+    refs.presets.insert(
+        55,
+        Preset {
+            id: 55,
+            begin: "0000-01-01T09:10:00Z".into(),
+            call_set: vec![Call {
+                r#break: 10,
+                duration: 45,
+                pair_number: 0,
+            }],
+        },
+    );
+    store.save_references(42, &refs).await.unwrap();
+    store.close().await;
+    let store = Storage::open(path.to_str().unwrap(), cipher())
+        .await
+        .unwrap();
+    let cached = store.references(42).await.unwrap().unwrap();
+    assert_eq!(cached.halls[&324].number, "324");
+    assert_eq!(cached.presets[&55].call_set.len(), 1);
+    let mut switched = account(42);
+    switched.login = "different".into();
+    store.save_account(&switched).await.unwrap();
+    assert!(store.references(42).await.unwrap().is_none());
+    store.close().await;
 }
 
 #[tokio::test]
