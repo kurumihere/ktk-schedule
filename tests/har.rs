@@ -23,6 +23,7 @@ async fn replay_captured_workspace_without_contacting_college() -> anyhow::Resul
     let mut mounted = HashSet::new();
     let (mut week, mut schedules, mut presets, mut halls, mut types, mut marks) =
         (0, 0, 0, 0, 0, 0);
+    let mut schedule_body = None;
     for entry in entries {
         let url: reqwest::Url = entry["request"]["url"].as_str().unwrap().parse()?;
         if url.host_str() != Some("workspace.ktk-45.ru") || entry["response"]["status"] != 200 {
@@ -50,6 +51,9 @@ async fn replay_captured_workspace_without_contacting_college() -> anyhow::Resul
                 "captured schedule schema mismatch"
             );
             schedules += 1;
+            if schedule_body.is_none() {
+                schedule_body = Some(bytes.clone());
+            }
         }
         if url.path().ends_with("/call-preset") {
             presets = serde_json::from_slice::<Vec<Preset>>(&bytes)?.len();
@@ -86,6 +90,24 @@ async fn replay_captured_workspace_without_contacting_college() -> anyhow::Resul
     let candidates = client.discover(false).await?;
     assert!(!candidates.personal_schedules.is_empty());
     assert!(!candidates.group_schedules.is_empty());
+    // Partial captures may lack group/teacher timetables (the browser never
+    // opened them); answer those from the captured personal schedule so that
+    // discovery is still verified end to end.
+    if let Some(body) = schedule_body {
+        let week_param = week.to_string();
+        for endpoint in candidates
+            .group_schedules
+            .iter()
+            .chain(&candidates.teacher_schedules)
+        {
+            Mock::given(method("GET"))
+                .and(path(endpoint.as_str()))
+                .and(query_param("Week", week_param.clone()))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+                .mount(&server)
+                .await;
+        }
+    }
     assert!(
         !client
             .schedule(client.group, week, "personal")
