@@ -169,7 +169,7 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 
 - SQLite via sqlx, single connection (`max_connections=1`), WAL, `secure_delete=ON`, `busy_timeout=5s`. Migrations in `migrations/*.sql` are append-only, applied by `sqlx::migrate!()` in `Storage::open`. Manual `ALTER` outside migrations is forbidden.
 - `accounts`: password encrypted `v2:`, AAD=telegram_id. `login/group_id/personal_subgroup/subgroup/show_all/teacher_hash/notify` are open. `save_account` deletes the user's schedules+views (account switch = clean cache). `delete_account` cascade-cleans schedules+views (FK).
-- `schedules(telegram_id,scope,week)`: day JSON, `cache:v1:` cipher, context `("schedules",id,scope,week)`. `views(telegram_id,message_id)`: `View` JSON, context `("views",id,message)`. `prune`: views older than 30 days, schedules older than 90 days.
+- `schedules(telegram_id,scope,week)`: day JSON, `cache:v1:` cipher, context `("schedules",id,scope,week)`. `views(telegram_id,message_id)`: `View` JSON, context `("views",id,message)`. `reference_cache(telegram_id)`: `ReferenceData` JSON (hall names, call presets for offline rendering), context `("references",id)`; written on every online view, read when the session is gone (stale), wiped on account switch. `prune`: views older than 30 days, schedules older than 90 days.
 - User settings: `subgroup/show_all` (`set_subgroup`), `notify` (`set_notify`), `notified_date` (`mark_notified`). Notifications: `notification_ids(date)` = `notify=1 AND notified_date<>date`.
 - Strings: all user-facing text in Russian lives in `render.rs`. Do not scatter magic strings; pair-type emoji in `render::pair_type`, file icons in `file_icon`.
 - Homework assets: `assets.submissions(sheet->file_id)` TTL 60s, `docs(file_id->Document)` TTL 256/900s, `refs` TTL 1h. Teacher (`teacher_hash != ""`) gets no assets. Download: `downloads` semaphore 3, stream into `tempfile::NamedTempFile`, 50MiB limit, `PrivateTmp=true` in the unit.
@@ -188,6 +188,7 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 10. `storage.prune` and `mark_notified(date=%Y-%m-%d)` rely on date strings; change the format everywhere at once (`notify_one`, `background`, `storage.rs` tests).
 11. `announce`: owner only (`OWNER_TELEGRAM_ID>0` and equal to sender), text or reply; fan-out `buffer_unordered(4)` via `send_message/copy_message`. Empty DB -> "nobody to send to".
 12. Deploy: systemd `TimeoutStopSec=35` > 25s handler + 3s background; `receive.sh` checks `--version` and `NRestarts==0`. Binary over 100MiB or empty is rejected.
+13. Oct 2026 site update (`/v0/<hash>/...` API, `assets/0.55.2`): the backend sends explicit `null` for unfilled fields (`LectureTheme/LectureHomework`) - all schedule/reference scalars use `null_default`, and `parse_schedule` (`model.rs`) skips malformed subjects/days with a warning, failing only when nothing usable remains (stale fallback). After any site update replay a fresh HAR: `KTK_HAR_PATH=... cargo test --test har -- --ignored` (partial captures are completed from the personal schedule inside the test).
 
 ## 11. Workflows
 
