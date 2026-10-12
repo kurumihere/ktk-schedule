@@ -157,7 +157,7 @@ pub fn schedule(
     let label = date
         .map(|d| d.format("%d.%m.%Y").to_string())
         .unwrap_or_else(|| day.date.clone());
-    let mut out = format!("📅 {}{label}\n\n", if today { "Сегодня — " } else { "" });
+    let mut out = format!("📅 {}{label}\n\n", if today { "Сегодня - " } else { "" });
     let subjects = visible_subjects(day, view, teacher);
     let last = subjects
         .iter()
@@ -181,7 +181,7 @@ pub fn schedule(
             if let Some((start, end)) = times.get(&pair) {
                 write!(out, " [{} мин]", end - start).unwrap();
             }
-            out.push_str(" — пусто\n");
+            out.push_str(" - пусто\n");
             write_time(&mut out, times.get(&pair), false, now);
             out.push('\n');
         }
@@ -195,7 +195,7 @@ pub fn schedule(
             {
                 write!(out, " [{}]", if sub == "left" { 1 } else { 2 }).unwrap();
             }
-            writeln!(out, " — {}", s.discipline).unwrap();
+            writeln!(out, " - {}", s.discipline).unwrap();
             write_time(&mut out, times.get(&pair), today, now);
             if let Some(t) = refs
                 .types
