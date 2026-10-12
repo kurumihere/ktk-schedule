@@ -12,9 +12,12 @@ const MAX_ATTACHMENT_NODES: usize = 4096;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct ScheduleDay {
+    #[serde(deserialize_with = "null_default")]
     pub call_preset: i64,
     pub date: String,
+    #[serde(deserialize_with = "null_default")]
     pub today: bool,
+    #[serde(deserialize_with = "null_default")]
     pub max_pair: i64,
     #[serde(deserialize_with = "null_default")]
     pub subjects: Vec<Subject>,
@@ -23,14 +26,23 @@ pub struct ScheduleDay {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Subject {
+    #[serde(deserialize_with = "null_default")]
     pub appraisal: i64,
+    #[serde(deserialize_with = "null_default")]
     pub discipline: String,
+    #[serde(deserialize_with = "null_default")]
     pub lecture_hall: i64,
+    #[serde(deserialize_with = "null_default")]
     pub mark: i64,
+    #[serde(deserialize_with = "null_default")]
     pub pair: i64,
+    #[serde(deserialize_with = "null_default")]
     pub subgroup: String,
+    #[serde(deserialize_with = "null_default")]
     pub teacher: String,
+    #[serde(deserialize_with = "null_default")]
     pub group: String,
+    #[serde(deserialize_with = "null_default")]
     pub call_preset: i64,
     #[serde(deserialize_with = "null_default")]
     pub extended_data: ExtendedData,
@@ -41,17 +53,24 @@ pub struct Subject {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct ExtendedData {
+    #[serde(deserialize_with = "null_default")]
     pub academic_hour: i64,
+    #[serde(deserialize_with = "null_default")]
     pub discipline_full: String,
+    #[serde(deserialize_with = "null_default")]
     pub pair_type: i64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct ExtraData {
+    #[serde(deserialize_with = "null_default")]
     pub lecture_theme: String,
+    #[serde(deserialize_with = "null_default")]
     pub lecture_homework: String,
+    #[serde(deserialize_with = "null_default")]
     pub lecture_type: i64,
+    #[serde(deserialize_with = "null_default")]
     pub sheet: i64,
     #[serde(deserialize_with = "null_default")]
     pub homework: Homework,
@@ -197,39 +216,55 @@ pub fn parse_schedule(value: &Value) -> Result<Vec<ScheduleDay>> {
         return Ok(Vec::new());
     }
     if items[0].get("Date").is_some() {
-        let days: Vec<ScheduleDay> = serde_json::from_value(value.clone())?;
-        anyhow::ensure!(
-            days.iter().all(|d| !d.date.is_empty()),
-            "schedule contains an empty date"
-        );
+        let mut days = Vec::with_capacity(items.len());
+        for raw in items {
+            match lenient_day(raw) {
+                Some(day) => days.push(day),
+                None => tracing::warn!("skipping schedule day without a usable date"),
+            }
+        }
+        ensure!(!days.is_empty(), "schedule contains no usable days");
         return Ok(days);
     }
     let wrapper = &items[0];
     let list = wrapper["DayList"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("schedule has neither Date nor DayList"))?;
-    let mut days = Vec::new();
+    let mut days = Vec::with_capacity(list.len());
     for d in list {
+        let date = d["Date"].as_str().unwrap_or_default();
+        if date.is_empty() {
+            tracing::warn!("skipping schedule day without a usable date");
+            continue;
+        }
         let mut day = ScheduleDay {
-            date: d["Date"].as_str().unwrap_or_default().into(),
+            date: date.into(),
             today: d["Today"].as_bool().unwrap_or(false),
             max_pair: wrapper["MaxPair"].as_i64().unwrap_or(0),
             ..Default::default()
         };
-        anyhow::ensure!(!day.date.is_empty(), "schedule contains an empty date");
         if let Some(pairs) = d["Pairs"].as_array() {
             for pair in pairs {
                 if let Some(groups) = pair["Subgroups"].as_object() {
                     for (group, subjects) in groups {
                         if let Some(subjects) = subjects.as_array() {
                             for subject in subjects {
-                                let mut subject: Subject = serde_json::from_value(subject.clone())?;
-                                subject.pair = pair["Number"].as_i64().unwrap_or(0);
-                                subject.subgroup = group.clone();
-                                if day.call_preset == 0 {
-                                    day.call_preset = subject.call_preset;
+                                match serde_json::from_value::<Subject>(subject.clone()) {
+                                    Ok(mut subject) => {
+                                        subject.pair = pair["Number"].as_i64().unwrap_or(0);
+                                        subject.subgroup = group.clone();
+                                        if day.call_preset == 0 {
+                                            day.call_preset = subject.call_preset;
+                                        }
+                                        day.subjects.push(subject);
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            %error,
+                                            "skipping malformed subject"
+                                        );
+                                    }
                                 }
-                                day.subjects.push(subject);
                             }
                         }
                     }
@@ -238,55 +273,90 @@ pub fn parse_schedule(value: &Value) -> Result<Vec<ScheduleDay>> {
         }
         days.push(day);
     }
+    ensure!(!days.is_empty(), "schedule contains no usable days");
     Ok(days)
+}
+
+/// Parse one `Date`-shaped day, skipping malformed lessons instead of
+/// failing the whole week when the site changes a field.
+fn lenient_day(raw: &Value) -> Option<ScheduleDay> {
+    let mut shell = raw.clone();
+    if let Some(map) = shell.as_object_mut() {
+        map.insert("Subjects".into(), Value::Array(Vec::new()));
+    }
+    let mut day: ScheduleDay = serde_json::from_value(shell).ok()?;
+    if day.date.is_empty() {
+        return None;
+    }
+    if let Some(subjects) = raw.get("Subjects").and_then(Value::as_array) {
+        for subject in subjects {
+            match serde_json::from_value::<Subject>(subject.clone()) {
+                Ok(subject) => day.subjects.push(subject),
+                Err(error) => tracing::warn!(%error, "skipping malformed subject"),
+            }
+        }
+    }
+    Some(day)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Hall {
-    #[serde(rename = "ID")]
+    #[serde(rename = "ID", deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(deserialize_with = "null_default")]
     pub number: String,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Call {
+    #[serde(deserialize_with = "null_default")]
     pub r#break: i64,
+    #[serde(deserialize_with = "null_default")]
     pub duration: i64,
+    #[serde(deserialize_with = "null_default")]
     pub pair_number: i64,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Preset {
-    #[serde(rename = "ID")]
+    #[serde(rename = "ID", deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(deserialize_with = "null_default")]
     pub begin: String,
+    #[serde(deserialize_with = "null_default")]
     pub call_set: Vec<Call>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PairType {
-    #[serde(rename = "ID")]
+    #[serde(rename = "ID", deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(deserialize_with = "null_default")]
     pub name: String,
+    #[serde(deserialize_with = "null_default")]
     pub billing_type: String,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Absence {
+    #[serde(deserialize_with = "null_default")]
     pub caption: String,
+    #[serde(deserialize_with = "null_default")]
     pub digit: i64,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Document {
-    #[serde(rename = "ID")]
+    #[serde(rename = "ID", deserialize_with = "null_default")]
     pub id: i64,
+    #[serde(deserialize_with = "null_default")]
     pub caption: String,
+    #[serde(deserialize_with = "null_default")]
     pub icon: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ReferenceData {
     pub halls: HashMap<i64, Hall>,
     pub presets: HashMap<i64, Preset>,

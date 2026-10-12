@@ -69,6 +69,12 @@ fn both_schedule_formats_and_null_optional_data_are_supported() {
     assert!(parse_schedule(&json!([])).unwrap().is_empty());
     assert!(parse_schedule(&json!({"error":"not a schedule"})).is_err());
     assert!(parse_schedule(&json!([{"unrelated":[]}])).is_err());
+    // The updated workspace sends explicit nulls for unfilled fields.
+    let nulled = parse_schedule(&json!([{"Date":"2026-10-16","CallPreset":null,"Today":null,"MaxPair":null,"Subjects":[{"Pair":null,"Discipline":null,"LectureHall":null,"Mark":null,"Appraisal":null,"Subgroup":null,"Teacher":null,"Group":null,"CallPreset":null,"ExtendedData":{"AcademicHour":null,"DisciplineFull":null,"PairType":null},"ExtraData":{"LectureTheme":null,"LectureHomework":null,"LectureType":null,"Sheet":null,"Homework":null}}]}])).unwrap();
+    assert_eq!(nulled[0].subjects[0], Subject::default());
+    let doc: Document =
+        serde_json::from_value(json!({"ID": null, "Caption": null, "Icon": null})).unwrap();
+    assert_eq!(doc.caption, "");
 }
 
 #[test]
