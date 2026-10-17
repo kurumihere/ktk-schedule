@@ -282,7 +282,7 @@ fn write_time(out: &mut String, time: Option<&(i64, i64)>, today: bool, now: Dat
     let Some(&(start, end)) = time else { return };
     writeln!(
         out,
-        "⏰ {:02}:{:02}-{:02}:{:02}",
+        "⏰ {:02}:{:02} - {:02}:{:02}",
         start / 60,
         start % 60,
         end / 60,
