@@ -270,6 +270,6 @@ async fn offline_schedule_keeps_hall_names_and_lesson_times() {
     assert!(texts[1].contains("Сайт расписания недоступен"));
     for text in &texts {
         assert!(text.contains("301"), "{text}");
-        assert!(text.contains("08:00-09:30"), "{text}");
+        assert!(text.contains("08:00 - 09:30"), "{text}");
     }
 }
