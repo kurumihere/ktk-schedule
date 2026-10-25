@@ -162,6 +162,7 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 | `DEFAULT_GROUP_ID` | `269` | 1..=100000 |
 | `DEFAULT_SUBGROUP` | `1` | parsed by `personal_subgroup` |
 | `OWNER_TELEGRAM_ID` | `0` | `0` = announce/stats off |
+| `OWNER_VK_ID` | `0` | `0` = VK announce/stats off |
 | `NOTIFY_TIME` | `07:30` | `HH:MM` |
 | `TIMEZONE` | `Asia/Yekaterinburg` | `chrono-tz::Tz` |
 | `RUST_LOG` | `ktk_schedule=info,teloxide=warn` | observability only |
@@ -190,7 +191,7 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 8. `week_millis` = Monday 06:00 local time in `TIMEZONE`. Changing `TIMEZONE` shifts the requested week.
 9. `Config::from_values` trims and substitutes defaults on empty strings. Empty `BOT_TOKEN` without `:` is a "BOT_TOKEN is required" error, not a panic.
 10. `storage.prune` and `mark_notified(date=%Y-%m-%d)` rely on date strings; change the format everywhere at once (`notify_one`, `background`, `storage.rs` tests).
-11. `announce`: owner only (`OWNER_TELEGRAM_ID>0` and equal to sender), text or reply; fan-out `buffer_unordered(4)` via `send_message/copy_message`. Empty DB -> "nobody to send to".
+11. `announce`: owner only (`OWNER_TELEGRAM_ID>0`/`OWNER_VK_ID>0` and equal to sender), text or reply; fan-out `buffer_unordered(4)` via `send_message/copy_message` (TG) or `send_message` (VK). Empty DB -> "nobody to send to". Recipients filtered by platform (`VK_ID_OFFSET`).
 12. Deploy: systemd `TimeoutStopSec=35` > 25s handler + 3s background; `receive.sh [test|prod]` checks `--version` and `NRestarts==0`. Targets: `test` -> `/opt/ktk-schedule/ktk-schedule-test` (`ktk-schedule-test.service`), `prod` -> `/opt/ktk-schedule/ktk-schedule` (`ktk-schedule.service`). Binary over 100MiB or empty is rejected.
 13. Oct 2026 site update (`/v0/<hash>/...` API, `assets/0.55.2`): the backend sends explicit `null` for unfilled fields (`LectureTheme/LectureHomework`) - all schedule/reference scalars use `null_default`, and `parse_schedule` (`model.rs`) skips malformed subjects/days with a warning, failing only when nothing usable remains (stale fallback). After any site update replay a fresh HAR: `KTK_HAR_PATH=... cargo test --test har -- --ignored` (partial captures are completed from the personal schedule inside the test).
 14. VK Bot login: VK Bots cannot delete user incoming messages in 1-on-1 private dialogs; login warns user to delete credentials message manually. VK IDs are stored with `VK_ID_OFFSET = 1_000_000_000_000_000_000` to prevent collision with Telegram IDs.

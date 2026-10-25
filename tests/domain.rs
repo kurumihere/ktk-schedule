@@ -508,6 +508,8 @@ fn invalid_configuration_fails_before_network_requests() {
         ("KTK_BASE_URL", "http://127.0.0.1/"),
         ("KTK_BASE_URL", "https://user:password@workspace.ktk-45.ru/"),
         ("BOT_TOKEN", "invalid"),
+        ("OWNER_VK_ID", "-1"),
+        ("OWNER_VK_ID", "abc"),
     ] {
         let previous = values.insert(key, value);
         assert!(
