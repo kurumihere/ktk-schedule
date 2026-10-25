@@ -354,63 +354,90 @@ pub fn schedule_keyboard_vk(
     _file_count: usize,
     teacher: bool,
 ) -> VkKeyboard {
+    let index = days
+        .iter()
+        .position(|d| day_date(&d.date, tz) == Some(view.date));
+    let selected_today = view.date == today && index.is_some();
     let mut buttons = Vec::new();
 
-    // Row 1: ⬅️, Неделя/Сегодня, ➡️ (3 buttons)
-    let center = if view.date == today && view.week() == week_start(today) {
+    // Row 1: Week navigation (same as Telegram)
+    buttons.push(vec![
+        button_cb("⬅️ неделя", "schedule:week:prev", "secondary"),
         button_cb(
             &render::week_label(view.week()),
             "schedule:week:select",
             "primary",
-        )
+        ),
+        button_cb("неделя ➡️", "schedule:week:next", "secondary"),
+    ]);
+
+    // Row 2: Day navigation (same as Telegram)
+    let left_btn = if index.is_none_or(|i| i == 0) {
+        button_cb("⛔", "schedule:prev", "secondary")
+    } else {
+        button_cb("⬅️", "schedule:prev", "secondary")
+    };
+    let center_btn = if selected_today {
+        button_cb("🔄 Обновить", "schedule:refresh", "positive")
     } else {
         button_cb("Сегодня", "schedule:today", "primary")
     };
-    buttons.push(vec![
-        button_cb("⬅️", "schedule:prev", "secondary"),
-        center,
-        button_cb("➡️", "schedule:next", "secondary"),
-    ]);
+    let right_btn = if index.is_some_and(|i| i + 1 >= days.len()) || days.is_empty() {
+        button_cb("⛔", "schedule:next", "secondary")
+    } else {
+        button_cb("➡️", "schedule:next", "secondary")
+    };
+    buttons.push(vec![left_btn, center_btn, right_btn]);
 
-    // Days: up to 6 buttons split into 2 rows of up to 3 buttons
-    let mut day_buttons = Vec::new();
-    for (i, day) in days.iter().take(6).enumerate() {
-        let selected = day_date(&day.date, tz) == Some(view.date);
-        let color = if selected { "positive" } else { "secondary" };
-        day_buttons.push(button_cb(
-            &render::short_day(day, tz),
-            &format!("schedule:day:{i}"),
-            color,
-        ));
-    }
-    if !day_buttons.is_empty() {
-        if day_buttons.len() <= 3 {
-            buttons.push(day_buttons);
-        } else {
-            let row1 = day_buttons.drain(..3).collect();
-            buttons.push(row1);
-            buttons.push(day_buttons);
-        }
-    }
-
-    // Row 4: Single action/toggle button to strictly enforce VK limit (max 10 buttons total!)
+    // Row 3: Group selection (same as Telegram)
     if view.group.is_some() {
-        buttons.push(vec![button_cb("Моё расписание", "schedule:my", "positive")]);
-    } else if !teacher {
-        let (label, next_action, color) = if view.show_all {
-            ("👥 Все подгруппы", "schedule:subgroup:left", "primary")
-        } else if view.subgroup == "left" {
-            ("👤 1 подгруппа", "schedule:subgroup:right", "secondary")
+        if teacher {
+            buttons.push(vec![
+                button_cb("👤 Своё расписание", "schedule:my", "positive"),
+                button_cb("🔍 Другая группа", "schedule:group:select", "secondary"),
+            ]);
         } else {
-            ("👤 2 подгруппа", "schedule:subgroup:all", "secondary")
-        };
-        buttons.push(vec![button_cb(label, next_action, color)]);
+            buttons.push(vec![button_cb("🏠 Своя группа", "schedule:my", "positive")]);
+        }
     } else {
         buttons.push(vec![button_cb(
-            "🔄 Обновить",
-            "schedule:refresh",
+            "🔍 Расписание группы",
+            "schedule:group:select",
             "secondary",
         )]);
+    }
+
+    // Row 4: Subgroups (students only, same as Telegram)
+    if !teacher {
+        let sub1_active = !view.show_all && view.subgroup == "left";
+        let sub2_active = !view.show_all && view.subgroup == "right";
+        let all_active = view.show_all;
+
+        buttons.push(vec![
+            button_cb(
+                if sub1_active {
+                    "✅ 1 подгруппа"
+                } else {
+                    "1 подгруппа"
+                },
+                "schedule:subgroup:left",
+                if sub1_active { "positive" } else { "secondary" },
+            ),
+            button_cb(
+                if sub2_active {
+                    "✅ 2 подгруппа"
+                } else {
+                    "2 подгруппа"
+                },
+                "schedule:subgroup:right",
+                if sub2_active { "positive" } else { "secondary" },
+            ),
+            button_cb(
+                if all_active { "✅ Обе" } else { "Обе" },
+                "schedule:subgroup:all",
+                if all_active { "positive" } else { "secondary" },
+            ),
+        ]);
     }
 
     VkKeyboard {
