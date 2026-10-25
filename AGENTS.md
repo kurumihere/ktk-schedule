@@ -8,6 +8,7 @@ Layout:
 - `src/lib.rs` - only `pub mod` for reuse in `tests/`.
 - `src/app.rs` - `App`, `Session`, moka caches, rate limit, circuit breaker, notification background, teloxide dispatcher.
 - `src/telegram.rs` - handlers for `/start /login /logout /schedule /notify_on|off /stats /announce`, `schedule:*` callbacks, keyboards.
+- `src/vk.rs` - VK Bot Long Poll, keyboards, handlers, and event answering.
 - `src/workspace.rs` - Workspace login, JS-endpoint discovery, `schedule/references/document/submission/download`.
 - `src/model.rs` - `ScheduleDay/Subject/ExtraData/Homework`, `View/Screen`, `week_start/day_date/visible_subjects`, attachment limits.
 - `src/render.rs` - schedule text, `HELP`, `week_label`, `fit_text`, icons, lesson timings.
@@ -164,6 +165,9 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 | `NOTIFY_TIME` | `07:30` | `HH:MM` |
 | `TIMEZONE` | `Asia/Yekaterinburg` | `chrono-tz::Tz` |
 | `RUST_LOG` | `ktk_schedule=info,teloxide=warn` | observability only |
+| `VK_GROUP_TOKEN` | none (optional) | group access token with messages scope |
+| `VK_GROUP_ID` | none (optional) | positive integer |
+| `VK_API_URL` | `https://api.vk.com/method/` | HTTPS URL to VK API |
 
 ## 9. Persistence, settings, strings, assets
 
@@ -189,6 +193,7 @@ Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add 
 11. `announce`: owner only (`OWNER_TELEGRAM_ID>0` and equal to sender), text or reply; fan-out `buffer_unordered(4)` via `send_message/copy_message`. Empty DB -> "nobody to send to".
 12. Deploy: systemd `TimeoutStopSec=35` > 25s handler + 3s background; `receive.sh` checks `--version` and `NRestarts==0`. Binary over 100MiB or empty is rejected.
 13. Oct 2026 site update (`/v0/<hash>/...` API, `assets/0.55.2`): the backend sends explicit `null` for unfilled fields (`LectureTheme/LectureHomework`) - all schedule/reference scalars use `null_default`, and `parse_schedule` (`model.rs`) skips malformed subjects/days with a warning, failing only when nothing usable remains (stale fallback). After any site update replay a fresh HAR: `KTK_HAR_PATH=... cargo test --test har -- --ignored` (partial captures are completed from the personal schedule inside the test).
+14. VK Bot login: VK Bots cannot delete user incoming messages in 1-on-1 private dialogs; login warns user to delete credentials message manually. VK IDs are stored with `VK_ID_OFFSET = 1_000_000_000_000_000_000` to prevent collision with Telegram IDs.
 
 ## 11. Workflows
 
