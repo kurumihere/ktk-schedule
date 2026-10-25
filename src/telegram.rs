@@ -415,6 +415,10 @@ async fn announce(app: &App, message: &Message, text: &str) -> Result<()> {
         return Ok(());
     }
     let recipients = app.storage.ids().await?;
+    let recipients: Vec<i64> = recipients
+        .into_iter()
+        .filter(|&id| id < crate::model::VK_ID_OFFSET)
+        .collect();
     if recipients.is_empty() {
         app.send(
             id,

@@ -2,6 +2,7 @@ use crate::{app::App, model::*, render, storage::Account};
 use anyhow::{Result, anyhow};
 use chrono::{Days, NaiveDate};
 use chrono_tz::Tz;
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -81,6 +82,8 @@ pub struct MessageObject {
     pub conversation_message_id: i64,
     #[serde(default)]
     pub payload: Option<String>,
+    #[serde(default)]
+    pub reply_message: Option<Box<MessageObject>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -621,6 +624,29 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         return Ok(());
     }
 
+    if text == "/my_id" {
+        vk.send_message(msg.peer_id, &format!("Ваш VK ID: {}", msg.from_id), None)
+            .await?;
+        return Ok(());
+    }
+
+    if text == "/stats" {
+        if app.config.owner_vk_id == 0 || msg.from_id != app.config.owner_vk_id {
+            vk.send_message(msg.peer_id, "Команда доступна только администратору.", None)
+                .await?;
+            return Ok(());
+        }
+        vk.send_message(msg.peer_id, &app.stats().await?, None)
+            .await?;
+        return Ok(());
+    }
+
+    if text.starts_with("/announce") {
+        let param = text.strip_prefix("/announce").unwrap_or("").trim();
+        announce_vk(app, vk, &msg, param).await?;
+        return Ok(());
+    }
+
     let Some(account) = app.storage.account(storage_id).await? else {
         vk.send_message(
             msg.peer_id,
@@ -697,6 +723,77 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
 
     // Default response: show help
     vk.send_message(msg.peer_id, render::HELP, None).await?;
+    Ok(())
+}
+
+async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str) -> Result<()> {
+    let peer_id = msg.peer_id;
+    if app.config.owner_vk_id == 0 {
+        vk.send_message(
+            peer_id,
+            "Рассылка отключена. Напишите /my_id и укажите OWNER_VK_ID в .env.",
+            None,
+        )
+        .await?;
+        return Ok(());
+    }
+    if msg.from_id != app.config.owner_vk_id {
+        vk.send_message(peer_id, "Нет доступа.", None).await?;
+        return Ok(());
+    }
+    let text = if !param.is_empty() {
+        param
+    } else if let Some(ref reply) = msg.reply_message {
+        reply.text.trim()
+    } else {
+        ""
+    };
+    if text.is_empty() {
+        vk.send_message(
+            peer_id,
+            "Используйте:\n/announce <текст>\n\nИли ответьте /announce на сообщение, которое нужно разослать.",
+            None,
+        )
+        .await?;
+        return Ok(());
+    }
+    let all_ids = app.storage.ids().await?;
+    let vk_recipients: Vec<i64> = all_ids
+        .into_iter()
+        .filter(|&id| id >= crate::model::VK_ID_OFFSET)
+        .map(|id| id - crate::model::VK_ID_OFFSET)
+        .collect();
+
+    if vk_recipients.is_empty() {
+        vk.send_message(
+            peer_id,
+            "Некому отправлять: в базе нет авторизованных пользователей ВКонтакте.",
+            None,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let results = stream::iter(vk_recipients.into_iter().map(|recipient| async move {
+        vk.send_message(recipient, &render::fit_text(text, 4096), None)
+            .await
+            .map(|_| ())
+    }))
+    .boxed()
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
+    .await;
+
+    let sent = results.iter().filter(|r| r.is_ok()).count();
+    vk.send_message(
+        peer_id,
+        &format!(
+            "Рассылка завершена: отправлено {sent} из {}.",
+            results.len()
+        ),
+        None,
+    )
+    .await?;
     Ok(())
 }
 

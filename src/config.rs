@@ -12,6 +12,7 @@ pub struct Config {
     pub default_group: i64,
     pub default_subgroup: String,
     pub owner_id: i64,
+    pub owner_vk_id: i64,
     pub notify_time: NaiveTime,
     pub timezone: Tz,
     pub vk_group_token: Option<String>,
@@ -69,6 +70,10 @@ impl Config {
             .parse()
             .context("invalid OWNER_TELEGRAM_ID")?;
         ensure!(owner_id >= 0, "OWNER_TELEGRAM_ID cannot be negative");
+        let owner_vk_id = value("OWNER_VK_ID", "0")
+            .parse()
+            .context("invalid OWNER_VK_ID")?;
+        ensure!(owner_vk_id >= 0, "OWNER_VK_ID cannot be negative");
         let vk_group_token = get("VK_GROUP_TOKEN")
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty());
@@ -87,6 +92,7 @@ impl Config {
             default_group,
             default_subgroup,
             owner_id,
+            owner_vk_id,
             database_path: value("DATABASE_PATH", "data/bot.sqlite3"),
             device: value("KTK_DEVICE_NAME", "ktk-schedule"),
             notify_time: NaiveTime::parse_from_str(&value("NOTIFY_TIME", "07:30"), "%H:%M")

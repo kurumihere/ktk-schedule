@@ -77,6 +77,7 @@ async fn test_app(college: &College, tg_mock: &MockServer, vk_mock: &MockServer)
         "VK_GROUP_TOKEN" => Some("vk_test_token".into()),
         "VK_GROUP_ID" => Some("242576636".into()),
         "VK_API_URL" => Some(format!("{}/", vk_mock.uri())),
+        "OWNER_VK_ID" => Some("777".into()),
         _ => None,
     })
     .unwrap();
@@ -96,6 +97,7 @@ fn vk_message(peer_id: i64, from_id: i64, text: &str) -> MessageObject {
         text: text.to_string(),
         conversation_message_id: 1,
         payload: None,
+        reply_message: None,
     }
 }
 
@@ -345,4 +347,87 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
         total_sub <= 10,
         "subgroup total buttons exceeded: {total_sub}"
     );
+}
+
+#[tokio::test]
+async fn vk_bot_admin_commands_and_announce() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+
+    // 1. /my_id test
+    vk::handle_message(&app, &vk, vk_message(42, 42, "/my_id"))
+        .await
+        .unwrap();
+    let requests = vk_mock.received_requests().await.unwrap();
+    let last = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path().contains("messages.send"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&last.body);
+    assert!(body.contains("42"));
+
+    // 2. /stats by non-owner (42) -> denied
+    vk::handle_message(&app, &vk, vk_message(42, 42, "/stats"))
+        .await
+        .unwrap();
+    let requests = vk_mock.received_requests().await.unwrap();
+    let last = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path().contains("messages.send"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&last.body);
+    assert!(
+        body.contains("%D0%9A%D0%BE%D0%BC%D0%B0%D0%BD%D0%B4%D0%B0+%D0%B4%D0%BE%D1%81%D1%82%D1%83%D0%BF%D0%BD%D0%B0")
+            || body.contains("администратору")
+    );
+
+    // 3. /stats by owner (777) -> success
+    vk::handle_message(&app, &vk, vk_message(777, 777, "/stats"))
+        .await
+        .unwrap();
+    let requests = vk_mock.received_requests().await.unwrap();
+    let last = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path().contains("messages.send"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&last.body);
+    assert!(
+        body.contains("%D0%A1%D1%82%D0%B0%D1%82%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0")
+            || body.contains("Статистика")
+    );
+
+    // 4. /announce by non-owner -> denied
+    vk::handle_message(&app, &vk, vk_message(42, 42, "/announce Привет всем"))
+        .await
+        .unwrap();
+    let requests = vk_mock.received_requests().await.unwrap();
+    let last = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path().contains("messages.send"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&last.body);
+    assert!(
+        body.contains("%D0%9D%D0%B5%D1%82+%D0%B4%D0%BE%D1%81%D1%82%D1%83%D0%BF%D0%B0")
+            || body.contains("доступа")
+    );
+
+    // 5. /announce by owner with empty DB -> nobody to send to
+    vk::handle_message(&app, &vk, vk_message(777, 777, "/announce Привет всем"))
+        .await
+        .unwrap();
+    let requests = vk_mock.received_requests().await.unwrap();
+    let last = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path().contains("messages.send"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&last.body);
+    assert!(body.contains("%D0%9D%D0%B5%D0%BA%D0%BE%D0%BC%D1%83") || body.contains("Некому"));
 }
