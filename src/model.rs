@@ -953,3 +953,36 @@ pub fn non_school_day(day: &ScheduleDay, view: &View, teacher: bool) -> bool {
         .iter()
         .all(|s| s.extended_data.pair_type == 9 || s.extra_data.lecture_type == 9)
 }
+
+pub const VK_ID_OFFSET: i64 = 1_000_000_000_000_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PlatformUser {
+    Telegram(i64),
+    Vk(i64),
+}
+
+impl PlatformUser {
+    pub fn to_storage_id(self) -> i64 {
+        match self {
+            Self::Telegram(id) => id,
+            Self::Vk(id) => VK_ID_OFFSET + id,
+        }
+    }
+
+    pub fn from_storage_id(id: i64) -> Self {
+        if id >= VK_ID_OFFSET {
+            Self::Vk(id - VK_ID_OFFSET)
+        } else {
+            Self::Telegram(id)
+        }
+    }
+
+    pub fn is_vk(self) -> bool {
+        matches!(self, Self::Vk(_))
+    }
+
+    pub fn is_telegram(self) -> bool {
+        matches!(self, Self::Telegram(_))
+    }
+}

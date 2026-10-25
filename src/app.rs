@@ -134,6 +134,7 @@ pub struct App {
     pub storage: Storage,
     pub bot: Telegram,
     pub bot_username: String,
+    pub vk: Option<Arc<crate::vk::VkClient>>,
     sessions: Cache<i64, Arc<Session>>,
     schedules: Cache<ScheduleKey, Arc<Vec<ScheduleDay>>>,
     permits: Arc<Semaphore>,
@@ -161,11 +162,22 @@ pub struct Loaded {
 impl App {
     pub async fn new(config: Config, bot: Telegram, bot_username: String) -> Result<Self> {
         let storage = Storage::open(&config.database_path, Cipher::new(&config.secret)?).await?;
+        let vk = if let Some(token) = config.vk_group_token.as_ref() {
+            let group_id = config.vk_group_id.unwrap_or_default();
+            Some(Arc::new(crate::vk::VkClient::new(
+                token.clone(),
+                group_id,
+                config.vk_api_url.clone(),
+            )))
+        } else {
+            None
+        };
         Ok(Self {
             config,
             storage,
             bot,
             bot_username,
+            vk,
             sessions: Cache::builder()
                 .max_capacity(512)
                 .time_to_idle(Duration::from_secs(86400))
@@ -462,15 +474,14 @@ impl App {
             .await
     }
 
-    pub async fn show_loaded(
+    pub async fn render_schedule_content(
         &self,
         account: &Account,
         view: &View,
-        message: Option<MessageId>,
         loaded: &Loaded,
         refresh: bool,
         prefix: &str,
-    ) -> Result<()> {
+    ) -> Result<(String, usize)> {
         let now = self.now();
         let teacher = !account.teacher_hash.is_empty();
         let selected = loaded
@@ -526,6 +537,23 @@ impl App {
             text =
                 format!("Сайт расписания недоступен, показываю сохранённое расписание.\n\n{text}");
         }
+        Ok((text, file_count))
+    }
+
+    pub async fn show_loaded(
+        &self,
+        account: &Account,
+        view: &View,
+        message: Option<MessageId>,
+        loaded: &Loaded,
+        refresh: bool,
+        prefix: &str,
+    ) -> Result<()> {
+        let (text, file_count) = self
+            .render_schedule_content(account, view, loaded, refresh, prefix)
+            .await?;
+        let now = self.now();
+        let teacher = !account.teacher_hash.is_empty();
         let keyboard = telegram::schedule_keyboard(
             &loaded.days,
             view,
@@ -590,19 +618,29 @@ impl App {
         }
         let view = View::own(&account, today);
         let loaded = self.load(&account, &view, false).await?;
+        let user = PlatformUser::from_storage_id(id);
         if loaded.days.iter().any(|day| {
             day_date(&day.date, self.config.timezone) == Some(today)
                 && !non_school_day(day, &view, !account.teacher_hash.is_empty())
         }) {
-            self.show_loaded(
-                &account,
-                &view,
-                None,
-                &loaded,
-                false,
-                "Доброе утро. Расписание на сегодня:\n\n",
-            )
-            .await?;
+            match user {
+                PlatformUser::Telegram(_) => {
+                    self.show_loaded(
+                        &account,
+                        &view,
+                        None,
+                        &loaded,
+                        false,
+                        "Доброе утро. Расписание на сегодня:\n\n",
+                    )
+                    .await?;
+                }
+                PlatformUser::Vk(_) => {
+                    if let Some(vk) = self.vk.as_ref() {
+                        let _ = crate::vk::show_vk(self, vk, &account, &view, None, false).await;
+                    }
+                }
+            }
         }
         self.storage.mark_notified(id, &today.to_string()).await
     }
@@ -676,6 +714,10 @@ pub async fn run(config: Config) -> Result<()> {
         .build();
     let shutdown = dispatcher.shutdown_token();
     let mut background = tokio::spawn(app.clone().background());
+    let vk_task = app
+        .vk
+        .clone()
+        .map(|vk| tokio::spawn(crate::vk::run(app.clone(), vk, cancel.clone())));
     let signal = async {
         #[cfg(unix)]
         {
@@ -701,6 +743,14 @@ pub async fn run(config: Config) -> Result<()> {
         }
     }
     cancel.cancel();
+    if let Some(mut vk_task) = vk_task
+        && tokio::time::timeout(Duration::from_secs(3), &mut vk_task)
+            .await
+            .is_err()
+    {
+        vk_task.abort();
+        let _ = vk_task.await;
+    }
     if tokio::time::timeout(Duration::from_secs(3), &mut background)
         .await
         .is_err()

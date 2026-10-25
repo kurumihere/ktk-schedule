@@ -14,6 +14,9 @@ pub struct Config {
     pub owner_id: i64,
     pub notify_time: NaiveTime,
     pub timezone: Tz,
+    pub vk_group_token: Option<String>,
+    pub vk_group_id: Option<i64>,
+    pub vk_api_url: String,
 }
 
 impl Config {
@@ -66,6 +69,17 @@ impl Config {
             .parse()
             .context("invalid OWNER_TELEGRAM_ID")?;
         ensure!(owner_id >= 0, "OWNER_TELEGRAM_ID cannot be negative");
+        let vk_group_token = get("VK_GROUP_TOKEN")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let vk_group_id = match get("VK_GROUP_ID")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => Some(s.parse::<i64>().context("invalid VK_GROUP_ID")?),
+            None => None,
+        };
+        let vk_api_url = value("VK_API_URL", "https://api.vk.com/method/");
         Ok(Self {
             token,
             secret,
@@ -80,6 +94,9 @@ impl Config {
             timezone: value("TIMEZONE", "Asia/Yekaterinburg")
                 .parse()
                 .map_err(|_| anyhow::anyhow!("invalid TIMEZONE"))?,
+            vk_group_token,
+            vk_group_id,
+            vk_api_url,
         })
     }
 }

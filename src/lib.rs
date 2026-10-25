@@ -6,4 +6,5 @@ pub mod render;
 pub mod resilience;
 pub mod storage;
 pub mod telegram;
+pub mod vk;
 pub mod workspace;
