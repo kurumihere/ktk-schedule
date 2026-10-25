@@ -2,6 +2,15 @@ name: Deploy to VDS
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deploy target (test or prod)'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - prod
 
 permissions:
   contents: read
@@ -62,7 +71,7 @@ jobs:
           path: release
       - name: Install and restart
         run: |
-          sudo -n /usr/local/sbin/ktk-schedule-deploy < release/ktk-schedule
+          sudo -n /usr/local/sbin/ktk-schedule-deploy "${{ inputs.target || 'test' }}" < release/ktk-schedule
       - name: Clean workspace
         if: always()
         run: rm -rf release

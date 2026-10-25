@@ -1,11 +1,27 @@
 #!/bin/sh
 set -eu
-test "$#" = 0
+target="${1:-test}"
+case "$target" in
+    test)
+        bin="/opt/ktk-schedule/ktk-schedule-test"
+        service="ktk-schedule-test.service"
+        ;;
+    prod)
+        bin="/opt/ktk-schedule/ktk-schedule"
+        service="ktk-schedule.service"
+        ;;
+    *)
+        echo "Unknown deploy target: $target (expected 'test' or 'prod')" >&2
+        exit 1
+        ;;
+esac
+
 umask 077
 exec 9>/run/lock/ktk-schedule-deploy.lock
 flock -w 120 9
-next=/opt/ktk-schedule/ktk-schedule.next
+next="${bin}.next"
 trap 'rm -f "$next"' EXIT HUP INT TERM
+
 python3 -c '
 import sys
 limit = 100 * 1024 * 1024
@@ -21,16 +37,10 @@ with open(sys.argv[1], "wb") as output:
 ' "$next"
 chmod 755 "$next"
 timeout 15 runuser -u ktk-schedule -- "$next" --version
-mv "$next" /opt/ktk-schedule/ktk-schedule
+mv "$next" "$bin"
 
-if systemctl is-active --quiet ktk-schedule-test.service; then
-    target=ktk-schedule-test.service
-else
-    target=ktk-schedule.service
-fi
-
-systemctl restart "$target"
+systemctl restart "$service"
 sleep 3
-systemctl is-active --quiet "$target"
-test "$(systemctl show "$target" -p NRestarts --value)" = 0
-printf 'KTK deployed and running (%s)\n' "$target"
+systemctl is-active --quiet "$service"
+test "$(systemctl show "$service" -p NRestarts --value)" = 0
+printf 'KTK deployed and running (%s on %s)\n' "$bin" "$service"
