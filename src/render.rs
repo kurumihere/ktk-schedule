@@ -1,7 +1,10 @@
 use crate::model::*;
 use chrono::{DateTime, Datelike, Days, NaiveDate, Timelike};
 use chrono_tz::Tz;
-use std::{collections::HashMap, fmt::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
 
 pub const HELP: &str = "Привет! Я ktk-schedule\n\nКоманды:\n/start (Показать список команд)\n/login логин пароль (Авторизоваться в workspace)\n/logout (Выйти и удалить сохранённые данные)\n/schedule [дата] (Показать расписание на текущую неделю или дату)\n/notify_on || _off (Включить || Отключить утренние уведомления)\n";
 const MONTHS: [&str; 12] = [
@@ -169,6 +172,16 @@ pub fn schedule(
         out.push_str("Пар нет.");
         return out;
     }
+    let mut buildings = HashSet::new();
+    for s in &subjects {
+        if let Some(h) = refs.halls.get(&s.lecture_hall) {
+            let (_, b) = h.parts();
+            if !b.is_empty() {
+                buildings.insert(b);
+            }
+        }
+    }
+    let show_building = buildings.len() > 1;
     let times = refs
         .presets
         .get(&day.call_preset)
@@ -222,19 +235,21 @@ pub fn schedule(
                     writeln!(out, "👤 {}", s.teacher).unwrap();
                 }
             }
-            if !s.group.is_empty() {
+            if teacher && !s.group.is_empty() {
                 writeln!(out, "👥 Группа: {}", s.group).unwrap();
             }
-            writeln!(
-                out,
-                "🏫 Кабинет: {}",
-                refs.halls
-                    .get(&s.lecture_hall)
-                    .filter(|h| !h.number.is_empty())
-                    .map(|h| h.number.clone())
-                    .unwrap_or_else(|| s.lecture_hall.to_string())
-            )
-            .unwrap();
+            if s.lecture_hall > 0 || refs.halls.contains_key(&s.lecture_hall) {
+                writeln!(
+                    out,
+                    "🏫 Кабинет: {}",
+                    refs.halls
+                        .get(&s.lecture_hall)
+                        .filter(|h| !h.number.is_empty())
+                        .map(|h| h.display(show_building))
+                        .unwrap_or_else(|| s.lecture_hall.to_string())
+                )
+                .unwrap();
+            }
             let h = &s.extra_data.homework;
             for (label, value) in [("Задание", &h.task), ("Вебинар", &h.webinar)] {
                 if let Some(value) = value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {

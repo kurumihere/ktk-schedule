@@ -14,6 +14,18 @@ use wiremock::{
 async fn replay_captured_workspace_without_contacting_college() -> anyhow::Result<()> {
     let archive: Value = serde_json::from_slice(&std::fs::read(std::env::var("KTK_HAR_PATH")?)?)?;
     let entries = archive["log"]["entries"].as_array().unwrap();
+    if !entries.iter().any(|e| {
+        e["request"]["url"]
+            .as_str()
+            .and_then(|u| reqwest::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(|h| h == "workspace.ktk-45.ru"))
+            .unwrap_or(false)
+    }) {
+        println!(
+            "Skipping workspace replay: HAR archive does not contain workspace.ktk-45.ru entries"
+        );
+        return Ok(());
+    }
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/sign-in"))
@@ -134,5 +146,44 @@ async fn replay_captured_workspace_without_contacting_college() -> anyhow::Resul
     println!(
         "HAR replay passed: {schedules} schedule responses, {presets} call presets, {halls} halls, {types} pair types, {marks} absence marks"
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KTK_HAR_PATH pointing to a private local HAR"]
+async fn replay_captured_digital_environment_without_contacting_college() -> anyhow::Result<()> {
+    let archive: Value = serde_json::from_slice(&std::fs::read(std::env::var("KTK_HAR_PATH")?)?)?;
+    let entries = archive["log"]["entries"].as_array().unwrap();
+    let mut verified_weeks = 0;
+    for entry in entries {
+        let url: reqwest::Url = entry["request"]["url"].as_str().unwrap().parse()?;
+        if url.host_str() != Some("ktk.education-system.ru") || entry["response"]["status"] != 200 {
+            continue;
+        }
+        let content = &entry["response"]["content"];
+        let Some(text) = content["text"].as_str() else {
+            continue;
+        };
+        let bytes = if content["encoding"] == "base64" {
+            base64::engine::general_purpose::STANDARD.decode(text)?
+        } else {
+            text.as_bytes().to_vec()
+        };
+        let value: Value = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Ok((days, refs)) = parse_digital_schedule(&value) {
+            assert!(!days.is_empty(), "digital schedule parsed empty days");
+            let total_subjects: usize = days.iter().map(|d| d.subjects.len()).sum();
+            if total_subjects > 0 {
+                assert!(!refs.halls.is_empty(), "scheduled week had empty halls");
+            }
+            assert!(parse_schedule(&value).is_ok());
+            verified_weeks += 1;
+        }
+    }
+    assert!(verified_weeks > 0, "no digital schedule weeks found in HAR");
+    println!("Digital environment HAR replay passed: {verified_weeks} schedule weeks verified");
     Ok(())
 }

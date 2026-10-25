@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use ktk_schedule::{
     credentials::Cipher,
-    model::{Call, Hall, Preset, ReferenceData, ScheduleDay, Screen, View},
+    model::{Call, Hall, Preset, ReferenceData, ScheduleDay, Screen, SessionRecord, View},
     storage::{Account, Storage},
 };
 
@@ -125,6 +125,7 @@ async fn reference_cache_survives_a_restart_and_clears_on_account_switch() {
         Hall {
             id: 324,
             number: "324".into(),
+            ..Default::default()
         },
     );
     refs.presets.insert(
@@ -151,6 +152,43 @@ async fn reference_cache_survives_a_restart_and_clears_on_account_switch() {
     switched.login = "different".into();
     store.save_account(&switched).await.unwrap();
     assert!(store.references(42).await.unwrap().is_none());
+    store.close().await;
+}
+
+#[tokio::test]
+async fn session_cache_survives_a_restart_and_clears_on_account_switch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("sess.db");
+    let store = Storage::open(path.to_str().unwrap(), cipher())
+        .await
+        .unwrap();
+    store.save_account(&account(42)).await.unwrap();
+    assert!(store.session(42).await.unwrap().is_none());
+    let session = SessionRecord {
+        cookie: "education_system_auth_session=abc123xyz".into(),
+        session_id: "sess-uuid-42".into(),
+        group: 269,
+        subgroup: "left".into(),
+        teacher: "".into(),
+        branch: "branch-uuid".into(),
+        personal_endpoint: "/personal".into(),
+        group_endpoint: "/group".into(),
+    };
+    store.save_session(42, &session).await.unwrap();
+    store.close().await;
+
+    let store = Storage::open(path.to_str().unwrap(), cipher())
+        .await
+        .unwrap();
+    let cached = store.session(42).await.unwrap().unwrap();
+    assert_eq!(cached.cookie, "education_system_auth_session=abc123xyz");
+    assert_eq!(cached.session_id, "sess-uuid-42");
+    assert_eq!(cached.group, 269);
+
+    let mut switched = account(42);
+    switched.login = "different".into();
+    store.save_account(&switched).await.unwrap();
+    assert!(store.session(42).await.unwrap().is_none());
     store.close().await;
 }
 

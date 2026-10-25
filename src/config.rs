@@ -43,7 +43,7 @@ impl Config {
             secret.len() >= 32,
             "CREDENTIALS_SECRET must contain at least 32 bytes"
         );
-        let base_url = Url::parse(&value("KTK_BASE_URL", "https://workspace.ktk-45.ru/"))?;
+        let base_url = Url::parse(&value("KTK_BASE_URL", "https://ktk.education-system.ru/"))?;
         ensure!(
             base_url.scheme() == "https" && base_url.host_str().is_some(),
             "KTK_BASE_URL must be an HTTPS URL"

@@ -149,10 +149,13 @@ pub struct Workspace {
     endpoints: RwLock<Endpoints>,
     candidates: Mutex<Option<Candidates>>,
     refresh_lock: Mutex<()>,
+    digital_refs: RwLock<ReferenceData>,
     pub subgroup: String,
     pub group: i64,
     pub teacher: String,
     branch: String,
+    pub session_id: String,
+    pub session_cookie: String,
 }
 
 impl Workspace {
@@ -164,9 +167,25 @@ impl Workspace {
         permits: Arc<Semaphore>,
     ) -> Result<Self> {
         let origin = base.origin();
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-site"),
+            reqwest::header::HeaderValue::from_static("same-origin"),
+        );
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-mode"),
+            reqwest::header::HeaderValue::from_static("cors"),
+        );
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-dest"),
+            reqwest::header::HeaderValue::from_static("empty"),
+        );
         let http = HttpClient::builder()
             .cookie_store(true)
-            .user_agent("ktk-schedule/2.0")
+            .default_headers(default_headers)
+            .user_agent(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+            )
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {
@@ -189,11 +208,136 @@ impl Workspace {
             endpoints: RwLock::new(Endpoints::default()),
             candidates: Mutex::new(None),
             refresh_lock: Mutex::new(()),
+            digital_refs: RwLock::new(ReferenceData::default()),
             subgroup: String::new(),
             group: 0,
             teacher: String::new(),
             branch: String::new(),
+            session_id: String::new(),
+            session_cookie: String::new(),
         };
+        if this.base.host_str() == Some("ktk.education-system.ru") {
+            let permit = this.permits.acquire().await?;
+            let login = login.trim();
+            let password = password.trim();
+            let welcome_referer = this.base.join("/welcome?redirect=%2F")?;
+            let fingerprint = {
+                use sha2::{Digest, Sha256};
+                use std::fmt::Write;
+                let mut hasher = Sha256::new();
+                hasher.update(login.as_bytes());
+                hasher.update(device.as_bytes());
+                let hash = hasher.finalize();
+                let mut fp = String::with_capacity(32);
+                for b in &hash[..16] {
+                    let _ = write!(&mut fp, "{:02x}", b);
+                }
+                fp
+            };
+            let sign_in_body = json!({
+                "t": {
+                    "t": 10, "i": 0, "p": {
+                        "k": ["data"],
+                        "v": [{
+                            "t": 10, "i": 1, "p": {
+                                "k": ["collegeId", "password", "fingerprint"],
+                                "v": [
+                                    { "t": 1, "s": login },
+                                    { "t": 1, "s": password },
+                                    { "t": 1, "s": fingerprint }
+                                ]
+                            },
+                            "o": 0
+                        }]
+                    },
+                    "o": 0
+                },
+                "f": 127,
+                "m": []
+            });
+            let response = this
+                .http
+                .post(this.base.join(
+                    "/_serverFn/9cd5b48fd0588913cb64c83d8ae2b42d5f3e97ed5dd47dc10f211cdc2322c1f6",
+                )?)
+                .header("Origin", this.base.origin().ascii_serialization())
+                .header("Referer", welcome_referer.as_str())
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Sec-Fetch-Mode", "cors")
+                .header("Sec-Fetch-Dest", "empty")
+                .header("x-tsr-serverfn", "true")
+                .header("x-application-storage-mode", "ordinary")
+                .header(
+                    "accept",
+                    "application/x-tss-framed, application/x-ndjson, application/json",
+                )
+                .json(&sign_in_body)
+                .send()
+                .await
+                .map_err(|e| e.without_url())?;
+            ensure_status(&response)?;
+            let mut session_cookie = String::new();
+            for h in response.headers().get_all(reqwest::header::SET_COOKIE) {
+                if let Ok(s) = h.to_str()
+                    && s.starts_with("education_system_auth_session=")
+                {
+                    if let Some((cookie_pair, _)) = s.split_once(';') {
+                        session_cookie = cookie_pair.trim().to_string();
+                    } else {
+                        session_cookie = s.trim().to_string();
+                    }
+                    break;
+                }
+            }
+            this.session_cookie = session_cookie;
+            let body = read_body(response, JSON_LIMIT).await?;
+            drop(permit);
+            let raw: Value = serde_json::from_slice(&body)?;
+            let decoded = decode_seroval(&raw);
+            if decoded["user"].is_null() {
+                let msg = decoded["error"]["appError"]["message"]
+                    .as_str()
+                    .or_else(|| decoded["error"]["message"].as_str())
+                    .unwrap_or("unauthorized");
+                bail!("{msg}");
+            }
+            this.session_id = decoded["session"]["id"]
+                .as_str()
+                .or_else(|| decoded["user"]["session"]["id"].as_str())
+                .unwrap_or_default()
+                .to_string();
+            let user = &decoded["user"];
+            let is_student = user["isStudent"].as_bool().unwrap_or(true);
+            if is_student {
+                this.group = user["group"]
+                    .as_str()
+                    .and_then(|g| g.parse().ok())
+                    .unwrap_or(0);
+                this.subgroup = "left".into();
+            } else {
+                this.teacher = user["hash"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("teacher")
+                    .into();
+                this.group = 0;
+            }
+            this.branch = user["branch"].as_str().unwrap_or_default().into();
+            let personal_endpoint = if is_student {
+                "/_serverFn/85d2195b8f64b023a2c16160b65ef47139dea3a839096c4b75b3888cda49f16c"
+            } else {
+                "/_serverFn/9fd2616a2ecddd56f79974f2111a13f2c9d89265cb6832c8c9e7ae2939e56f4a"
+            };
+            *this.endpoints.write().await = Endpoints {
+                personal: personal_endpoint.into(),
+                group:
+                    "/_serverFn/d418f54f8d5ba132bd168b1792cc8f0efbff634c7861f6aa66890cb9f7103c05"
+                        .into(),
+                branch: this.branch.clone(),
+                ..Default::default()
+            };
+            return Ok(this);
+        }
         let permit = this.permits.acquire().await?;
         let response = this
             .http
@@ -241,6 +385,127 @@ impl Workspace {
                 .into();
         }
         Ok(this)
+    }
+
+    pub fn from_session(
+        base: Url,
+        record: &SessionRecord,
+        permits: Arc<Semaphore>,
+    ) -> Result<Self> {
+        let origin = base.origin();
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-site"),
+            reqwest::header::HeaderValue::from_static("same-origin"),
+        );
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-mode"),
+            reqwest::header::HeaderValue::from_static("cors"),
+        );
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("sec-fetch-dest"),
+            reqwest::header::HeaderValue::from_static("empty"),
+        );
+        if !record.cookie.is_empty() {
+            default_headers.insert(
+                reqwest::header::COOKIE,
+                reqwest::header::HeaderValue::from_str(&record.cookie)?,
+            );
+        }
+        let http = HttpClient::builder()
+            .cookie_store(true)
+            .default_headers(default_headers)
+            .user_agent(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+            )
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= 5 {
+                    attempt.error("too many redirects")
+                } else if attempt.url().origin() != origin {
+                    attempt.error("cross-origin redirect is forbidden")
+                } else if !attempt.url().username().is_empty() || attempt.url().password().is_some()
+                {
+                    attempt.error("redirect credentials are forbidden")
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()?;
+        Ok(Self {
+            http,
+            base,
+            permits,
+            endpoints: RwLock::new(Endpoints {
+                personal: record.personal_endpoint.clone(),
+                group: record.group_endpoint.clone(),
+                branch: record.branch.clone(),
+                ..Default::default()
+            }),
+            candidates: Mutex::new(None),
+            refresh_lock: Mutex::new(()),
+            digital_refs: RwLock::new(ReferenceData::default()),
+            subgroup: record.subgroup.clone(),
+            group: record.group,
+            teacher: record.teacher.clone(),
+            branch: record.branch.clone(),
+            session_id: record.session_id.clone(),
+            session_cookie: record.cookie.clone(),
+        })
+    }
+
+    pub async fn session_record(&self) -> SessionRecord {
+        let ep = self.endpoints.read().await;
+        SessionRecord {
+            cookie: self.session_cookie.clone(),
+            session_id: self.session_id.clone(),
+            group: self.group,
+            subgroup: self.subgroup.clone(),
+            teacher: self.teacher.clone(),
+            branch: self.branch.clone(),
+            personal_endpoint: ep.personal.clone(),
+            group_endpoint: ep.group.clone(),
+        }
+    }
+
+    pub async fn revoke_session(&self) -> Result<()> {
+        if self.session_id.is_empty() || self.base.host_str() != Some("ktk.education-system.ru") {
+            return Ok(());
+        }
+        let revoke_url = self
+            .base
+            .join("/_serverFn/2e1ca1208f926608597adee62b6f7a786ebfd7e01b208963ecb9bee6e800f9f5")?;
+        let body = json!({
+            "t": {
+                "t": 10, "i": 0, "p": {
+                    "k": ["data"],
+                    "v": [{
+                        "t": 10, "i": 1, "p": {
+                            "k": ["id"],
+                            "v": [{ "t": 1, "s": self.session_id }]
+                        },
+                        "o": 0
+                    }]
+                },
+                "o": 0
+            },
+            "f": 127,
+            "m": []
+        });
+        let _ = self
+            .http
+            .post(revoke_url)
+            .header("Origin", self.base.origin().ascii_serialization())
+            .header("Referer", self.base.as_str())
+            .header("Sec-Fetch-Site", "same-origin")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("x-tsr-serverfn", "true")
+            .json(&body)
+            .send()
+            .await;
+        Ok(())
     }
 
     pub async fn discover(&self, force: bool) -> Result<Candidates> {
@@ -534,6 +799,118 @@ impl Workspace {
     }
 
     pub async fn schedule(&self, group: i64, week: i64, scope: &str) -> Result<Vec<ScheduleDay>> {
+        if self.base.host_str() == Some("ktk.education-system.ru") {
+            let is_group = scope.starts_with("group:");
+            let is_teacher = scope.starts_with("teacher:") || !self.teacher.is_empty();
+            let date_str = {
+                use chrono::DateTime;
+                let dt = DateTime::from_timestamp_millis(week).unwrap_or_else(chrono::Utc::now);
+                dt.with_timezone(&chrono_tz::Asia::Yekaterinburg)
+                    .format("%Y-%m-%d")
+                    .to_string()
+            };
+            let (path, payload_json) = if is_group {
+                (
+                    "/_serverFn/d418f54f8d5ba132bd168b1792cc8f0efbff634c7861f6aa66890cb9f7103c05",
+                    json!({
+                        "t": {
+                            "t": 10, "i": 0, "p": {
+                                "k": ["data"],
+                                "v": [{
+                                    "t": 10, "i": 1, "p": {
+                                        "k": ["groupId", "weekStart"],
+                                        "v": [
+                                            { "t": 1, "s": group.to_string() },
+                                            { "t": 1, "s": date_str }
+                                        ]
+                                    },
+                                    "o": 0
+                                }]
+                            },
+                            "o": 0
+                        },
+                        "f": 127,
+                        "m": []
+                    }),
+                )
+            } else if is_teacher {
+                (
+                    "/_serverFn/9fd2616a2ecddd56f79974f2111a13f2c9d89265cb6832c8c9e7ae2939e56f4a",
+                    json!({
+                        "t": {
+                            "t": 10, "i": 0, "p": {
+                                "k": ["data"],
+                                "v": [{
+                                    "t": 10, "i": 1, "p": {
+                                        "k": ["weekStart"],
+                                        "v": [{ "t": 1, "s": date_str }]
+                                    },
+                                    "o": 0
+                                }]
+                            },
+                            "o": 0
+                        },
+                        "f": 127,
+                        "m": []
+                    }),
+                )
+            } else {
+                (
+                    "/_serverFn/85d2195b8f64b023a2c16160b65ef47139dea3a839096c4b75b3888cda49f16c",
+                    json!({
+                        "t": {
+                            "t": 10, "i": 0, "p": {
+                                "k": ["data"],
+                                "v": [{
+                                    "t": 10, "i": 1, "p": {
+                                        "k": ["weekStart"],
+                                        "v": [{ "t": 1, "s": date_str }]
+                                    },
+                                    "o": 0
+                                }]
+                            },
+                            "o": 0
+                        },
+                        "f": 127,
+                        "m": []
+                    }),
+                )
+            };
+            let permit = self.permits.acquire().await?;
+            let payload_str = serde_json::to_string(&payload_json)?;
+            let mut url = self.base.join(path)?;
+            url.query_pairs_mut().append_pair("payload", &payload_str);
+            let response = self
+                .http
+                .get(url)
+                .header("Origin", self.base.origin().ascii_serialization())
+                .header("Referer", self.base.as_str())
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Sec-Fetch-Mode", "cors")
+                .header("Sec-Fetch-Dest", "empty")
+                .header("x-tsr-serverfn", "true")
+                .header("x-application-storage-mode", "ordinary")
+                .header(
+                    "accept",
+                    "application/x-tss-framed, application/x-ndjson, application/json",
+                )
+                .send()
+                .await
+                .map_err(|e| e.without_url())?;
+            ensure_status(&response)?;
+            let body = read_body(response, JSON_LIMIT).await?;
+            drop(permit);
+            let raw: Value = serde_json::from_slice(&body)?;
+            let (days, refs) = parse_digital_schedule(&raw)?;
+            {
+                let mut guard = self.digital_refs.write().await;
+                guard.halls.extend(refs.halls);
+                guard.presets.extend(refs.presets);
+                guard.types.extend(refs.types);
+                guard.absence.extend(refs.absence);
+            }
+            return Ok(days);
+        }
         self.refresh(self.group.max(group), week, false).await?;
         for attempt in 0..2 {
             let e = self.endpoints.read().await.clone();
@@ -558,6 +935,9 @@ impl Workspace {
     }
 
     pub async fn references(&self) -> ReferenceData {
+        if self.base.host_str() == Some("ktk.education-system.ru") {
+            return self.digital_refs.read().await.clone();
+        }
         let e = self.endpoints.read().await.clone();
         let branch_query = [("Branch", e.branch.clone())];
         let (halls, calls, types, absence) = tokio::join!(
@@ -596,6 +976,9 @@ impl Workspace {
         suffix: &str,
         query: &[(&str, String)],
     ) -> Result<T> {
+        if self.base.host_str() == Some("ktk.education-system.ru") {
+            bail!("legacy file endpoint unavailable on digital environment");
+        }
         for attempt in 0..2 {
             let e = self.endpoints.read().await.clone();
             let hash = if homework {
@@ -634,6 +1017,9 @@ impl Workspace {
         Ok(doc)
     }
     pub async fn submission(&self, sheet: i64) -> Result<i64> {
+        if self.base.host_str() == Some("ktk.education-system.ru") {
+            return Ok(0);
+        }
         let v: Value = self
             .auxiliary(true, "homework/check", &[("JournalID", sheet.to_string())])
             .await?;

@@ -1,6 +1,6 @@
 use crate::{
     credentials::Cipher,
-    model::{ReferenceData, ScheduleDay, View},
+    model::{ReferenceData, ScheduleDay, SessionRecord, View},
 };
 use anyhow::Result;
 use sqlx::{
@@ -92,6 +92,10 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM reference_cache WHERE telegram_id=?")
+            .bind(a.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM session_cache WHERE telegram_id=?")
             .bind(a.id)
             .execute(&mut *tx)
             .await?;
@@ -222,6 +226,39 @@ impl Storage {
             )?)
         })
         .transpose()
+    }
+
+    pub async fn save_session(&self, id: i64, session: &SessionRecord) -> Result<()> {
+        let context = serde_json::to_string(&("sessions", id))?;
+        let data = self
+            .cipher
+            .encrypt_cache(&context, &serde_json::to_string(session)?)?;
+        sqlx::query("INSERT INTO session_cache(telegram_id,data) VALUES (?,?) ON CONFLICT(telegram_id) DO UPDATE SET data=excluded.data,updated_at=unixepoch()")
+            .bind(id).bind(data).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn session(&self, id: i64) -> Result<Option<SessionRecord>> {
+        let data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM session_cache WHERE telegram_id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let context = serde_json::to_string(&("sessions", id))?;
+        data.map(|s| {
+            Ok(serde_json::from_str(
+                &self.cipher.decrypt_cache(&context, &s)?,
+            )?)
+        })
+        .transpose()
+    }
+
+    pub async fn delete_session(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM session_cache WHERE telegram_id=?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn save_view(&self, id: i64, message: i32, view: &View) -> Result<()> {
