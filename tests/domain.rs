@@ -8,7 +8,7 @@ use ktk_schedule::{
     storage::Account,
     telegram,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 fn account() -> Account {
@@ -75,6 +75,198 @@ fn both_schedule_formats_and_null_optional_data_are_supported() {
     let doc: Document =
         serde_json::from_value(json!({"ID": null, "Caption": null, "Icon": null})).unwrap();
     assert_eq!(doc.caption, "");
+}
+
+#[test]
+fn digital_environment_schedule_and_seroval_decoding_are_supported() {
+    let seroval_raw: Value = serde_json::from_str(
+        r#"{
+        "t": 10, "i": 0, "p": {
+            "k": ["result"],
+            "v": [{
+                "t": 10, "i": 1, "p": {
+                    "k": ["scope", "maxPairNumber", "days", "references", "callPresets", "bellScopes"],
+                    "v": [
+                        { "t": 10, "i": 2, "p": { "k": ["weekStart"], "v": [{ "t": 1, "s": "2026-10-26" }] } },
+                        { "t": 0, "s": 9 },
+                        {
+                            "t": 9, "i": 3, "a": [
+                                {
+                                    "t": 10, "i": 4, "p": {
+                                        "k": ["date", "pages"],
+                                        "v": [
+                                            { "t": 1, "s": "2026-10-26" },
+                                            {
+                                                "t": 9, "i": 5, "a": [
+                                                    {
+                                                        "t": 10, "i": 6, "p": {
+                                                            "k": ["pairs"],
+                                                            "v": [
+                                                                {
+                                                                    "t": 9, "i": 7, "a": [
+                                                                        {
+                                                                            "t": 10, "i": 8, "p": {
+                                                                                "k": ["pairNumber", "lesson"],
+                                                                                "v": [
+                                                                                    { "t": 0, "s": 2 },
+                                                                                    {
+                                                                                        "t": 10, "i": 9, "p": {
+                                                                                            "k": [
+                                                                                                "journalId", "date", "pairNumber", "groupId", "subgroup",
+                                                                                                "teacherId", "auditoriumId", "disciplineShortName",
+                                                                                                "disciplineFullName", "pairTypeId", "academicHours",
+                                                                                                "assessment"
+                                                                                            ],
+                                                                                            "v": [
+                                                                                                { "t": 0, "s": 596415 },
+                                                                                                { "t": 1, "s": "2026-10-26" },
+                                                                                                { "t": 0, "s": 2 },
+                                                                                                { "t": 1, "s": "369" },
+                                                                                                { "t": 1, "s": "left" },
+                                                                                                { "t": 1, "s": "t-1" },
+                                                                                                { "t": 0, "s": 389 },
+                                                                                                { "t": 1, "s": "СГ.02 Ин. язык в ПД" },
+                                                                                                { "t": 1, "s": "Иностранный язык" },
+                                                                                                { "t": 0, "s": 5 },
+                                                                                                { "t": 0, "s": 2 },
+                                                                                                { "t": 10, "i": 10, "p": { "k": ["grade", "mark"], "v": [{ "t": 0, "s": 0 }, { "t": 0, "s": 0 }] } }
+                                                                                            ]
+                                                                                        }
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    ]
+                                                                }
+                                                            ]
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "t": 10, "i": 11, "p": {
+                                "k": ["teachers", "auditoriums", "pairTypes"],
+                                "v": [
+                                    { "t": 9, "i": 12, "a": [{ "t": 10, "i": 13, "p": { "k": ["id", "surname", "name", "patronymic"], "v": [{ "t": 1, "s": "t-1" }, { "t": 1, "s": "Бородина" }, { "t": 1, "s": "Наталья" }, { "t": 1, "s": "Владимировна" }] } }] },
+                                    { "t": 9, "i": 14, "a": [{ "t": 10, "i": 15, "p": { "k": ["auditoriumId", "code"], "v": [{ "t": 0, "s": 389 }, { "t": 1, "s": "18А" }] } }] },
+                                    { "t": 9, "i": 16, "a": [{ "t": 10, "i": 17, "p": { "k": ["id", "name", "billingType"], "v": [{ "t": 0, "s": 5 }, { "t": 1, "s": "Практика" }, { "t": 1, "s": "Practice" }] } }] }
+                                ]
+                            }
+                        },
+                        {
+                            "t": 9, "i": 18, "a": [
+                                {
+                                    "t": 10, "i": 19, "p": {
+                                        "k": ["id", "name", "beginTime", "steps"],
+                                        "v": [
+                                            { "t": 0, "s": 55 },
+                                            { "t": 1, "s": "понедельник" },
+                                            { "t": 1, "s": "08:00" },
+                                            {
+                                                "t": 9, "i": 20, "a": [
+                                                    { "t": 10, "i": 21, "p": { "k": ["position", "duration", "breakDuration"], "v": [{ "t": 0, "s": 0 }, { "t": 0, "s": 30 }, { "t": 0, "s": 10 }] } },
+                                                    { "t": 10, "i": 22, "p": { "k": ["position", "duration", "breakDuration"], "v": [{ "t": 0, "s": 1 }, { "t": 0, "s": 70 }, { "t": 0, "s": 10 }] } }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "t": 9, "i": 23, "a": [
+                                {
+                                    "t": 10, "i": 24, "p": {
+                                        "k": ["assignments"],
+                                        "v": [
+                                            {
+                                                "t": 9, "i": 25, "a": [
+                                                    { "t": 10, "i": 26, "p": { "k": ["date", "presetId"], "v": [{ "t": 1, "s": "2026-10-26" }, { "t": 0, "s": 55 }] } }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }]
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let (days, refs) = parse_digital_schedule(&seroval_raw).unwrap();
+    assert_eq!(days.len(), 1);
+    assert_eq!(days[0].date, "2026-10-26");
+    assert_eq!(days[0].call_preset, 55);
+    assert_eq!(days[0].subjects.len(), 1);
+    let s = &days[0].subjects[0];
+    assert_eq!(s.pair, 2);
+    assert_eq!(s.discipline, "СГ.02 Ин. язык в ПД");
+    assert_eq!(s.teacher, "Бородина Наталья Владимировна");
+    assert_eq!(s.subgroup, "left");
+    assert_eq!(refs.halls.get(&389).unwrap().number, "18А");
+    assert_eq!(refs.presets.get(&55).unwrap().begin, "08:00");
+    assert_eq!(refs.presets.get(&55).unwrap().call_set.len(), 2);
+    assert_eq!(refs.presets.get(&55).unwrap().call_set[1].duration, 70);
+
+    // parse_schedule should transparently handle it as well
+    let transparent = parse_schedule(&seroval_raw).unwrap();
+    assert_eq!(transparent[0].subjects[0].discipline, "СГ.02 Ин. язык в ПД");
+
+    // Rendering check
+    let a = account();
+    let v = View::own(&a, NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
+    let rendered = render::schedule(
+        &days[0],
+        &v,
+        &refs,
+        &Assets::default(),
+        false,
+        TZ.with_ymd_and_hms(2026, 10, 26, 8, 0, 0).unwrap(),
+    );
+    assert!(rendered.contains("СГ.02 Ин. язык в ПД"));
+    assert!(rendered.contains("Бородина Наталья Владимировна"));
+    assert!(rendered.contains("18А"));
+    assert!(rendered.contains("08:40 - 09:50"));
+}
+
+#[test]
+fn digital_auth_decoding_for_students_and_teachers() {
+    let student_seroval: Value = serde_json::from_str(
+        r#"{"t":10,"i":0,"p":{"k":["result"],"v":[{"t":10,"i":1,"p":{"k":["user","session"],"v":[{"t":10,"i":2,"p":{"k":["hash","name","surname","patronymic","group","photo","branch","isStudent","accessLabel"],"v":[{"t":1,"s":"abc"},{"t":1,"s":"Иван"},{"t":1,"s":"Иванов"},{"t":1,"s":"Иванович"},{"t":1,"s":"269"},{"t":2,"s":0},{"t":1,"s":"branch-1"},{"t":2,"s":2},{"t":1,"s":"Студент"}]},"o":0},{"t":10,"i":3,"p":{"k":["id"],"v":[{"t":1,"s":"sess-1"}]},"o":0}]},"o":0}]},"o":0}"#,
+    )
+    .unwrap();
+    let decoded = decode_seroval(&student_seroval);
+    assert_eq!(decoded["user"]["isStudent"], true);
+    assert_eq!(decoded["user"]["group"], "269");
+    assert_eq!(decoded["user"]["name"], "Иван");
+
+    let teacher_seroval: Value = serde_json::from_str(
+        r#"{"t":10,"i":0,"p":{"k":["result"],"v":[{"t":10,"i":1,"p":{"k":["user","session"],"v":[{"t":10,"i":2,"p":{"k":["hash","name","surname","patronymic","group","photo","branch","isStudent","accessLabel"],"v":[{"t":1,"s":"teacher-hash-123"},{"t":1,"s":"Ольга"},{"t":1,"s":"Петрова"},{"t":1,"s":"Сергеевна"},{"t":2,"s":0},{"t":2,"s":0},{"t":1,"s":"branch-1"},{"t":2,"s":3},{"t":1,"s":"Преподаватель"}]},"o":0},{"t":10,"i":3,"p":{"k":["id"],"v":[{"t":1,"s":"sess-2"}]},"o":0}]},"o":0}]},"o":0}"#,
+    )
+    .unwrap();
+    let decoded_t = decode_seroval(&teacher_seroval);
+    assert_eq!(decoded_t["user"]["isStudent"], false);
+    assert_eq!(decoded_t["user"]["hash"], "teacher-hash-123");
+
+    let error_seroval: Value = serde_json::from_str(
+        r#"{"t":10,"i":0,"p":{"k":["error"],"v":[{"t":10,"i":1,"p":{"k":["appError"],"v":[{"t":10,"i":2,"p":{"k":["type","code","message"],"v":[{"t":1,"s":"appError"},{"t":1,"s":"authRequired"},{"t":1,"s":"Неверный логин или пароль."}]},"o":0}]},"o":0}]},"o":0}"#,
+    )
+    .unwrap();
+    let decoded_err = decode_seroval(&error_seroval);
+    assert!(decoded_err["user"].is_null());
+    assert_eq!(
+        decoded_err["error"]["appError"]["message"],
+        "Неверный логин или пароль."
+    );
 }
 
 #[test]
@@ -169,6 +361,7 @@ fn student_schedule_text_is_preserved() {
             Hall {
                 id: 42,
                 number: "301".into(),
+                ..Default::default()
             },
         )]),
         presets: HashMap::from([(
@@ -216,7 +409,7 @@ fn student_schedule_text_is_preserved() {
     );
     assert_eq!(
         text,
-        "📅 Сегодня - 01.09.2026\n\n1 пара [90 мин] - Математика\n⏰ 08:00 - 09:30\n⏳ идёт 30 мин, осталось 1 ч\n📊 Оценка: 5+\n👤 Иванов И. И.\n👥 Группа: 269\n🏫 Кабинет: 301\nЗадание: Решить пример\nВебинар: https://example.test/lesson\n📎 1 файл\n  • task.pdf\n📤 1 файл (моя работа)\n  • answer.pdf"
+        "📅 Сегодня - 01.09.2026\n\n1 пара [90 мин] - Математика\n⏰ 08:00 - 09:30\n⏳ идёт 30 мин, осталось 1 ч\n📊 Оценка: 5+\n👤 Иванов И. И.\n🏫 Кабинет: 301\nЗадание: Решить пример\nВебинар: https://example.test/lesson\n📎 1 файл\n  • task.pdf\n📤 1 файл (моя работа)\n  • answer.pdf"
     );
 }
 
@@ -355,4 +548,125 @@ fn attachment_limits_reject_large_or_pathological_payloads() {
     assert!(attachment_ids(&json!({"Files":nested})).is_err());
     assert_eq!(limited_file_ids([3, 1, 3, 2, 0, -1]).unwrap(), [1, 2, 3]);
     assert!(limited_file_ids(1..=MAX_ATTACHMENTS as i64 + 1).is_err());
+}
+
+#[test]
+fn building_short_code_is_only_shown_when_multiple_buildings_exist_in_the_day() {
+    let day_single: ScheduleDay = serde_json::from_value(json!({
+        "Date": "2026-10-27T00:00:00Z",
+        "CallPreset": 1,
+        "MaxPair": 3,
+        "Subjects": [
+            {
+                "Pair": 1,
+                "Discipline": "Дистанционная пара",
+                "Teacher": "Преподаватель 1",
+                "LectureHall": 334,
+                "Subgroup": "middle"
+            },
+            {
+                "Pair": 2,
+                "Discipline": "АСОС",
+                "Teacher": "Преподаватель 2",
+                "LectureHall": 310,
+                "Subgroup": "middle"
+            },
+            {
+                "Pair": 3,
+                "Discipline": "ПОКС",
+                "Teacher": "Преподаватель 3",
+                "LectureHall": 389,
+                "Subgroup": "middle"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let day_multi: ScheduleDay = serde_json::from_value(json!({
+        "Date": "2026-10-26T00:00:00Z",
+        "CallPreset": 1,
+        "MaxPair": 3,
+        "Subjects": [
+            {
+                "Pair": 2,
+                "Discipline": "Ин. язык",
+                "Teacher": "Преподаватель 1",
+                "LectureHall": 389,
+                "Subgroup": "left"
+            },
+            {
+                "Pair": 3,
+                "Discipline": "ОБП",
+                "Teacher": "Преподаватель 2",
+                "LectureHall": 325,
+                "Subgroup": "middle"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let refs = ReferenceData {
+        halls: HashMap::from([
+            (
+                310,
+                Hall {
+                    id: 310,
+                    number: "15".into(),
+                    building: "IT".into(),
+                },
+            ),
+            (
+                389,
+                Hall {
+                    id: 389,
+                    number: "18А".into(),
+                    building: "IT".into(),
+                },
+            ),
+            (
+                325,
+                Hall {
+                    id: 325,
+                    number: "205".into(),
+                    building: "АиВТ-1".into(),
+                },
+            ),
+            (
+                334,
+                Hall {
+                    id: 334,
+                    number: "Дистанционно".into(),
+                    building: "".into(),
+                },
+            ),
+        ]),
+        ..Default::default()
+    };
+
+    let text_single = render::schedule(
+        &day_single,
+        &View::own(&account(), date()),
+        &refs,
+        &Assets::default(),
+        false,
+        TZ.with_ymd_and_hms(2026, 10, 27, 8, 0, 0).unwrap(),
+    );
+    // Only one physical building ("IT"), so "(IT)" must NOT be shown.
+    // Only one physical building ("IT"), so "(IT)" must NOT be shown.
+    assert!(text_single.contains("🏫 Кабинет: Дистанционно"));
+    assert!(text_single.contains("🏫 Кабинет: 15"));
+    assert!(text_single.contains("🏫 Кабинет: 18А"));
+    assert!(!text_single.contains("(IT)"));
+
+    let text_multi = render::schedule(
+        &day_multi,
+        &View::own(&account(), date()),
+        &refs,
+        &Assets::default(),
+        false,
+        TZ.with_ymd_and_hms(2026, 10, 26, 8, 0, 0).unwrap(),
+    );
+    // Multiple physical buildings ("IT" and "АиВТ-1"), so buildings MUST be shown.
+    assert!(text_multi.contains("🏫 Кабинет: 18А (IT)"));
+    assert!(text_multi.contains("🏫 Кабинет: 205 (АиВТ-1)"));
 }

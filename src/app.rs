@@ -55,9 +55,12 @@ impl Session {
         }
     }
     pub async fn references(&self) -> Arc<ReferenceData> {
-        self.refs
-            .get_with((), async { Arc::new(self.client.references().await) })
-            .await
+        let refs = self.client.references().await;
+        if refs.halls.is_empty() {
+            self.refs.get_with((), async { Arc::new(refs) }).await
+        } else {
+            Arc::new(refs)
+        }
     }
     async fn document(&self, id: i64) -> Result<Document> {
         self.docs
@@ -242,7 +245,18 @@ impl App {
     }
 
     pub async fn sign_in(&self, id: i64, login: &str, password: &str) -> Result<Account> {
+        if let Ok(Some(old_record)) = self.storage.session(id).await {
+            if let Ok(old_client) = Workspace::from_session(
+                self.config.base_url.clone(),
+                &old_record,
+                self.permits.clone(),
+            ) {
+                let _ = old_client.revoke_session().await;
+            }
+            let _ = self.storage.delete_session(id).await;
+        }
         let client = self.authenticate(login, password).await?;
+        let session_record = client.session_record().await;
         let subgroup = personal_subgroup(&client.subgroup)
             .unwrap_or(&self.config.default_subgroup)
             .to_owned();
@@ -262,6 +276,9 @@ impl App {
             notify: false,
         };
         self.storage.save_account(&account).await?;
+        if let Err(e) = self.storage.save_session(id, &session_record).await {
+            tracing::warn!(error=%e, "could not save session cache");
+        }
         self.schedules
             .invalidate_entries_if(move |(user, _, _), _| *user == id)
             .map_err(|e| anyhow!("{e}"))?;
@@ -275,7 +292,24 @@ impl App {
     pub async fn session(&self, account: &Account) -> Result<Arc<Session>> {
         self.sessions
             .try_get_with(account.id, async {
+                if let Ok(Some(record)) = self.storage.session(account.id).await
+                    && !record.cookie.is_empty()
+                    && let Ok(client) = Workspace::from_session(
+                        self.config.base_url.clone(),
+                        &record,
+                        self.permits.clone(),
+                    )
+                {
+                    return Ok::<_, anyhow::Error>(Arc::new(Session::new(client)));
+                }
                 let client = self.authenticate(&account.login, &account.password).await?;
+                if let Err(e) = self
+                    .storage
+                    .save_session(account.id, &client.session_record().await)
+                    .await
+                {
+                    tracing::warn!(error=%e, "could not save session cache");
+                }
                 Ok::<_, anyhow::Error>(Arc::new(Session::new(client)))
             })
             .await
@@ -284,6 +318,14 @@ impl App {
 
     // The caller holds lock_user, as for login, callbacks and notifications.
     pub async fn sign_out(&self, id: i64) -> Result<()> {
+        if let Some(session) = self.sessions.get(&id).await {
+            let _ = session.client.revoke_session().await;
+        } else if let Ok(Some(record)) = self.storage.session(id).await
+            && let Ok(client) =
+                Workspace::from_session(self.config.base_url.clone(), &record, self.permits.clone())
+        {
+            let _ = client.revoke_session().await;
+        }
         self.storage.delete_account(id).await?;
         self.sessions.invalidate(&id).await;
         self.pending_groups.invalidate(&id).await;
@@ -360,7 +402,8 @@ impl App {
                     });
                 }
                 Err(e) if attempt == 0 && workspace::unauthorized(e.as_ref()) => {
-                    self.sessions.invalidate(&account.id).await
+                    self.sessions.invalidate(&account.id).await;
+                    let _ = self.storage.delete_session(account.id).await;
                 }
                 Err(e) => {
                     failure = anyhow!("{e}");
