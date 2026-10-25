@@ -22,8 +22,15 @@ with open(sys.argv[1], "wb") as output:
 chmod 755 "$next"
 timeout 15 runuser -u ktk-schedule -- "$next" --version
 mv "$next" /opt/ktk-schedule/ktk-schedule
-systemctl restart ktk-schedule.service
+
+if systemctl is-active --quiet ktk-schedule-test.service; then
+    target=ktk-schedule-test.service
+else
+    target=ktk-schedule.service
+fi
+
+systemctl restart "$target"
 sleep 3
-systemctl is-active --quiet ktk-schedule.service
-test "$(systemctl show ktk-schedule.service -p NRestarts --value)" = 0
-printf 'KTK deployed and running\n'
+systemctl is-active --quiet "$target"
+test "$(systemctl show "$target" -p NRestarts --value)" = 0
+printf 'KTK deployed and running (%s)\n' "$target"
