@@ -3,7 +3,6 @@ Description=KTK Telegram/VK schedule bot (TEST instance)
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=0
-Conflicts=ktk-schedule.service
 
 [Service]
 Type=simple
@@ -11,7 +10,7 @@ User=ktk-schedule
 Group=ktk-schedule
 WorkingDirectory=/var/lib/ktk-schedule
 EnvironmentFile=/etc/ktk-schedule/bot-test.env
-ExecStart=/opt/ktk-schedule/ktk-schedule
+ExecStart=/opt/ktk-schedule/ktk-schedule-test
 StateDirectory=ktk-schedule
 StateDirectoryMode=0700
 Restart=on-failure
