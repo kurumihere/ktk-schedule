@@ -569,7 +569,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
 
     // Handle commands
     if text == "/start" || text.eq_ignore_ascii_case("начать") {
-        vk.send_message(msg.peer_id, render::HELP, None).await?;
+        vk.send_message(msg.peer_id, render::VK_HELP, None).await?;
         return Ok(());
     }
 
@@ -578,7 +578,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         if parts.len() != 3 {
             vk.send_message(
                 msg.peer_id,
-                "Использование: /login <логин> <пароль>\nПример: /login 1000123 mypass",
+                "Использование: /login <логин> <пароль>\nПример: /login 1000123 mypass\n\n💡 Совет: мы рекомендуем Telegram-бота, там вход безопаснее, так как пароль сразу удаляется:\n👉 https://t.me/ktk45_schedule_bot",
                 None,
             )
             .await?;
@@ -593,7 +593,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
                     format!("группа {}", user_account.group_id)
                 };
                 let welcome = format!(
-                    "✅ Вы успешно вошли в систему ({role})!\n\n⚠️ Внимание: ВКонтакте не позволяет боту автоматически удалить ваше сообщение с паролем. Рекомендуем вручную удалить сообщение с логином и паролем из этого чата в целях безопасности."
+                    "✅ Вы успешно вошли в систему ({role})!\n\n⚠️ Внимание: ВКонтакте не позволяет боту автоматически удалить ваше сообщение с паролем. Рекомендуем вручную удалить сообщение с логином и паролем из этого чата в целях безопасности.\n\n💡 В Telegram бот удаляет пароли автоматически:\n👉 https://t.me/ktk45_schedule_bot"
                 );
                 vk.send_message(msg.peer_id, &welcome, None).await?;
 
@@ -648,12 +648,8 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     }
 
     let Some(account) = app.storage.account(storage_id).await? else {
-        vk.send_message(
-            msg.peer_id,
-            "Вы не авторизованы. Для входа отправьте:\n/login логин пароль",
-            None,
-        )
-        .await?;
+        vk.send_message(msg.peer_id, render::VK_UNAUTHORIZED, None)
+            .await?;
         return Ok(());
     };
 
@@ -722,7 +718,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     }
 
     // Default response: show help
-    vk.send_message(msg.peer_id, render::HELP, None).await?;
+    vk.send_message(msg.peer_id, render::VK_HELP, None).await?;
     Ok(())
 }
 
