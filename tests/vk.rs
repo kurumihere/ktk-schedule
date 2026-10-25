@@ -23,7 +23,11 @@ pub async fn vk_mock_server() -> MockServer {
         .respond_with(|request: &Request| {
             let _ = request;
             ResponseTemplate::new(200).set_body_json(json!({
-                "response": 100
+                "response": [{
+                    "peer_id": 42,
+                    "message_id": 100,
+                    "conversation_message_id": 100
+                }]
             }))
         })
         .mount(&server)
@@ -335,18 +339,20 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
     );
 
     // Test subgroup keyboard limits
-    let sub_kb = vk::subgroup_keyboard_vk(&view);
-    assert!(sub_kb.inline);
-    assert!(
-        sub_kb.buttons.len() <= 6,
-        "subgroup rows exceeded: {}",
-        sub_kb.buttons.len()
-    );
-    let total_sub: usize = sub_kb.buttons.iter().map(|r| r.len()).sum();
-    assert!(
-        total_sub <= 10,
-        "subgroup total buttons exceeded: {total_sub}"
-    );
+    for teacher in [false, true] {
+        let sub_kb = vk::subgroup_keyboard_vk(&view, teacher);
+        assert!(sub_kb.inline);
+        assert!(
+            sub_kb.buttons.len() <= 6,
+            "subgroup rows exceeded: {}",
+            sub_kb.buttons.len()
+        );
+        let total_sub: usize = sub_kb.buttons.iter().map(|r| r.len()).sum();
+        assert!(
+            total_sub <= 10,
+            "subgroup total buttons exceeded: {total_sub}"
+        );
+    }
 }
 
 #[tokio::test]
