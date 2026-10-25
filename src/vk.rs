@@ -351,12 +351,12 @@ pub fn schedule_keyboard_vk(
     view: &View,
     today: NaiveDate,
     tz: Tz,
-    file_count: usize,
+    _file_count: usize,
     teacher: bool,
 ) -> VkKeyboard {
     let mut buttons = Vec::new();
 
-    // Row 1: ⬅️, Неделя/Сегодня, ➡️
+    // Row 1: ⬅️, Неделя/Сегодня, ➡️ (3 buttons)
     let center = if view.date == today && view.week() == week_start(today) {
         button_cb(
             &render::week_label(view.week()),
@@ -372,10 +372,9 @@ pub fn schedule_keyboard_vk(
         button_cb("➡️", "schedule:next", "secondary"),
     ]);
 
-    // Days: VK inline keyboards allow up to 5 buttons per line.
-    // We split 6 days into 2 rows of 3 buttons.
+    // Days: up to 6 buttons split into 2 rows of up to 3 buttons
     let mut day_buttons = Vec::new();
-    for (i, day) in days.iter().enumerate() {
+    for (i, day) in days.iter().take(6).enumerate() {
         let selected = day_date(&day.date, tz) == Some(view.date);
         let color = if selected { "positive" } else { "secondary" };
         day_buttons.push(button_cb(
@@ -394,51 +393,24 @@ pub fn schedule_keyboard_vk(
         }
     }
 
-    // Subgroup filter (students only)
-    if !teacher {
-        buttons.push(vec![
-            button_cb(
-                "1 подгруппа",
-                "schedule:subgroup:left",
-                if !view.show_all && view.subgroup == "left" {
-                    "primary"
-                } else {
-                    "secondary"
-                },
-            ),
-            button_cb(
-                "Все",
-                "schedule:subgroup:all",
-                if view.show_all {
-                    "primary"
-                } else {
-                    "secondary"
-                },
-            ),
-            button_cb(
-                "2 подгруппа",
-                "schedule:subgroup:right",
-                if !view.show_all && view.subgroup == "right" {
-                    "primary"
-                } else {
-                    "secondary"
-                },
-            ),
-        ]);
-    }
-
-    // Actions
-    let mut actions = vec![
-        button_cb("Другая группа", "schedule:group:select", "secondary"),
-        button_cb("Обновить", "schedule:refresh", "secondary"),
-    ];
-    if file_count > 0 {
-        actions.push(button_cb("Файлы", "schedule:download", "secondary"));
-    }
-    buttons.push(actions);
-
+    // Row 4: Single action/toggle button to strictly enforce VK limit (max 10 buttons total!)
     if view.group.is_some() {
         buttons.push(vec![button_cb("Моё расписание", "schedule:my", "positive")]);
+    } else if !teacher {
+        let (label, next_action, color) = if view.show_all {
+            ("👥 Все подгруппы", "schedule:subgroup:left", "primary")
+        } else if view.subgroup == "left" {
+            ("👤 1 подгруппа", "schedule:subgroup:right", "secondary")
+        } else {
+            ("👤 2 подгруппа", "schedule:subgroup:all", "secondary")
+        };
+        buttons.push(vec![button_cb(label, next_action, color)]);
+    } else {
+        buttons.push(vec![button_cb(
+            "🔄 Обновить",
+            "schedule:refresh",
+            "secondary",
+        )]);
     }
 
     VkKeyboard {
@@ -614,6 +586,21 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         app.storage.set_notify(storage_id, false).await?;
         vk.send_message(msg.peer_id, "🔕 Утренние уведомления выключены.", None)
             .await?;
+        return Ok(());
+    }
+
+    if text.eq_ignore_ascii_case("/refresh") || text.eq_ignore_ascii_case("обновить") {
+        let view = View::own(&account, app.now().date_naive());
+        show_vk(app, vk, &account, &view, None, true).await?;
+        return Ok(());
+    }
+
+    if text.eq_ignore_ascii_case("/my")
+        || text.eq_ignore_ascii_case("моё")
+        || text.eq_ignore_ascii_case("мое")
+    {
+        let view = View::own(&account, app.now().date_naive());
+        show_vk(app, vk, &account, &view, None, false).await?;
         return Ok(());
     }
 

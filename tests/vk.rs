@@ -273,3 +273,48 @@ async fn vk_bot_logout_removes_user_data() {
 
     assert!(app.storage.account(storage_id).await.unwrap().is_none());
 }
+
+#[test]
+fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
+    use ktk_schedule::model::ScheduleDay;
+    let tz: chrono_tz::Tz = "Asia/Yekaterinburg".parse().unwrap();
+    let today = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    let mut view = View {
+        date: today,
+        week_start: today,
+        group: None,
+        subgroup: "left".into(),
+        show_all: false,
+        week_offset: 0,
+        screen: Screen::Schedule,
+    };
+
+    // Test with 0 to 7 days
+    for count in 0..=7 {
+        let days: Vec<ScheduleDay> = (0..count)
+            .map(|i| ScheduleDay {
+                date: format!("2026-09-0{}", i + 1),
+                call_preset: 1,
+                subjects: Vec::new(),
+                ..Default::default()
+            })
+            .collect();
+
+        for teacher in [false, true] {
+            for foreign_group in [None, Some(270)] {
+                view.group = foreign_group;
+                let kb = vk::schedule_keyboard_vk(&days, &view, today, tz, 0, teacher);
+                assert!(kb.inline);
+                assert!(kb.buttons.len() <= 6, "rows exceeded: {}", kb.buttons.len());
+                let total_buttons: usize = kb.buttons.iter().map(|r| r.len()).sum();
+                assert!(
+                    total_buttons <= 10,
+                    "total buttons exceeded: {total_buttons} for count {count}, teacher {teacher}"
+                );
+                for row in &kb.buttons {
+                    assert!(row.len() <= 5, "buttons per row exceeded: {}", row.len());
+                }
+            }
+        }
+    }
+}

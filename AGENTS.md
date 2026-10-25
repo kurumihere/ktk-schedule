@@ -18,8 +18,8 @@ Layout:
 - `src/resilience.rs` - `Circuit` (threshold 5, cooldown 30s in `App::new`).
 - `migrations/0001_initial.sql`, `0002_encrypted_cache.sql` - schema source of truth, applied via `sqlx::migrate!()`.
 - `tests/support/mod.rs` - `College` (wiremock Workspace), `telegram_server()`, `app()`; other `tests/*.rs` are integration tests.
-- `deploy/ktk-schedule.service`, `deploy/update.sh`, `deploy/receive.sh` - systemd and VDS deploy.
-- `.env.example` - config example; `.env` - local secret (gitignored); prod uses `/etc/ktk-schedule/bot.env`.
+- `deploy/ktk-schedule.service`, `deploy/ktk-schedule-test.service`, `deploy/switch-mode.sh`, `deploy/update.sh`, `deploy/receive.sh` - systemd and VDS deploy.
+- `.env.example` - config example; `.env` - local secret (gitignored); prod uses `/etc/ktk-schedule/bot.env`, test uses `/etc/ktk-schedule/bot-test.env`.
 
 Generated: `target/`, `data/*.sqlite*` - never commit, never read as source of truth.
 
