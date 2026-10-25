@@ -70,6 +70,23 @@ pub fn week_label(date: NaiveDate) -> String {
     )
 }
 
+pub fn short_week_label(date: NaiveDate) -> String {
+    let start = week_start(date);
+    let mut academic = week_start(NaiveDate::from_ymd_opt(start.year(), 9, 1).unwrap());
+    if start < academic {
+        academic = week_start(NaiveDate::from_ymd_opt(start.year() - 1, 9, 1).unwrap());
+    }
+    let number = (start - academic).num_days() / 7 + 1;
+    let end = start.checked_add_days(Days::new(5)).unwrap_or(start);
+    format!(
+        "Неделя {number} ({:02}.{:02} - {:02}.{:02})",
+        start.day(),
+        start.month(),
+        end.day(),
+        end.month()
+    )
+}
+
 pub fn short_day(day: &ScheduleDay, tz: Tz) -> String {
     day_date(&day.date, tz)
         .map(|d| {

@@ -359,19 +359,20 @@ pub fn schedule_keyboard_vk(
 ) -> VkKeyboard {
     let mut buttons = Vec::new();
 
-    // Row 1: Day prev/next and Today button
+    // Row 1: Day prev / (Week select or Today) / Day next
     let is_today = view.date == today;
+    let center_button = if is_today {
+        button_cb(
+            &format!("📅 {}", render::short_week_label(view.week())),
+            "schedule:week:select",
+            "primary",
+        )
+    } else {
+        button_cb("📍 Сегодня", "schedule:today", "positive")
+    };
     buttons.push(vec![
         button_cb("⬅️", "schedule:prev", "secondary"),
-        button_cb(
-            if is_today {
-                "✅ Сегодня"
-            } else {
-                "Сегодня"
-            },
-            "schedule:today",
-            if is_today { "positive" } else { "primary" },
-        ),
+        center_button,
         button_cb("➡️", "schedule:next", "secondary"),
     ]);
 
@@ -400,13 +401,23 @@ pub fn schedule_keyboard_vk(
     // Row 4: Sub-menu / Actions (strictly 1 button to keep total <= 10)
     if view.group.is_some() {
         buttons.push(vec![button_cb("🏠 Своя группа", "schedule:my", "positive")]);
+    } else if !_teacher {
+        let sub_label = if view.show_all {
+            "👥 Подгруппа: Обе"
+        } else if view.subgroup == "left" {
+            "👤 Подгруппа: 1"
+        } else {
+            "👤 Подгруппа: 2"
+        };
+        buttons.push(vec![button_cb(
+            sub_label,
+            "schedule:subgroup:menu",
+            "secondary",
+        )]);
     } else {
         buttons.push(vec![button_cb(
-            &format!(
-                "⚙️ Меню и выбор недели ({})",
-                render::week_label(view.week())
-            ),
-            "schedule:subgroup:menu",
+            "🔍 Расписание группы",
+            "schedule:group:select",
             "secondary",
         )]);
     }
@@ -432,7 +443,7 @@ pub fn week_keyboard_vk(view: &View, tz: Tz) -> Result<VkKeyboard> {
         let color = if selected { "positive" } else { "secondary" };
         let prefix = if selected { "✅ " } else { "" };
         buttons.push(vec![button_cb(
-            &format!("{prefix}{}", render::week_label(date)),
+            &format!("{prefix}{}", render::short_week_label(date)),
             &format!("schedule:week:open:{}", week_millis(date, tz)?),
             color,
         )]);
@@ -490,7 +501,7 @@ pub fn subgroup_keyboard_vk(view: &View, teacher: bool) -> VkKeyboard {
     }
 
     buttons.push(vec![button_cb(
-        &format!("📅 Выбрать неделю ({})", render::week_label(view.week())),
+        "📅 Выбрать неделю",
         "schedule:week:select",
         "secondary",
     )]);
