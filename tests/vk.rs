@@ -317,4 +317,32 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
             }
         }
     }
+
+    // Test week keyboard limits
+    let week_kb = vk::week_keyboard_vk(&view, tz).unwrap();
+    assert!(week_kb.inline);
+    assert!(
+        week_kb.buttons.len() <= 6,
+        "week rows exceeded: {}",
+        week_kb.buttons.len()
+    );
+    let total_week: usize = week_kb.buttons.iter().map(|r| r.len()).sum();
+    assert!(
+        total_week <= 10,
+        "week total buttons exceeded: {total_week}"
+    );
+
+    // Test subgroup keyboard limits
+    let sub_kb = vk::subgroup_keyboard_vk(&view);
+    assert!(sub_kb.inline);
+    assert!(
+        sub_kb.buttons.len() <= 6,
+        "subgroup rows exceeded: {}",
+        sub_kb.buttons.len()
+    );
+    let total_sub: usize = sub_kb.buttons.iter().map(|r| r.len()).sum();
+    assert!(
+        total_sub <= 10,
+        "subgroup total buttons exceeded: {total_sub}"
+    );
 }

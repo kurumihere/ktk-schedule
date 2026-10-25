@@ -827,6 +827,7 @@ pub enum Screen {
     Schedule,
     Weeks,
     GroupInput,
+    Subgroup,
 }
 
 impl View {

@@ -349,18 +349,14 @@ pub fn button_cb(label: &str, data: &str, color: &str) -> VkButton {
 pub fn schedule_keyboard_vk(
     days: &[ScheduleDay],
     view: &View,
-    today: NaiveDate,
+    _today: NaiveDate,
     tz: Tz,
     _file_count: usize,
     teacher: bool,
 ) -> VkKeyboard {
-    let index = days
-        .iter()
-        .position(|d| day_date(&d.date, tz) == Some(view.date));
-    let selected_today = view.date == today && index.is_some();
     let mut buttons = Vec::new();
 
-    // Row 1: Week navigation (same as Telegram)
+    // Row 1: Week navigation
     buttons.push(vec![
         button_cb("⬅️ неделя", "schedule:week:prev", "secondary"),
         button_cb(
@@ -371,34 +367,44 @@ pub fn schedule_keyboard_vk(
         button_cb("неделя ➡️", "schedule:week:next", "secondary"),
     ]);
 
-    // Row 2: Day navigation (same as Telegram)
-    let left_btn = if index.is_none_or(|i| i == 0) {
-        button_cb("⛔", "schedule:prev", "secondary")
-    } else {
-        button_cb("⬅️", "schedule:prev", "secondary")
-    };
-    let center_btn = if selected_today {
-        button_cb("🔄 Обновить", "schedule:refresh", "positive")
-    } else {
-        button_cb("Сегодня", "schedule:today", "primary")
-    };
-    let right_btn = if index.is_some_and(|i| i + 1 >= days.len()) || days.is_empty() {
-        button_cb("⛔", "schedule:next", "secondary")
-    } else {
-        button_cb("➡️", "schedule:next", "secondary")
-    };
-    buttons.push(vec![left_btn, center_btn, right_btn]);
-
-    // Row 3: Group selection (same as Telegram)
-    if view.group.is_some() {
-        if teacher {
-            buttons.push(vec![
-                button_cb("👤 Своё расписание", "schedule:my", "positive"),
-                button_cb("🔍 Другая группа", "schedule:group:select", "secondary"),
-            ]);
+    // Rows 2 & 3: Days direct selection (up to 6 days)
+    let mut day_buttons = Vec::new();
+    for (i, day) in days.iter().take(6).enumerate() {
+        let selected = day_date(&day.date, tz) == Some(view.date);
+        let color = if selected { "positive" } else { "secondary" };
+        let prefix = if selected { "✅ " } else { "" };
+        day_buttons.push(button_cb(
+            &format!("{prefix}{}", render::short_day(day, tz)),
+            &format!("schedule:day:{i}"),
+            color,
+        ));
+    }
+    if !day_buttons.is_empty() {
+        if day_buttons.len() <= 3 {
+            buttons.push(day_buttons);
         } else {
-            buttons.push(vec![button_cb("🏠 Своя группа", "schedule:my", "positive")]);
+            let row1 = day_buttons.drain(..3).collect();
+            buttons.push(row1);
+            buttons.push(day_buttons);
         }
+    }
+
+    // Row 4: Sub-menu / Actions (strictly 1 button to keep total <= 10)
+    if view.group.is_some() {
+        buttons.push(vec![button_cb("🏠 Своя группа", "schedule:my", "positive")]);
+    } else if !teacher {
+        let sub_label = if view.show_all {
+            "👥 Подгруппа: Обе"
+        } else if view.subgroup == "left" {
+            "👤 Подгруппа: 1"
+        } else {
+            "👤 Подгруппа: 2"
+        };
+        buttons.push(vec![button_cb(
+            sub_label,
+            "schedule:subgroup:menu",
+            "secondary",
+        )]);
     } else {
         buttons.push(vec![button_cb(
             "🔍 Расписание группы",
@@ -407,71 +413,94 @@ pub fn schedule_keyboard_vk(
         )]);
     }
 
-    // Row 4: Subgroups (students only, same as Telegram)
-    if !teacher {
-        let sub1_active = !view.show_all && view.subgroup == "left";
-        let sub2_active = !view.show_all && view.subgroup == "right";
-        let all_active = view.show_all;
-
-        buttons.push(vec![
-            button_cb(
-                if sub1_active {
-                    "✅ 1 подгруппа"
-                } else {
-                    "1 подгруппа"
-                },
-                "schedule:subgroup:left",
-                if sub1_active { "positive" } else { "secondary" },
-            ),
-            button_cb(
-                if sub2_active {
-                    "✅ 2 подгруппа"
-                } else {
-                    "2 подгруппа"
-                },
-                "schedule:subgroup:right",
-                if sub2_active { "positive" } else { "secondary" },
-            ),
-            button_cb(
-                if all_active { "✅ Обе" } else { "Обе" },
-                "schedule:subgroup:all",
-                if all_active { "positive" } else { "secondary" },
-            ),
-        ]);
-    }
-
     VkKeyboard {
         inline: true,
         buttons,
     }
 }
 
-pub fn week_keyboard_vk(view: &View, _today: NaiveDate, tz: Tz) -> VkKeyboard {
-    let mut buttons = Vec::new();
-    buttons.push(vec![
-        button_cb("◀️", "schedule:week:prev", "secondary"),
-        button_cb("Сегодня", "schedule:week:today", "primary"),
-        button_cb("▶️", "schedule:week:next", "secondary"),
-    ]);
+pub fn week_keyboard_vk(view: &View, tz: Tz) -> Result<VkKeyboard> {
+    let center = shift(view.week(), i64::from(view.week_offset) * 7)?;
+    let mut buttons = vec![vec![
+        button_cb("⬅️", "schedule:week:page:-1", "secondary"),
+        button_cb("Назад", "schedule:back", "secondary"),
+        button_cb("➡️", "schedule:week:page:1", "secondary"),
+    ]];
 
-    let mut row = Vec::new();
-    for offset in [-7, 0, 7] {
-        if let Ok(d) = shift(view.week(), offset) {
-            let selected = d == view.week();
-            let color = if selected { "positive" } else { "secondary" };
-            if let Ok(millis) = week_millis(d, tz) {
-                row.push(button_cb(
-                    &d.format("%d.%m").to_string(),
-                    &format!("schedule:week:open:{millis}"),
-                    color,
-                ));
-            }
-        }
+    // 4 weeks around center to fit strictly within 6 rows limit:
+    for delta in -1..=2 {
+        let date = shift(center, delta * 7)?;
+        let selected = date == view.week();
+        let color = if selected { "positive" } else { "secondary" };
+        let prefix = if selected { "✅ " } else { "" };
+        buttons.push(vec![button_cb(
+            &format!("{prefix}{}", render::week_label(date)),
+            &format!("schedule:week:open:{}", week_millis(date, tz)?),
+            color,
+        )]);
     }
-    if !row.is_empty() {
-        buttons.push(row);
-    }
-    buttons.push(vec![button_cb("Назад", "schedule:back", "secondary")]);
+
+    buttons.push(vec![button_cb(
+        "Текущая неделя",
+        "schedule:week:today",
+        "primary",
+    )]);
+
+    Ok(VkKeyboard {
+        inline: true,
+        buttons,
+    })
+}
+
+pub fn subgroup_keyboard_vk(view: &View) -> VkKeyboard {
+    let sub1_active = !view.show_all && view.subgroup == "left";
+    let sub2_active = !view.show_all && view.subgroup == "right";
+    let all_active = view.show_all;
+
+    let buttons = vec![
+        vec![button_cb(
+            if sub1_active {
+                "✅ 1 подгруппа"
+            } else {
+                "1 подгруппа"
+            },
+            "schedule:subgroup:set:left",
+            if sub1_active { "positive" } else { "secondary" },
+        )],
+        vec![button_cb(
+            if sub2_active {
+                "✅ 2 подгруппа"
+            } else {
+                "2 подгруппа"
+            },
+            "schedule:subgroup:set:right",
+            if sub2_active { "positive" } else { "secondary" },
+        )],
+        vec![button_cb(
+            if all_active {
+                "✅ Обе подгруппы"
+            } else {
+                "Обе подгруппы"
+            },
+            "schedule:subgroup:set:all",
+            if all_active { "positive" } else { "secondary" },
+        )],
+        vec![button_cb(
+            "🔍 Расписание другой группы",
+            "schedule:group:select",
+            "secondary",
+        )],
+        vec![button_cb(
+            "🔄 Обновить расписание",
+            "schedule:refresh",
+            "secondary",
+        )],
+        vec![button_cb(
+            "↩️ Назад к расписанию",
+            "schedule:back",
+            "primary",
+        )],
+    ];
 
     VkKeyboard {
         inline: true,
@@ -760,36 +789,52 @@ pub async fn handle_callback(
             return Ok(());
         }
         "schedule:week:select" => {
+            view.week_offset = 0;
+            view.screen = Screen::Weeks;
+        }
+        "schedule:week:page:-1" | "schedule:week:page:1" => {
+            let delta = if data.ends_with(":-1") { -4 } else { 4 };
+            view.week_offset = (view.week_offset + delta).clamp(-520, 520);
             view.screen = Screen::Weeks;
         }
         "schedule:week:prev" => {
             view.week_start = shift(view.week(), -7)?;
-            view.screen = Screen::Weeks;
+            view.select_date(shift(view.date, -7)?);
+            view.screen = Screen::Schedule;
         }
         "schedule:week:next" => {
             view.week_start = shift(view.week(), 7)?;
-            view.screen = Screen::Weeks;
+            view.select_date(shift(view.date, 7)?);
+            view.screen = Screen::Schedule;
         }
         "schedule:week:today" => {
+            view.week_offset = 0;
             view.week_start = week_start(today);
-            view.screen = Screen::Weeks;
+            view.select_date(today);
+            view.screen = Screen::Schedule;
         }
-        "schedule:subgroup:all" => {
+        "schedule:subgroup:menu" => {
+            view.screen = Screen::Subgroup;
+        }
+        "schedule:subgroup:set:all" | "schedule:subgroup:all" => {
             view.show_all = true;
             let _ = app
                 .storage
                 .set_subgroup(storage_id, &view.subgroup, true)
                 .await;
+            view.screen = Screen::Schedule;
         }
-        "schedule:subgroup:left" => {
+        "schedule:subgroup:set:left" | "schedule:subgroup:left" => {
             view.show_all = false;
             view.subgroup = "left".into();
             let _ = app.storage.set_subgroup(storage_id, "left", false).await;
+            view.screen = Screen::Schedule;
         }
-        "schedule:subgroup:right" => {
+        "schedule:subgroup:set:right" | "schedule:subgroup:right" => {
             view.show_all = false;
             view.subgroup = "right".into();
             let _ = app.storage.set_subgroup(storage_id, "right", false).await;
+            view.screen = Screen::Schedule;
         }
         _ if data.starts_with("schedule:day:") => {
             let idx = data
@@ -851,8 +896,11 @@ pub async fn show_vk(
 
     match view.screen {
         Screen::Weeks => {
-            let text = format!("📅 {}\n\nВыберите неделю:", render::week_label(view.week()));
-            let keyboard = week_keyboard_vk(view, now.date_naive(), app.config.timezone);
+            let text = format!(
+                "Выбери неделю:\n\nСейчас открыта {}",
+                render::week_label(view.week())
+            );
+            let keyboard = week_keyboard_vk(view, app.config.timezone)?;
             present_vk(app, vk, account.id, cmid, &text, keyboard, view).await
         }
         Screen::GroupInput => {
@@ -870,6 +918,21 @@ pub async fn show_vk(
                 view,
             )
             .await
+        }
+        Screen::Subgroup => {
+            let current = if view.show_all {
+                "Обе подгруппы"
+            } else if view.subgroup == "left" {
+                "1 подгруппа"
+            } else {
+                "2 подгруппа"
+            };
+            let group_num = view.group.unwrap_or(account.group_id);
+            let text = format!(
+                "👥 Настройки подгруппы и группы\n\nТекущая подгруппа: {current}\nГруппа: {group_num}\n\nВыберите нужный вариант:"
+            );
+            let keyboard = subgroup_keyboard_vk(view);
+            present_vk(app, vk, account.id, cmid, &text, keyboard, view).await
         }
         Screen::Schedule => {
             let (text, file_count) = app
