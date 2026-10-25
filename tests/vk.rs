@@ -319,6 +319,14 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
                 );
                 for row in &kb.buttons {
                     assert!(row.len() <= 5, "buttons per row exceeded: {}", row.len());
+                    for btn in row {
+                        if let vk::VkAction::Callback { ref label, .. } = btn.action {
+                            assert!(
+                                label.chars().count() <= 40,
+                                "label exceeds 40 characters: '{label}'"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -337,6 +345,16 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
         total_week <= 10,
         "week total buttons exceeded: {total_week}"
     );
+    for row in &week_kb.buttons {
+        for btn in row {
+            if let vk::VkAction::Callback { ref label, .. } = btn.action {
+                assert!(
+                    label.chars().count() <= 40,
+                    "week label exceeds 40 characters: '{label}'"
+                );
+            }
+        }
+    }
 
     // Test subgroup keyboard limits
     for teacher in [false, true] {
@@ -352,6 +370,16 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
             total_sub <= 10,
             "subgroup total buttons exceeded: {total_sub}"
         );
+        for row in &sub_kb.buttons {
+            for btn in row {
+                if let vk::VkAction::Callback { ref label, .. } = btn.action {
+                    assert!(
+                        label.chars().count() <= 40,
+                        "subgroup label exceeds 40 characters: '{label}'"
+                    );
+                }
+            }
+        }
     }
 }
 
