@@ -401,23 +401,10 @@ pub fn schedule_keyboard_vk(
     // Row 4: Sub-menu / Actions (strictly 1 button to keep total <= 10)
     if view.group.is_some() {
         buttons.push(vec![button_cb("🏠 Своя группа", "schedule:my", "positive")]);
-    } else if !_teacher {
-        let sub_label = if view.show_all {
-            "👥 Подгруппа: Обе"
-        } else if view.subgroup == "left" {
-            "👤 Подгруппа: 1"
-        } else {
-            "👤 Подгруппа: 2"
-        };
-        buttons.push(vec![button_cb(
-            sub_label,
-            "schedule:subgroup:menu",
-            "secondary",
-        )]);
     } else {
         buttons.push(vec![button_cb(
-            "🔍 Расписание группы",
-            "schedule:group:select",
+            "Меню",
+            "schedule:subgroup:menu",
             "secondary",
         )]);
     }

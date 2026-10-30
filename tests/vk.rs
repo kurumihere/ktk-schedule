@@ -328,6 +328,17 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
                         }
                     }
                 }
+                if foreign_group.is_none() {
+                    let last_btn = kb.buttons.last().unwrap().first().unwrap();
+                    if let vk::VkAction::Callback {
+                        ref label,
+                        ref payload,
+                    } = last_btn.action
+                    {
+                        assert_eq!(label, "Меню");
+                        assert_eq!(payload, "{\"data\":\"schedule:subgroup:menu\"}");
+                    }
+                }
             }
         }
     }

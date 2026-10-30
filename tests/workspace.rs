@@ -517,3 +517,47 @@ async fn file_redirect_loops_are_bounded() {
     let error = client.download(10).await.unwrap_err();
     assert!(format!("{error:#}").contains("too many redirects"));
 }
+
+#[test]
+fn digital_environment_server_functions_are_dynamically_parsed_from_scripts() {
+    let mut c = Candidates::default();
+    let js = r#"
+        var signIn = createServerFn("POST", "/_serverFn/1111111111111111111111111111111111111111111111111111111111111111", {
+            validator: (d) => ({ collegeId: d.collegeId, password: d.password, fingerprint: d.fingerprint })
+        });
+        var getStudentSchedule = createServerFn("GET", "/_serverFn/2222222222222222222222222222222222222222222222222222222222222222", {
+            validator: (d) => ({ weekStart: d.weekStart })
+        });
+        var getTeacherSchedule = createServerFn("GET", "/_serverFn/3333333333333333333333333333333333333333333333333333333333333333", {
+            validator: (d) => ({ weekStart: d.weekStart }),
+            scope: "teacher"
+        });
+        var getGroupSchedule = createServerFn("GET", "/_serverFn/4444444444444444444444444444444444444444444444444444444444444444", {
+            validator: (d) => ({ groupId: d.groupId, weekStart: d.weekStart })
+        });
+        var logout = createServerFn("POST", "/_serverFn/5555555555555555555555555555555555555555555555555555555555555555", {
+            handler: () => revokeSession()
+        });
+    "#;
+    c.add(js);
+    assert_eq!(
+        c.digital_sign_in.as_deref(),
+        Some("/_serverFn/1111111111111111111111111111111111111111111111111111111111111111")
+    );
+    assert_eq!(
+        c.digital_student_schedule.as_deref(),
+        Some("/_serverFn/2222222222222222222222222222222222222222222222222222222222222222")
+    );
+    assert_eq!(
+        c.digital_teacher_schedule.as_deref(),
+        Some("/_serverFn/3333333333333333333333333333333333333333333333333333333333333333")
+    );
+    assert_eq!(
+        c.digital_group_schedule.as_deref(),
+        Some("/_serverFn/4444444444444444444444444444444444444444444444444444444444444444")
+    );
+    assert_eq!(
+        c.digital_logout.as_deref(),
+        Some("/_serverFn/5555555555555555555555555555555555555555555555555555555555555555")
+    );
+}

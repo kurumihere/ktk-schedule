@@ -50,6 +50,7 @@ struct Endpoints {
     file_hash: String,
     homework_hash: String,
     branch: String,
+    logout: String,
 }
 
 #[derive(Clone, Default)]
@@ -65,7 +66,26 @@ pub struct Candidates {
     pub files: Vec<String>,
     pub homework: Vec<String>,
     pub branches: Vec<String>,
+    pub digital_sign_in: Option<String>,
+    pub digital_student_schedule: Option<String>,
+    pub digital_teacher_schedule: Option<String>,
+    pub digital_group_schedule: Option<String>,
+    pub digital_logout: Option<String>,
 }
+
+pub const DEFAULT_DIGITAL_SIGN_IN: &str =
+    "/_serverFn/9cd5b48fd0588913cb64c83d8ae2b42d5f3e97ed5dd47dc10f211cdc2322c1f6";
+pub const DEFAULT_DIGITAL_STUDENT: &str =
+    "/_serverFn/85d2195b8f64b023a2c16160b65ef47139dea3a839096c4b75b3888cda49f16c";
+pub const DEFAULT_DIGITAL_TEACHER: &str =
+    "/_serverFn/9fd2616a2ecddd56f79974f2111a13f2c9d89265cb6832c8c9e7ae2939e56f4a";
+pub const DEFAULT_DIGITAL_GROUP: &str =
+    "/_serverFn/d418f54f8d5ba132bd168b1792cc8f0efbff634c7861f6aa66890cb9f7103c05";
+pub const DEFAULT_DIGITAL_LOGOUT: &str =
+    "/_serverFn/2e1ca1208f926608597adee62b6f7a786ebfd7e01b208963ecb9bee6e800f9f5";
+
+static SERVER_FN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"/_serverFn/([0-9a-fA-F]{32,64})"#).unwrap());
 
 static API: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/v[0-9]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+").unwrap());
@@ -126,6 +146,64 @@ impl Candidates {
         ] {
             for captures in pattern.captures_iter(text) {
                 unique(dest, &captures[1]);
+            }
+        }
+        for m in SERVER_FN.find_iter(text) {
+            let path = m.as_str();
+            let idx = m.start();
+            let prev_fn = text[..idx]
+                .rfind("/_serverFn/")
+                .map(|i| i + "/_serverFn/".len())
+                .unwrap_or(0);
+            let next_fn = text[idx + path.len()..]
+                .find("/_serverFn/")
+                .map(|i| idx + path.len() + i)
+                .unwrap_or(text.len());
+            let after_idx = idx + path.len();
+
+            let before_part = &text[prev_fn..idx];
+            let start = before_part
+                .rfind(';')
+                .or_else(|| before_part.rfind('\n'))
+                .map(|i| prev_fn + i + 1)
+                .unwrap_or(prev_fn);
+
+            let after_part = &text[after_idx..next_fn];
+            let end = after_part
+                .find(';')
+                .or_else(|| after_part.find("createServerFn"))
+                .map(|i| after_idx + i)
+                .unwrap_or(next_fn);
+
+            let snippet = if start <= end {
+                &text[start..end]
+            } else {
+                &text[idx..after_idx]
+            };
+
+            if snippet.contains("collegeId") || snippet.contains("fingerprint") {
+                if self.digital_sign_in.is_none() {
+                    self.digital_sign_in = Some(path.to_string());
+                }
+            } else if snippet.contains("groupId") && snippet.contains("weekStart") {
+                if self.digital_group_schedule.is_none() {
+                    self.digital_group_schedule = Some(path.to_string());
+                }
+            } else if snippet.contains("weekStart") {
+                if snippet.contains("teacher") || snippet.contains("Teacher") {
+                    if self.digital_teacher_schedule.is_none() {
+                        self.digital_teacher_schedule = Some(path.to_string());
+                    }
+                } else if self.digital_student_schedule.is_none() {
+                    self.digital_student_schedule = Some(path.to_string());
+                }
+            } else if (snippet.contains("revoke")
+                || snippet.contains("logout")
+                || snippet.contains("signOut")
+                || snippet.contains("sign-out"))
+                && self.digital_logout.is_none()
+            {
+                self.digital_logout = Some(path.to_string());
             }
         }
     }
@@ -255,11 +333,10 @@ impl Workspace {
                 "f": 127,
                 "m": []
             });
-            let response = this
+            let mut sign_in_path = DEFAULT_DIGITAL_SIGN_IN.to_string();
+            let mut response = this
                 .http
-                .post(this.base.join(
-                    "/_serverFn/9cd5b48fd0588913cb64c83d8ae2b42d5f3e97ed5dd47dc10f211cdc2322c1f6",
-                )?)
+                .post(this.base.join(&sign_in_path)?)
                 .header("Origin", this.base.origin().ascii_serialization())
                 .header("Referer", welcome_referer.as_str())
                 .header("Sec-Fetch-Site", "same-origin")
@@ -275,6 +352,30 @@ impl Workspace {
                 .send()
                 .await
                 .map_err(|e| e.without_url())?;
+            if (response.status().as_u16() == 404 || response.status().as_u16() == 410)
+                && let Ok(c) = this.discover(true).await
+                && let Some(new_sign_in) = c.digital_sign_in
+            {
+                sign_in_path = new_sign_in;
+                response = this
+                    .http
+                    .post(this.base.join(&sign_in_path)?)
+                    .header("Origin", this.base.origin().ascii_serialization())
+                    .header("Referer", welcome_referer.as_str())
+                    .header("Sec-Fetch-Site", "same-origin")
+                    .header("Sec-Fetch-Mode", "cors")
+                    .header("Sec-Fetch-Dest", "empty")
+                    .header("x-tsr-serverfn", "true")
+                    .header("x-application-storage-mode", "ordinary")
+                    .header(
+                        "accept",
+                        "application/x-tss-framed, application/x-ndjson, application/json",
+                    )
+                    .json(&sign_in_body)
+                    .send()
+                    .await
+                    .map_err(|e| e.without_url())?;
+            }
             ensure_status(&response)?;
             let mut session_cookie = String::new();
             for h in response.headers().get_all(reqwest::header::SET_COOKIE) {
@@ -323,16 +424,26 @@ impl Workspace {
                 this.group = 0;
             }
             this.branch = user["branch"].as_str().unwrap_or_default().into();
+            let candidates = this.discover(false).await.unwrap_or_default();
             let personal_endpoint = if is_student {
-                "/_serverFn/85d2195b8f64b023a2c16160b65ef47139dea3a839096c4b75b3888cda49f16c"
+                candidates
+                    .digital_student_schedule
+                    .unwrap_or_else(|| DEFAULT_DIGITAL_STUDENT.to_string())
             } else {
-                "/_serverFn/9fd2616a2ecddd56f79974f2111a13f2c9d89265cb6832c8c9e7ae2939e56f4a"
+                candidates
+                    .digital_teacher_schedule
+                    .unwrap_or_else(|| DEFAULT_DIGITAL_TEACHER.to_string())
             };
+            let group_endpoint = candidates
+                .digital_group_schedule
+                .unwrap_or_else(|| DEFAULT_DIGITAL_GROUP.to_string());
+            let logout_endpoint = candidates
+                .digital_logout
+                .unwrap_or_else(|| DEFAULT_DIGITAL_LOGOUT.to_string());
             *this.endpoints.write().await = Endpoints {
-                personal: personal_endpoint.into(),
-                group:
-                    "/_serverFn/d418f54f8d5ba132bd168b1792cc8f0efbff634c7861f6aa66890cb9f7103c05"
-                        .into(),
+                personal: personal_endpoint,
+                group: group_endpoint,
+                logout: logout_endpoint,
                 branch: this.branch.clone(),
                 ..Default::default()
             };
@@ -473,9 +584,13 @@ impl Workspace {
         if self.session_id.is_empty() || self.base.host_str() != Some("ktk.education-system.ru") {
             return Ok(());
         }
-        let revoke_url = self
-            .base
-            .join("/_serverFn/2e1ca1208f926608597adee62b6f7a786ebfd7e01b208963ecb9bee6e800f9f5")?;
+        let e = self.endpoints.read().await.clone();
+        let logout_path = if !e.logout.is_empty() {
+            &e.logout
+        } else {
+            DEFAULT_DIGITAL_LOGOUT
+        };
+        let revoke_url = self.base.join(logout_path)?;
         let body = json!({
             "t": {
                 "t": 10, "i": 0, "p": {
@@ -785,6 +900,7 @@ impl Workspace {
             branch,
             file_hash: candidates.files.first().cloned().unwrap_or_default(),
             homework_hash: candidates.homework.first().cloned().unwrap_or_default(),
+            logout: String::new(),
         };
         Ok(())
     }
@@ -809,107 +925,139 @@ impl Workspace {
                     .format("%Y-%m-%d")
                     .to_string()
             };
-            let (path, payload_json) = if is_group {
-                (
-                    "/_serverFn/d418f54f8d5ba132bd168b1792cc8f0efbff634c7861f6aa66890cb9f7103c05",
-                    json!({
-                        "t": {
-                            "t": 10, "i": 0, "p": {
-                                "k": ["data"],
-                                "v": [{
-                                    "t": 10, "i": 1, "p": {
-                                        "k": ["groupId", "weekStart"],
-                                        "v": [
-                                            { "t": 1, "s": group.to_string() },
-                                            { "t": 1, "s": date_str }
-                                        ]
-                                    },
-                                    "o": 0
-                                }]
-                            },
-                            "o": 0
+            for attempt in 0..2 {
+                let e = self.endpoints.read().await.clone();
+                let (path, payload_json) = if is_group {
+                    (
+                        if !e.group.is_empty() {
+                            e.group.clone()
+                        } else {
+                            DEFAULT_DIGITAL_GROUP.to_string()
                         },
-                        "f": 127,
-                        "m": []
-                    }),
-                )
-            } else if is_teacher {
-                (
-                    "/_serverFn/9fd2616a2ecddd56f79974f2111a13f2c9d89265cb6832c8c9e7ae2939e56f4a",
-                    json!({
-                        "t": {
-                            "t": 10, "i": 0, "p": {
-                                "k": ["data"],
-                                "v": [{
-                                    "t": 10, "i": 1, "p": {
-                                        "k": ["weekStart"],
-                                        "v": [{ "t": 1, "s": date_str }]
-                                    },
-                                    "o": 0
-                                }]
+                        json!({
+                            "t": {
+                                "t": 10, "i": 0, "p": {
+                                    "k": ["data"],
+                                    "v": [{
+                                        "t": 10, "i": 1, "p": {
+                                            "k": ["groupId", "weekStart"],
+                                            "v": [
+                                                { "t": 1, "s": group.to_string() },
+                                                { "t": 1, "s": date_str }
+                                            ]
+                                        },
+                                        "o": 0
+                                    }]
+                                },
+                                "o": 0
                             },
-                            "o": 0
+                            "f": 127,
+                            "m": []
+                        }),
+                    )
+                } else if is_teacher {
+                    (
+                        if !e.personal.is_empty() {
+                            e.personal.clone()
+                        } else {
+                            DEFAULT_DIGITAL_TEACHER.to_string()
                         },
-                        "f": 127,
-                        "m": []
-                    }),
-                )
-            } else {
-                (
-                    "/_serverFn/85d2195b8f64b023a2c16160b65ef47139dea3a839096c4b75b3888cda49f16c",
-                    json!({
-                        "t": {
-                            "t": 10, "i": 0, "p": {
-                                "k": ["data"],
-                                "v": [{
-                                    "t": 10, "i": 1, "p": {
-                                        "k": ["weekStart"],
-                                        "v": [{ "t": 1, "s": date_str }]
-                                    },
-                                    "o": 0
-                                }]
+                        json!({
+                            "t": {
+                                "t": 10, "i": 0, "p": {
+                                    "k": ["data"],
+                                    "v": [{
+                                        "t": 10, "i": 1, "p": {
+                                            "k": ["weekStart"],
+                                            "v": [{ "t": 1, "s": date_str }]
+                                        },
+                                        "o": 0
+                                    }]
+                                },
+                                "o": 0
                             },
-                            "o": 0
+                            "f": 127,
+                            "m": []
+                        }),
+                    )
+                } else {
+                    (
+                        if !e.personal.is_empty() {
+                            e.personal.clone()
+                        } else {
+                            DEFAULT_DIGITAL_STUDENT.to_string()
                         },
-                        "f": 127,
-                        "m": []
-                    }),
-                )
-            };
-            let permit = self.permits.acquire().await?;
-            let payload_str = serde_json::to_string(&payload_json)?;
-            let mut url = self.base.join(path)?;
-            url.query_pairs_mut().append_pair("payload", &payload_str);
-            let response = self
-                .http
-                .get(url)
-                .header("Origin", self.base.origin().ascii_serialization())
-                .header("Referer", self.base.as_str())
-                .header("Sec-Fetch-Site", "same-origin")
-                .header("Sec-Fetch-Mode", "cors")
-                .header("Sec-Fetch-Dest", "empty")
-                .header("x-tsr-serverfn", "true")
-                .header("x-application-storage-mode", "ordinary")
-                .header(
-                    "accept",
-                    "application/x-tss-framed, application/x-ndjson, application/json",
-                )
-                .send()
-                .await
-                .map_err(|e| e.without_url())?;
-            ensure_status(&response)?;
-            let body = read_body(response, JSON_LIMIT).await?;
-            drop(permit);
-            let raw: Value = serde_json::from_slice(&body)?;
-            let (days, refs) = parse_digital_schedule(&raw)?;
-            {
-                let mut guard = self.digital_refs.write().await;
-                guard.halls.extend(refs.halls);
-                guard.presets.extend(refs.presets);
-                guard.types.extend(refs.types);
-                guard.absence.extend(refs.absence);
+                        json!({
+                            "t": {
+                                "t": 10, "i": 0, "p": {
+                                    "k": ["data"],
+                                    "v": [{
+                                        "t": 10, "i": 1, "p": {
+                                            "k": ["weekStart"],
+                                            "v": [{ "t": 1, "s": date_str }]
+                                        },
+                                        "o": 0
+                                    }]
+                                },
+                                "o": 0
+                            },
+                            "f": 127,
+                            "m": []
+                        }),
+                    )
+                };
+                let permit = self.permits.acquire().await?;
+                let payload_str = serde_json::to_string(&payload_json)?;
+                let mut url = self.base.join(&path)?;
+                url.query_pairs_mut().append_pair("payload", &payload_str);
+                let response = self
+                    .http
+                    .get(url)
+                    .header("Origin", self.base.origin().ascii_serialization())
+                    .header("Referer", self.base.as_str())
+                    .header("Sec-Fetch-Site", "same-origin")
+                    .header("Sec-Fetch-Mode", "cors")
+                    .header("Sec-Fetch-Dest", "empty")
+                    .header("x-tsr-serverfn", "true")
+                    .header("x-application-storage-mode", "ordinary")
+                    .header(
+                        "accept",
+                        "application/x-tss-framed, application/x-ndjson, application/json",
+                    )
+                    .send()
+                    .await
+                    .map_err(|e| e.without_url())?;
+                if (response.status().as_u16() == 404 || response.status().as_u16() == 410)
+                    && attempt == 0
+                {
+                    drop(permit);
+                    if let Ok(c) = self.discover(true).await {
+                        let mut ep = self.endpoints.write().await;
+                        if is_group && let Some(g) = c.digital_group_schedule {
+                            ep.group = g;
+                        } else if is_teacher && let Some(t) = c.digital_teacher_schedule {
+                            ep.personal = t;
+                        } else if let Some(s) = c.digital_student_schedule {
+                            ep.personal = s;
+                        }
+                    }
+                    continue;
+                }
+                ensure_status(&response)?;
+                let body = read_body(response, JSON_LIMIT).await?;
+                drop(permit);
+                let raw: Value = serde_json::from_slice(&body)?;
+                let (days, refs) = parse_digital_schedule(&raw)?;
+                {
+                    let mut guard = self.digital_refs.write().await;
+                    guard.halls.extend(refs.halls);
+                    guard.presets.extend(refs.presets);
+                    guard.types.extend(refs.types);
+                    guard.absence.extend(refs.absence);
+                }
+                return Ok(days);
             }
-            return Ok(days);
+            bail!("digital schedule request failed after retry")
         }
         self.refresh(self.group.max(group), week, false).await?;
         for attempt in 0..2 {
