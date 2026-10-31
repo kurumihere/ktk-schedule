@@ -273,3 +273,29 @@ async fn offline_schedule_keeps_hall_names_and_lesson_times() {
         assert!(text.contains("08:00 - 09:30"), "{text}");
     }
 }
+
+#[tokio::test]
+async fn non_school_day_on_saturday_keeps_current_week() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    let a = app.sign_in(42, "user", "password").await.unwrap();
+    let saturday = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+    let view = View::own(&a, saturday);
+    app.show(&a, &view, None, false).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let msg: Value = requests
+        .iter()
+        .find(|r| r.url.path().to_lowercase().ends_with("/sendmessage"))
+        .unwrap()
+        .body_json()
+        .unwrap();
+    let text = msg["text"].as_str().unwrap();
+    assert!(text.contains("31.10.2026"), "{text}");
+    let saved_view = app.storage.view(42, 100).await.unwrap().unwrap();
+    assert_eq!(
+        saved_view.week(),
+        NaiveDate::from_ymd_opt(2026, 10, 26).unwrap()
+    );
+    assert_eq!(saved_view.date, saturday);
+}

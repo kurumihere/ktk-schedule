@@ -606,7 +606,18 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
                 .iter()
                 .position(|d| day_date(&d.date, app.config.timezone) == Some(view.date));
             let next = if data == "schedule:prev" {
-                current.and_then(|i| i.checked_sub(1))
+                current.and_then(|i| i.checked_sub(1)).or_else(|| {
+                    if let Some(first) = loaded
+                        .days
+                        .first()
+                        .and_then(|d| day_date(&d.date, app.config.timezone))
+                        && view.date > first
+                    {
+                        Some(loaded.days.len().saturating_sub(1))
+                    } else {
+                        None
+                    }
+                })
             } else {
                 current.map(|i| i + 1).or(Some(0))
             };
@@ -670,7 +681,8 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
     else {
         return Ok(());
     };
-    let subjects = visible_subjects(day, view, !a.teacher_hash.is_empty());
+    let is_personal = view.scope(a) == "personal";
+    let subjects = visible_subjects_scoped(day, view, !a.teacher_hash.is_empty(), is_personal);
     let assets = session
         .assets(&subjects, !a.teacher_hash.is_empty(), false)
         .await?;

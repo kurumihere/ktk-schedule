@@ -1,6 +1,6 @@
 use crate::{app::App, model::*, render, storage::Account};
 use anyhow::{Result, anyhow};
-use chrono::{Days, NaiveDate};
+use chrono::{Datelike, Days, NaiveDate};
 use chrono_tz::Tz;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -990,12 +990,9 @@ pub async fn show_vk(
 
     let (view, loaded) = if view.screen == Screen::Schedule
         && view.date == now.date_naive()
+        && view.date.weekday() == chrono::Weekday::Sun
         && view.week() == week_start(view.date)
-        && !loaded.days.is_empty()
-        && !loaded.days.iter().any(|d| {
-            day_date(&d.date, app.config.timezone) == Some(view.date)
-                && !non_school_day(d, view, teacher)
-        }) {
+    {
         let mut next_view = view.clone();
         next_view.week_start = shift(view.week(), 7)?;
         if let Ok(next) = app.load(account, &next_view, false).await

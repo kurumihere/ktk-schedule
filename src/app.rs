@@ -8,7 +8,7 @@ use crate::{
     workspace::{self, Workspace},
 };
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::Tz;
 use futures::{StreamExt, stream};
 use moka::future::Cache;
@@ -453,18 +453,19 @@ impl App {
     ) -> Result<()> {
         let loaded = self.load(account, view, refresh).await?;
         if view.date == self.now().date_naive()
+            && view.date.weekday() == chrono::Weekday::Sun
             && view.week() == week_start(view.date)
-            && !loaded.days.is_empty()
-            && !loaded.days.iter().any(|d| {
-                day_date(&d.date, self.config.timezone) == Some(view.date)
-                    && !non_school_day(d, view, !account.teacher_hash.is_empty())
-            })
         {
             let mut next_view = view.clone();
             next_view.week_start = telegram::shift(view.week(), 7)?;
             if let Ok(next) = self.load(account, &next_view, false).await
                 && !next.days.is_empty()
             {
+                if let Some(first_day) = next.days.first()
+                    && let Some(d) = day_date(&first_day.date, self.config.timezone)
+                {
+                    next_view.select_date(d);
+                }
                 return self
                     .show_loaded(account, &next_view, message, &next, false, "")
                     .await;
@@ -484,15 +485,16 @@ impl App {
     ) -> Result<(String, usize)> {
         let now = self.now();
         let teacher = !account.teacher_hash.is_empty();
+        let is_personal = view.scope(account) == "personal";
         let selected = loaded
             .days
             .iter()
             .find(|day| day_date(&day.date, self.config.timezone) == Some(view.date));
         let mut file_count = 0;
         let text = match selected {
-            Some(day) if !non_school_day(day, view, teacher) => {
+            Some(day) if !non_school_day_scoped(day, view, teacher, is_personal) => {
                 let (refs, assets) = if let Some(session) = loaded.session.as_ref() {
-                    let subjects = visible_subjects(day, view, teacher);
+                    let subjects = visible_subjects_scoped(day, view, teacher, is_personal);
                     let (refs, assets) = tokio::join!(
                         session.references(),
                         session.assets(&subjects, teacher, refresh)
@@ -514,14 +516,14 @@ impl App {
                     (refs, Assets::default())
                 };
                 if !teacher {
-                    for s in visible_subjects(day, view, teacher) {
+                    for s in visible_subjects_scoped(day, view, teacher, is_personal) {
                         file_count += s.extra_data.homework.files.len();
                         if assets.submissions.contains_key(&s.extra_data.sheet) {
                             file_count += 1;
                         }
                     }
                 }
-                render::schedule(day, view, &refs, &assets, teacher, now)
+                render::schedule(day, view, &refs, &assets, teacher, is_personal, now)
             }
             _ if loaded.days.is_empty() => "На этой неделе нет пар.".into(),
             _ => format!(
@@ -619,9 +621,10 @@ impl App {
         let view = View::own(&account, today);
         let loaded = self.load(&account, &view, false).await?;
         let user = PlatformUser::from_storage_id(id);
+        let is_personal = view.scope(&account) == "personal";
         if loaded.days.iter().any(|day| {
             day_date(&day.date, self.config.timezone) == Some(today)
-                && !non_school_day(day, &view, !account.teacher_hash.is_empty())
+                && !non_school_day_scoped(day, &view, !account.teacher_hash.is_empty(), is_personal)
         }) {
             match user {
                 PlatformUser::Telegram(_) => {

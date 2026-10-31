@@ -938,21 +938,40 @@ pub fn parse_date(raw: &str, today: NaiveDate) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(&format!("{raw}.{}", today.year()), "%d.%m.%Y").map_err(Into::into)
 }
 
-pub fn visible_subjects<'a>(day: &'a ScheduleDay, view: &View, teacher: bool) -> Vec<&'a Subject> {
+pub fn visible_subjects_scoped<'a>(
+    day: &'a ScheduleDay,
+    view: &View,
+    teacher: bool,
+    is_personal: bool,
+) -> Vec<&'a Subject> {
     day.subjects
         .iter()
         .filter(|s| {
             teacher
+                || is_personal
                 || view.show_all
                 || personal_subgroup(&s.subgroup).is_none_or(|sub| sub == view.subgroup)
         })
         .collect()
 }
 
-pub fn non_school_day(day: &ScheduleDay, view: &View, teacher: bool) -> bool {
-    visible_subjects(day, view, teacher)
+pub fn visible_subjects<'a>(day: &'a ScheduleDay, view: &View, teacher: bool) -> Vec<&'a Subject> {
+    visible_subjects_scoped(day, view, teacher, false)
+}
+
+pub fn non_school_day_scoped(
+    day: &ScheduleDay,
+    view: &View,
+    teacher: bool,
+    is_personal: bool,
+) -> bool {
+    visible_subjects_scoped(day, view, teacher, is_personal)
         .iter()
         .all(|s| s.extended_data.pair_type == 9 || s.extra_data.lecture_type == 9)
+}
+
+pub fn non_school_day(day: &ScheduleDay, view: &View, teacher: bool) -> bool {
+    non_school_day_scoped(day, view, teacher, false)
 }
 
 pub const VK_ID_OFFSET: i64 = 1_000_000_000_000_000_000;

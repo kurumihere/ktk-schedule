@@ -230,6 +230,7 @@ fn digital_environment_schedule_and_seroval_decoding_are_supported() {
         &refs,
         &Assets::default(),
         false,
+        false,
         TZ.with_ymd_and_hms(2026, 10, 26, 8, 0, 0).unwrap(),
     );
     assert!(rendered.contains("СГ.02 Ин. язык в ПД"));
@@ -279,6 +280,24 @@ fn filtering_keeps_common_lessons_and_avoids_copying_subjects() {
     assert_eq!(visible[1].discipline, "Left");
     view.show_all = true;
     assert_eq!(visible_subjects(&day, &view, false).len(), 3);
+}
+
+#[test]
+fn personal_scope_does_not_filter_out_personal_schedule_subjects() {
+    let day: ScheduleDay = serde_json::from_value(json!({
+        "Subjects": [
+            {"Discipline": "English", "Subgroup": "1-я подгруппа", "Pair": 2},
+            {"Discipline": "Lab", "Subgroup": "2-я подгруппа", "Pair": 4}
+        ]
+    }))
+    .unwrap();
+    let view = View::own(&account(), date());
+    let group_subjects = visible_subjects_scoped(&day, &view, false, false);
+    assert_eq!(group_subjects.len(), 1);
+    assert_eq!(group_subjects[0].discipline, "English");
+
+    let personal_subjects = visible_subjects_scoped(&day, &view, false, true);
+    assert_eq!(personal_subjects.len(), 2);
 }
 
 #[test]
@@ -338,6 +357,7 @@ fn zero_based_calls_match_website_times_and_durations() {
         &View::own(&account(), now.date_naive()),
         &refs,
         &Assets::default(),
+        false,
         false,
         now,
     );
@@ -405,6 +425,7 @@ fn student_schedule_text_is_preserved() {
         &refs,
         &assets,
         false,
+        false,
         TZ.with_ymd_and_hms(2026, 9, 1, 8, 30, 0).unwrap(),
     );
     assert_eq!(
@@ -426,6 +447,7 @@ fn teacher_output_omits_personal_grades_and_homework_submissions() {
         &ReferenceData::default(),
         &assets,
         true,
+        false,
         TZ.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
     );
     assert_eq!(
@@ -651,9 +673,9 @@ fn building_short_code_is_only_shown_when_multiple_buildings_exist_in_the_day() 
         &refs,
         &Assets::default(),
         false,
+        false,
         TZ.with_ymd_and_hms(2026, 10, 27, 8, 0, 0).unwrap(),
     );
-    // Only one physical building ("IT"), so "(IT)" must NOT be shown.
     // Only one physical building ("IT"), so "(IT)" must NOT be shown.
     assert!(text_single.contains("🏫 Кабинет: Дистанционно"));
     assert!(text_single.contains("🏫 Кабинет: 15"));
@@ -665,6 +687,7 @@ fn building_short_code_is_only_shown_when_multiple_buildings_exist_in_the_day() 
         &View::own(&account(), date()),
         &refs,
         &Assets::default(),
+        false,
         false,
         TZ.with_ymd_and_hms(2026, 10, 26, 8, 0, 0).unwrap(),
     );

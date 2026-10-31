@@ -200,6 +200,7 @@ pub fn schedule(
     refs: &ReferenceData,
     assets: &Assets,
     teacher: bool,
+    is_personal: bool,
     now: DateTime<Tz>,
 ) -> String {
     let date = day_date(&day.date, now.timezone());
@@ -208,7 +209,7 @@ pub fn schedule(
         .map(|d| d.format("%d.%m.%Y").to_string())
         .unwrap_or_else(|| day.date.clone());
     let mut out = format!("📅 {}{label}\n\n", if today { "Сегодня - " } else { "" });
-    let subjects = visible_subjects(day, view, teacher);
+    let subjects = visible_subjects_scoped(day, view, teacher, is_personal);
     let last = subjects
         .iter()
         .map(|s| s.pair)
