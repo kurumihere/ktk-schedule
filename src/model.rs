@@ -423,8 +423,11 @@ impl ReferenceData {
     }
 }
 
+/// A signed-in site session, persisted (sealed) so it survives restarts. The site extends
+/// it by 30 days on every use; there is no expiry to track on our side.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SessionRecord {
+    /// Cookie header for the site: `name=value` pairs joined by `; `.
     pub cookie: String,
     pub session_id: String,
     pub group: i64,
@@ -433,29 +436,15 @@ pub struct SessionRecord {
     pub branch: String,
     pub personal_endpoint: String,
     pub group_endpoint: String,
-    /// RFC 3339 expiry reported at sign-in; absent in records saved by older versions.
-    #[serde(default)]
-    pub expires_at: Option<String>,
 }
 
-impl SessionRecord {
-    /// A session that is about to expire is not worth restoring: sign in again instead.
-    pub fn expired(&self, now: DateTime<chrono::Utc>) -> bool {
-        self.expires_at
-            .as_deref()
-            .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
-            .is_some_and(|at| at <= now + chrono::Duration::minutes(5))
-    }
-}
-
-/// The cookie authenticates the account: keep it out of logs.
+/// The cookies authenticate the account: keep them out of logs.
 impl std::fmt::Debug for SessionRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionRecord")
             .field("cookie", &"<redacted>")
             .field("group", &self.group)
             .field("teacher", &!self.teacher.is_empty())
-            .field("expires_at", &self.expires_at)
             .finish_non_exhaustive()
     }
 }

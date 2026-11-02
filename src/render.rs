@@ -37,6 +37,11 @@ pub const VK_UNAUTHORIZED: &str = "\
 👉 https://t.me/ktk45_schedule_bot
 
 🔒 Безопасность: в Telegram бот автоматически удаляет сообщение с паролем из чата сразу при входе, а также там доступно скачивание файлов к парам и удобное меню без ограничений ВК.";
+/// The site ended the account's session; with no stored password only the user can sign in.
+pub const LOGIN_AGAIN: &str = "Сессия на сайте закончилась. Войди заново:\n/login логин пароль";
+pub const VK_LOGIN_AGAIN: &str =
+    "Сессия на сайте закончилась. Войдите заново:\n/login логин пароль";
+
 const MONTHS: [&str; 12] = [
     "января",
     "февраля",

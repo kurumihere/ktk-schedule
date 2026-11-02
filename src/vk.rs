@@ -1103,6 +1103,14 @@ pub async fn present_vk(
     Ok(())
 }
 
+async fn report(vk: &VkClient, peer: i64, error: &anyhow::Error) {
+    if crate::app::login_required(error) {
+        let _ = vk.send_message(peer, render::VK_LOGIN_AGAIN, None).await;
+    } else {
+        tracing::warn!(error = %error, "vk handler failed");
+    }
+}
+
 pub async fn run(app: Arc<App>, vk: Arc<VkClient>, cancel: CancellationToken) {
     tracing::info!(group_id = vk.group_id(), "vk bot loop started");
     let mut server_info: Option<LongPollServer> = None;
@@ -1170,9 +1178,10 @@ pub async fn run(app: Arc<App>, vk: Arc<VkClient>, cancel: CancellationToken) {
                             {
                                 let (app, vk) = (app.clone(), vk.clone());
                                 tokio::spawn(async move {
+                                    let peer = msg_obj.message.peer_id;
                                     if let Err(e) = handle_message(&app, &vk, msg_obj.message).await
                                     {
-                                        tracing::warn!(error = %e, "error handling vk message");
+                                        report(&vk, peer, &e).await;
                                     }
                                 });
                             }
@@ -1183,8 +1192,9 @@ pub async fn run(app: Arc<App>, vk: Arc<VkClient>, cancel: CancellationToken) {
                             {
                                 let (app, vk) = (app.clone(), vk.clone());
                                 tokio::spawn(async move {
+                                    let peer = event_obj.peer_id;
                                     if let Err(e) = handle_callback(&app, &vk, event_obj).await {
-                                        tracing::warn!(error = %e, "error handling vk callback");
+                                        report(&vk, peer, &e).await;
                                     }
                                 });
                             }

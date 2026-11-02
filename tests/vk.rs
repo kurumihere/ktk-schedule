@@ -159,7 +159,6 @@ async fn vk_bot_start_and_login_flow() {
     // Verify account saved with VK platform ID
     let storage_id = PlatformUser::Vk(42).to_storage_id();
     let account = app.storage.account(storage_id).await.unwrap().unwrap();
-    assert_eq!(account.login, "1000204");
     assert_eq!(account.group_id, 269);
 
     let requests = vk_mock.received_requests().await.unwrap();

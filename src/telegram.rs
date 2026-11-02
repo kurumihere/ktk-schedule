@@ -1,4 +1,9 @@
-use crate::{app::App, model::*, render, storage::Account};
+use crate::{
+    app::{App, login_required},
+    model::*,
+    render,
+    storage::Account,
+};
 use anyhow::{Result, anyhow};
 use chrono::NaiveDate;
 use chrono_tz::Tz;
@@ -188,6 +193,7 @@ pub async fn handle_message(app: Arc<App>, message: Message) -> Result<()> {
         result = tokio::time::timeout(std::time::Duration::from_secs(120), work) => {
             match result {
                 Ok(Ok(())) => (),
+                Ok(Err(error)) if login_required(&error) => { let _ = app.send(id, render::LOGIN_AGAIN).await; }
                 Ok(Err(error)) => { tracing::error!(chat_id=id, error=%error, "message handler failed"); let _ = app.send(id, "Не удалось выполнить запрос. Попробуй позже.").await; }
                 Err(_) => { let _ = app.send(id, "Расписание загружается слишком долго. Попробуй ещё раз.").await; }
             }
@@ -302,10 +308,16 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
                 }
             };
             app.pending_groups.invalidate(&id).await;
-            if let Err(error) = app.show(&a, &View::own(&a, date), None, false).await {
-                tracing::warn!(chat_id=id,error=%error,"schedule failed");
-                app.send(id, "Не удалось получить расписание. Попробуй позже.")
-                    .await?;
+            match app.show(&a, &View::own(&a, date), None, false).await {
+                Ok(()) => (),
+                Err(error) if login_required(&error) => {
+                    app.send(id, render::LOGIN_AGAIN).await?;
+                }
+                Err(error) => {
+                    tracing::warn!(chat_id=id,error=%error,"schedule failed");
+                    app.send(id, "Не удалось получить расписание. Попробуй позже.")
+                        .await?;
+                }
             }
         }
         "/notify_on" | "/notify_off" => {
@@ -482,6 +494,7 @@ pub async fn handle_callback(app: Arc<App>, query: CallbackQuery) -> Result<()> 
         result = tokio::time::timeout(std::time::Duration::from_secs(120), work) => {
             match result {
                 Ok(Ok(())) => (),
+                Ok(Err(error)) if login_required(&error) => { let _ = app.send(id, render::LOGIN_AGAIN).await; }
                 Ok(Err(error)) => { tracing::warn!(chat_id=id,error=%error,"callback failed"); let _ = app.send(id, "Не удалось получить расписание. Попробуй позже.").await; }
                 Err(_) => { let _ = app.send(id, "Расписание загружается слишком долго. Попробуй ещё раз.").await; }
             }

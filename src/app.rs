@@ -29,17 +29,48 @@ use tokio_util::sync::CancellationToken;
 pub type Telegram = Throttle<Bot>;
 type ScheduleKey = (i64, String, NaiveDate);
 
+/// The site no longer accepts the account's session. No password is stored, so only the
+/// user can sign in again; handlers answer with `render::LOGIN_AGAIN`.
+#[derive(Debug)]
+pub struct LoginRequired;
+
+impl std::fmt::Display for LoginRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the site session ended; the user has to sign in again")
+    }
+}
+
+impl std::error::Error for LoginRequired {}
+
+pub fn login_required(error: &anyhow::Error) -> bool {
+    error.is::<LoginRequired>()
+}
+
+/// moka hands every waiting caller one shared error; keep the variants handlers branch on.
+fn unshare(error: Arc<anyhow::Error>) -> anyhow::Error {
+    if error.is::<LoginRequired>() {
+        LoginRequired.into()
+    } else if let Some(api) = error.downcast_ref::<workspace::ApiError>() {
+        workspace::ApiError(api.0).into()
+    } else {
+        anyhow!("{error:#}")
+    }
+}
+
 pub struct Session {
     pub client: Workspace,
     refs: Cache<(), Arc<ReferenceData>>,
     docs: Cache<i64, Document>,
     submissions: Cache<i64, i64>,
+    /// Cookie header last written to `sessions`, so rotated cookies get persisted.
+    saved_cookies: std::sync::Mutex<String>,
 }
 
 impl Session {
-    fn new(client: Workspace) -> Self {
+    fn new(client: Workspace, saved_cookies: String) -> Self {
         Self {
             client,
+            saved_cookies: std::sync::Mutex::new(saved_cookies),
             refs: Cache::builder()
                 .max_capacity(1)
                 .time_to_live(Duration::from_secs(3600))
@@ -263,78 +294,203 @@ impl App {
         .await?
     }
 
+    /// Sign in with the user's credentials. The password reaches the site once and is
+    /// dropped here: only the resulting site session is stored.
     pub async fn sign_in(&self, id: i64, login: &str, password: &str) -> Result<Account> {
-        if let Ok(Some(old_record)) = self.storage.session(id).await {
-            if let Ok(old_client) = Workspace::from_session(&self.site, &old_record) {
-                let _ = old_client.revoke_session().await;
-            }
-            let _ = self.storage.delete_session(id).await;
-        }
         let client = self.authenticate(login, password).await?;
-        let session_record = client.session_record().await;
-        let subgroup = personal_subgroup(&client.subgroup)
-            .unwrap_or(&self.config.default_subgroup)
-            .to_owned();
+        let group_id = if client.group > 0 {
+            client.group
+        } else {
+            self.config.default_group
+        };
+        let mut this_week = None;
+        let subgroup = match personal_subgroup(&client.subgroup) {
+            Some(subgroup) => subgroup,
+            None if !client.teacher.is_empty() => &self.config.default_subgroup,
+            None => {
+                let (detected, week) = self.detect_subgroup(&client, group_id).await;
+                this_week = week;
+                detected.unwrap_or(&self.config.default_subgroup)
+            }
+        }
+        .to_owned();
         let account = Account {
             id,
-            login: login.into(),
-            password: password.into(),
-            group_id: if client.group > 0 {
-                client.group
-            } else {
-                self.config.default_group
-            },
+            group_id,
             personal_subgroup: subgroup.clone(),
             subgroup,
             show_all: false,
             teacher_hash: client.teacher.clone(),
             notify: false,
         };
-        self.storage.save_account(&account).await?;
-        if let Err(e) = self.storage.save_session(id, &session_record).await {
-            tracing::warn!(error=%e, "could not save session cache");
-        }
+        let record = client.session_record().await;
+        self.end_previous_session(id, &record.session_id).await;
+        self.storage.save_account(&account, &record).await?;
         self.schedules
             .invalidate_entries_if(move |(user, _, _), _| *user == id)
             .map_err(|e| anyhow!("{e}"))?;
         self.pending_groups.invalidate(&id).await;
+        // Detection already fetched this week's personal timetable: let /schedule reuse it.
+        if let Some((week, days)) = this_week
+            && account.teacher_hash.is_empty()
+            && days.iter().any(|d| !d.subjects.is_empty())
+        {
+            if let Err(error) = self
+                .storage
+                .save_schedule(id, "personal", &week.start.to_string(), &days)
+                .await
+            {
+                tracing::warn!(user_id = id, error = %error, "could not persist schedule cache");
+            }
+            self.schedules
+                .insert((id, "personal".into(), week.start), Arc::new(days))
+                .await;
+        }
         self.sessions
-            .insert(id, Arc::new(Session::new(client)))
+            .insert(id, Arc::new(Session::new(client, record.cookie)))
             .await;
         Ok(account)
     }
 
+    /// The digital site does not name a student's subgroup, but a personal timetable lists
+    /// only the student's own split lessons. Looks at this week, then at the next one.
+    async fn detect_subgroup(
+        &self,
+        client: &Workspace,
+        group: i64,
+    ) -> (Option<&'static str>, Option<(Week, Vec<ScheduleDay>)>) {
+        let today = self.now().date_naive();
+        let mut this_week = None;
+        let detect = async {
+            for offset in [0, 7] {
+                let week = shift(today, offset).and_then(|d| Week::new(d, self.config.timezone));
+                let Ok(week) = week else { break };
+                let Ok(days) = client.schedule(group, week, "personal").await else {
+                    break;
+                };
+                let detected = infer_subgroup(&days);
+                if offset == 0 {
+                    this_week = Some((week, days));
+                }
+                if detected.is_some() {
+                    return detected;
+                }
+            }
+            None
+        };
+        let detected = tokio::time::timeout(Duration::from_secs(20), detect)
+            .await
+            .ok()
+            .flatten();
+        (detected, this_week)
+    }
+
+    /// End the account's previous site session, unless the site handed out the same one.
+    async fn end_previous_session(&self, id: i64, current: &str) {
+        let previous = match self.sessions.get(&id).await {
+            Some(session) => Some(session.client.session_record().await),
+            None => self.storage.session(id).await.ok().flatten(),
+        };
+        if let Some(previous) =
+            previous.filter(|p| !p.session_id.is_empty() && p.session_id != current)
+        {
+            self.revoke(id, &previous).await;
+        }
+    }
+
+    async fn revoke(&self, id: i64, record: &SessionRecord) {
+        let revoke = async {
+            Workspace::from_session(&self.site, record)?
+                .revoke_session()
+                .await
+        };
+        match tokio::time::timeout(Duration::from_secs(15), revoke).await {
+            Ok(Ok(())) => (),
+            Ok(Err(error)) => {
+                tracing::warn!(user_id = id, error = %error, "could not end the site session")
+            }
+            Err(_) => tracing::warn!(user_id = id, "ending the site session timed out"),
+        }
+    }
+
+    /// The account's site session: in memory, or restored from the encrypted store. With no
+    /// password to sign in again, a missing or unreadable session means `LoginRequired`.
     pub async fn session(&self, account: &Account) -> Result<Arc<Session>> {
         self.sessions
             .try_get_with(account.id, async {
-                if let Ok(Some(record)) = self.storage.session(account.id).await
-                    && !record.cookie.is_empty()
-                    && let Ok(client) = Workspace::from_session(&self.site, &record)
-                {
-                    return Ok::<_, anyhow::Error>(Arc::new(Session::new(client)));
+                let record = match self.storage.session(account.id).await {
+                    Ok(Some(record)) => record,
+                    Ok(None) => return Err(LoginRequired.into()),
+                    Err(error) => {
+                        tracing::warn!(user_id = account.id, error = %error, "saved session is unreadable");
+                        return Err(LoginRequired.into());
+                    }
+                };
+                let client = Workspace::from_session(&self.site, &record).map_err(|error| {
+                    tracing::warn!(user_id = account.id, error = %error, "saved session is unusable");
+                    LoginRequired
+                })?;
+                if let Ok(Some(refs)) = self.storage.references(account.id).await {
+                    client.seed_references(refs).await;
                 }
-                let client = self.authenticate(&account.login, &account.password).await?;
-                if let Err(e) = self
-                    .storage
-                    .save_session(account.id, &client.session_record().await)
-                    .await
-                {
-                    tracing::warn!(error=%e, "could not save session cache");
-                }
-                Ok::<_, anyhow::Error>(Arc::new(Session::new(client)))
+                Ok::<_, anyhow::Error>(Arc::new(Session::new(client, record.cookie)))
             })
             .await
-            .map_err(|e| anyhow!("{e}"))
+            .map_err(unshare)
+    }
+
+    async fn forget_session(&self, id: i64) {
+        tracing::info!(
+            user_id = id,
+            "site session ended; the user has to sign in again"
+        );
+        self.sessions.invalidate(&id).await;
+        if let Err(error) = self.storage.delete_session(id).await {
+            tracing::warn!(user_id = id, error = %error, "could not delete the ended session");
+        }
+    }
+
+    /// A refused group timetable may be a permission matter; only a refused personal
+    /// timetable proves that the session itself is gone.
+    async fn session_alive(&self, account: &Account, session: &Session) -> bool {
+        let Ok(week) = Week::new(self.now().date_naive(), self.config.timezone) else {
+            return true;
+        };
+        let scope = if account.teacher_hash.is_empty() {
+            "personal".to_owned()
+        } else {
+            format!("teacher:{}", account.teacher_hash)
+        };
+        let check = session.client.schedule(account.group_id, week, &scope);
+        !matches!(
+            tokio::time::timeout(Duration::from_secs(20), check).await,
+            Ok(Err(error)) if workspace::unauthorized(&error)
+        )
+    }
+
+    /// Cookies the site rotated must survive a restart, or the restored session is stale.
+    async fn persist_cookies(&self, id: i64, session: &Session) {
+        let current = session.client.cookie_header();
+        if *session.saved_cookies.lock().unwrap() == current {
+            return;
+        }
+        let record = session.client.session_record().await;
+        match self.storage.save_session(id, &record).await {
+            Ok(()) => *session.saved_cookies.lock().unwrap() = current,
+            Err(error) => {
+                tracing::warn!(user_id = id, error = %error, "could not persist rotated cookies")
+            }
+        }
     }
 
     // The caller holds lock_user, as for login, callbacks and notifications.
     pub async fn sign_out(&self, id: i64) -> Result<()> {
-        if let Some(session) = self.sessions.get(&id).await {
-            let _ = session.client.revoke_session().await;
-        } else if let Ok(Some(record)) = self.storage.session(id).await
-            && let Ok(client) = Workspace::from_session(&self.site, &record)
-        {
-            let _ = client.revoke_session().await;
+        let record = match self.sessions.get(&id).await {
+            Some(session) => Some(session.client.session_record().await),
+            None => self.storage.session(id).await.ok().flatten(),
+        };
+        if let Some(record) = record {
+            self.revoke(id, &record).await;
         }
         self.storage.delete_account(id).await?;
         self.sessions.invalidate(&id).await;
@@ -359,68 +515,61 @@ impl App {
             });
         }
         let week = view.week().to_string();
-        let mut failure = anyhow!("workspace unavailable");
-        for attempt in 0..2 {
-            let session = match self.session(account).await {
-                Ok(s) => s,
-                Err(e) => {
-                    failure = e;
-                    break;
-                }
-            };
-            let client = &session.client;
-            let result = self
-                .schedules
-                .try_get_with(key.clone(), async {
-                    let group = view.group.unwrap_or(account.group_id);
-                    let requested = Week::new(view.week(), self.config.timezone)?;
-                    let permit = self
-                        .circuit
-                        .acquire()
-                        .ok_or_else(|| anyhow!("workspace is temporarily unavailable"))?;
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(45),
-                        client.schedule(group, requested, &scope),
-                    )
+        let session = self.session(account).await?;
+        let client = &session.client;
+        let result = self
+            .schedules
+            .try_get_with(key.clone(), async {
+                let group = view.group.unwrap_or(account.group_id);
+                let requested = Week::new(view.week(), self.config.timezone)?;
+                let permit = self
+                    .circuit
+                    .acquire()
+                    .ok_or_else(|| anyhow!("workspace is temporarily unavailable"))?;
+                let result = tokio::time::timeout(
+                    Duration::from_secs(45),
+                    client.schedule(group, requested, &scope),
+                )
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|r| r);
+                // A refused session is the user's matter, not a sign of an unhealthy site.
+                permit
+                    .finish(result.is_ok() || result.as_ref().is_err_and(workspace::unauthorized));
+                let days = result?;
+                if let Err(error) = self
+                    .storage
+                    .save_schedule(account.id, &scope, &week, &days)
                     .await
-                    .map_err(anyhow::Error::from)
-                    .and_then(|r| r);
-                    permit.finish(
-                        result.is_ok() || result.as_ref().is_err_and(workspace::unauthorized),
-                    );
-                    let days = result?;
-                    if let Err(error) = self
-                        .storage
-                        .save_schedule(account.id, &scope, &week, &days)
-                        .await
-                    {
-                        tracing::warn!(error=%error, "could not persist schedule cache");
-                    }
-                    Ok::<_, anyhow::Error>(Arc::new(days))
-                })
-                .await;
-            match result {
-                Ok(days) => {
-                    // Empty timetables can be published moments later; don't freeze them for five minutes.
-                    if days.iter().all(|d| d.subjects.is_empty()) {
-                        self.schedules.invalidate(&key).await;
-                    }
-                    return Ok(Loaded {
-                        days,
-                        session: Some(session),
-                        stale: false,
-                    });
+                {
+                    tracing::warn!(error=%error, "could not persist schedule cache");
                 }
-                Err(e) if attempt == 0 && workspace::unauthorized(e.as_ref()) => {
-                    self.sessions.invalidate(&account.id).await;
-                    let _ = self.storage.delete_session(account.id).await;
+                Ok::<_, anyhow::Error>(Arc::new(days))
+            })
+            .await;
+        let failure = match result {
+            Ok(days) => {
+                // Empty timetables can be published moments later; don't freeze them for five minutes.
+                if days.iter().all(|d| d.subjects.is_empty()) {
+                    self.schedules.invalidate(&key).await;
                 }
-                Err(e) => {
-                    failure = anyhow!("{e}");
-                    break;
-                }
+                self.persist_cookies(account.id, &session).await;
+                return Ok(Loaded {
+                    days,
+                    session: Some(session),
+                    stale: false,
+                });
             }
-        }
+            Err(error) if workspace::unauthorized(&error) => {
+                let personal = scope == "personal" || scope.starts_with("teacher:");
+                if personal || !self.session_alive(account, &session).await {
+                    self.forget_session(account.id).await;
+                    return Err(LoginRequired.into());
+                }
+                unshare(error)
+            }
+            Err(error) => unshare(error),
+        };
         if let Some(days) = self.storage.schedule(account.id, &scope, &week).await? {
             tracing::warn!(
                 account_id = account.id,
@@ -608,7 +757,8 @@ impl App {
         ))
     }
 
-    async fn notify_one(&self, id: i64, today: NaiveDate) -> Result<()> {
+    /// Morning message for one subscriber; `background` fans this out.
+    pub async fn notify_one(&self, id: i64, today: NaiveDate) -> Result<()> {
         let _guard = self.lock_user(id).await;
         let Some(account) = self.storage.account(id).await? else {
             return Ok(());
@@ -617,8 +767,26 @@ impl App {
             return Ok(());
         }
         let view = View::own(&account, today);
-        let loaded = self.load(&account, &view, false).await?;
         let user = PlatformUser::from_storage_id(id);
+        let loaded = match self.load(&account, &view, false).await {
+            Ok(loaded) => loaded,
+            // The session ended overnight: say so once. Without a session the account
+            // leaves the notification list, so this message is never repeated.
+            Err(error) if login_required(&error) => {
+                match user {
+                    PlatformUser::Telegram(_) => {
+                        self.send(id, render::LOGIN_AGAIN).await?;
+                    }
+                    PlatformUser::Vk(peer) => {
+                        if let Some(vk) = self.vk.as_ref() {
+                            vk.send_message(peer, render::VK_LOGIN_AGAIN, None).await?;
+                        }
+                    }
+                }
+                return self.storage.mark_notified(id, &today.to_string()).await;
+            }
+            Err(error) => return Err(error),
+        };
         let is_personal = view.scope(&account) == "personal";
         if loaded.days.iter().any(|day| {
             day_date(&day.date, self.config.timezone) == Some(today)

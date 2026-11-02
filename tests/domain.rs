@@ -14,8 +14,6 @@ use std::collections::HashMap;
 fn account() -> Account {
     Account {
         id: 42,
-        login: "test".into(),
-        password: "secret".into(),
         group_id: 269,
         personal_subgroup: "left".into(),
         subgroup: "left".into(),
@@ -323,7 +321,7 @@ fn subgroups_are_inferred_only_from_conclusive_timetables() {
 }
 
 #[test]
-fn weeks_know_their_academic_year_and_sessions_their_expiry() {
+fn weeks_know_their_academic_year_and_sessions_hide_their_cookies() {
     let tz = TZ;
     // The week of September 1st 2026 starts on August 31st but belongs to 2026/27.
     assert_eq!(
@@ -338,17 +336,10 @@ fn weeks_know_their_academic_year_and_sessions_their_expiry() {
             .academic_year(),
         2025
     );
-    let now = chrono::Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap();
-    let mut record = SessionRecord {
-        expires_at: Some("2026-09-01T00:04:00.000Z".into()),
+    let record = SessionRecord {
+        cookie: "education_system_auth_session=SECRET".into(),
         ..Default::default()
     };
-    assert!(record.expired(now), "expiring within five minutes");
-    record.expires_at = Some("2026-09-02T00:00:00Z".into());
-    assert!(!record.expired(now));
-    record.expires_at = Some("not a date".into());
-    assert!(!record.expired(now));
-    record.cookie = "education_system_auth_session=SECRET".into();
     assert!(
         !format!("{record:?}").contains("SECRET"),
         "cookies are never logged"

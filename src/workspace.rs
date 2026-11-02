@@ -26,8 +26,6 @@ const JSON_LIMIT: usize = 4 * 1024 * 1024;
 pub const FILE_LIMIT: usize = 50 * 1024 * 1024;
 const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
 const DIGITAL_HOST: &str = "ktk.education-system.ru";
-/// The digital platform session cookie: the only cookie persisted across restarts.
-const AUTH_COOKIE: &str = "education_system_auth_session";
 /// Discovery caps: pages may reference many scripts, the bot fetches a bounded number.
 const MAX_SCRIPTS: usize = 64;
 const MAX_CANDIDATES: usize = 128;
@@ -409,8 +407,6 @@ pub struct Workspace {
     pub teacher: String,
     branch: String,
     pub session_id: String,
-    pub session_cookie: String,
-    pub expires_at: Option<String>,
 }
 
 impl Workspace {
@@ -431,8 +427,6 @@ impl Workspace {
             teacher: String::new(),
             branch: String::new(),
             session_id: String::new(),
-            session_cookie: String::new(),
-            expires_at: None,
         })
     }
 
@@ -466,13 +460,11 @@ impl Workspace {
                 .unwrap_or("unauthorized");
             bail!("{message}");
         }
-        self.session_cookie = self.auth_cookie().unwrap_or_default();
         self.session_id = result["session"]["id"]
             .as_str()
             .or_else(|| user["session"]["id"].as_str())
             .unwrap_or_default()
             .into();
-        self.expires_at = result["session"]["expiresAt"].as_str().map(Into::into);
         if user["isStudent"].as_bool().unwrap_or(true) {
             self.group = positive_id(&user["group"]).unwrap_or(0);
             // The account does not name a subgroup; App infers it from the timetable.
@@ -544,35 +536,44 @@ impl Workspace {
         Ok(())
     }
 
-    /// Rebuild a signed-in session from the encrypted cache instead of signing in again.
+    /// Rebuild a signed-in session from its sealed record; nothing is sent to the site.
     pub fn from_session(site: &Site, record: &SessionRecord) -> Result<Self> {
         let jar = Arc::new(Jar::default());
-        jar.add_cookie_str(&record.cookie, &site.base);
+        for pair in record
+            .cookie
+            .split(';')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            jar.add_cookie_str(pair, &site.base);
+        }
         ensure!(
             jar.cookies(&site.base).is_some(),
-            "saved session cookie is unusable"
+            "saved session has no usable cookie"
         );
         let mut this = Self::new(site, jar)?;
-        *this.endpoints.get_mut() = Endpoints {
-            personal: record.personal_endpoint.clone(),
-            group: record.group_endpoint.clone(),
-            branch: record.branch.clone(),
-            ..Default::default()
-        };
+        // Digital function ids are worth keeping; legacy endpoints are probed per session
+        // (halls, presets, file hashes), so a restored legacy session discovers them again.
+        if site.platform == Platform::Digital {
+            *this.endpoints.get_mut() = Endpoints {
+                personal: record.personal_endpoint.clone(),
+                group: record.group_endpoint.clone(),
+                branch: record.branch.clone(),
+                ..Default::default()
+            };
+        }
         this.subgroup = record.subgroup.clone();
         this.group = record.group;
         this.teacher = record.teacher.clone();
         this.branch = record.branch.clone();
         this.session_id = record.session_id.clone();
-        this.session_cookie = record.cookie.clone();
-        this.expires_at = record.expires_at.clone();
         Ok(this)
     }
 
     pub async fn session_record(&self) -> SessionRecord {
         let ep = self.endpoints.read().await;
         SessionRecord {
-            cookie: self.session_cookie.clone(),
+            cookie: self.cookie_header(),
             session_id: self.session_id.clone(),
             group: self.group,
             subgroup: self.subgroup.clone(),
@@ -580,8 +581,15 @@ impl Workspace {
             branch: self.branch.clone(),
             personal_endpoint: ep.personal.clone(),
             group_endpoint: ep.group.clone(),
-            expires_at: self.expires_at.clone(),
         }
+    }
+
+    /// Every cookie the site set for this session, as a `Cookie` header value.
+    pub fn cookie_header(&self) -> String {
+        self.jar
+            .cookies(&self.base)
+            .and_then(|header| header.to_str().ok().map(Into::into))
+            .unwrap_or_default()
     }
 
     pub fn platform(&self) -> Platform {
@@ -597,20 +605,6 @@ impl Workspace {
             .call(ServerFn::Logout, &[("id", &self.session_id)])
             .await?;
         server_error(&result).map_or(Ok(()), Err)
-    }
-
-    fn auth_cookie(&self) -> Option<String> {
-        let header = self.jar.cookies(&self.base)?;
-        header
-            .to_str()
-            .ok()?
-            .split(';')
-            .map(str::trim)
-            .find(|pair| {
-                pair.split_once('=')
-                    .is_some_and(|(name, _)| name == AUTH_COOKIE)
-            })
-            .map(Into::into)
     }
 
     /// Crawl the page and its scripts once per deployment; `force` skips a cached crawl unless
