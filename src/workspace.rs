@@ -1,21 +1,36 @@
 use crate::model::*;
 use anyhow::{Context, Result, bail, ensure};
-use chrono::Datelike;
 use futures::{StreamExt, stream};
 use regex::Regex;
-use reqwest::{Client as HttpClient, Response, StatusCode, Url};
+use reqwest::{
+    Client as HttpClient, Method, RequestBuilder, Response, StatusCode, Url,
+    cookie::{CookieStore, Jar},
+    header::{HeaderMap, HeaderValue},
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{
     collections::{HashSet, VecDeque},
-    sync::{Arc, LazyLock},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Mutex, RwLock, Semaphore, SemaphorePermit},
+};
 
 const JSON_LIMIT: usize = 4 * 1024 * 1024;
 pub const FILE_LIMIT: usize = 50 * 1024 * 1024;
+const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
+const DIGITAL_HOST: &str = "ktk.education-system.ru";
+/// The digital platform session cookie: the only cookie persisted across restarts.
+const AUTH_COOKIE: &str = "education_system_auth_session";
+/// Discovery caps: pages may reference many scripts, the bot fetches a bounded number.
+const MAX_SCRIPTS: usize = 64;
+const MAX_CANDIDATES: usize = 128;
 
 #[derive(Debug)]
 pub struct ApiError(pub Option<StatusCode>);
@@ -39,6 +54,75 @@ fn rediscover(error: &anyhow::Error) -> bool {
         .is_some_and(|e| matches!(e.0, None | Some(StatusCode::NOT_FOUND | StatusCode::GONE)))
 }
 
+/// Server functions report failures in-band (HTTP 200 with `{ error: { appError: { code } } }`).
+/// An expired or revoked session must look like a 401, or the bot keeps serving stale data.
+fn server_error(value: &Value) -> Option<anyhow::Error> {
+    let error = value.get("error").filter(|e| !e.is_null())?;
+    let details = error.get("appError").unwrap_or(error);
+    let field = |key: &str| {
+        details
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let (code, kind) = (field("code"), field("type"));
+    let auth = ["auth", "session", "unauthor", "forbidden", "login"]
+        .iter()
+        .any(|word| code.contains(word) || kind.contains(word));
+    Some(ApiError(auth.then_some(StatusCode::UNAUTHORIZED)).into())
+}
+
+/// Which website the bot talks to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Platform {
+    /// workspace.ktk-45.ru: REST endpoints found in the JavaScript bundles.
+    Legacy,
+    /// ktk.education-system.ru: TanStack Start server functions speaking seroval.
+    Digital,
+}
+
+impl Platform {
+    pub fn detect(base: &Url) -> Self {
+        if base.host_str() == Some(DIGITAL_HOST) {
+            Self::Digital
+        } else {
+            Self::Legacy
+        }
+    }
+}
+
+/// What every session of one bot shares: the site, the request budget and what discovery
+/// learned about the site's current deployment.
+#[derive(Clone)]
+pub struct Site {
+    pub base: Url,
+    pub platform: Platform,
+    pub device: String,
+    pub permits: Arc<Semaphore>,
+    discovery: Arc<Mutex<Discovery>>,
+}
+
+impl Site {
+    pub fn new(base: Url, device: impl Into<String>, permits: Arc<Semaphore>) -> Self {
+        Self {
+            platform: Platform::detect(&base),
+            base,
+            device: device.into(),
+            permits,
+            discovery: Arc::default(),
+        }
+    }
+}
+
+/// Discovery results are the same for every account, so one crawl serves all sessions.
+/// `generation` lets a session that saw a stale address force exactly one fresh crawl.
+#[derive(Default)]
+struct Discovery {
+    generation: u64,
+    candidates: Option<Candidates>,
+}
+
 #[derive(Clone, Default)]
 struct Endpoints {
     personal: String,
@@ -50,7 +134,56 @@ struct Endpoints {
     file_hash: String,
     homework_hash: String,
     branch: String,
+    sign_in: String,
     logout: String,
+}
+
+/// Digital platform server functions the bot calls.
+#[derive(Clone, Copy, Debug)]
+enum ServerFn {
+    SignIn,
+    Student,
+    Teacher,
+    Group,
+    Logout,
+}
+
+impl ServerFn {
+    fn method(self) -> Method {
+        match self {
+            Self::SignIn | Self::Logout => Method::POST,
+            Self::Student | Self::Teacher | Self::Group => Method::GET,
+        }
+    }
+
+    fn default_path(self) -> &'static str {
+        match self {
+            Self::SignIn => DEFAULT_DIGITAL_SIGN_IN,
+            Self::Student => DEFAULT_DIGITAL_STUDENT,
+            Self::Teacher => DEFAULT_DIGITAL_TEACHER,
+            Self::Group => DEFAULT_DIGITAL_GROUP,
+            Self::Logout => DEFAULT_DIGITAL_LOGOUT,
+        }
+    }
+
+    fn discovered(self, candidates: &Candidates) -> Option<&String> {
+        match self {
+            Self::SignIn => candidates.digital_sign_in.as_ref(),
+            Self::Student => candidates.digital_student_schedule.as_ref(),
+            Self::Teacher => candidates.digital_teacher_schedule.as_ref(),
+            Self::Group => candidates.digital_group_schedule.as_ref(),
+            Self::Logout => candidates.digital_logout.as_ref(),
+        }
+    }
+
+    fn slot(self, endpoints: &mut Endpoints) -> &mut String {
+        match self {
+            Self::SignIn => &mut endpoints.sign_in,
+            Self::Student | Self::Teacher => &mut endpoints.personal,
+            Self::Group => &mut endpoints.group,
+            Self::Logout => &mut endpoints.logout,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -111,7 +244,7 @@ static BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 fn unique(list: &mut Vec<String>, value: &str) {
-    if !value.is_empty() && !list.iter().any(|s| s == value) {
+    if !value.is_empty() && list.len() < MAX_CANDIDATES && !list.iter().any(|s| s == value) {
         list.push(value.into());
     }
 }
@@ -135,9 +268,7 @@ impl Candidates {
                 "id" | "open" | "can-view" | "user-file" | "homework" => continue,
                 _ => &mut self.schedules,
             };
-            if dest.len() < 128 {
-                unique(dest, p);
-            }
+            unique(dest, p);
         }
         for (pattern, dest) in [
             (&*FILE, &mut self.files),
@@ -216,264 +347,179 @@ pub fn script_urls(text: &str, base: &Url) -> Vec<Url> {
         .chain(SCRIPTS.captures_iter(text))
         .filter_map(|c| base.join(&c[1]).ok())
         .filter(|u| u.origin() == base.origin() && seen.insert(u.clone()))
-        .take(128)
+        .take(MAX_CANDIDATES)
         .collect()
+}
+
+/// Browser-like client confined to the site: same-origin redirects only, never with userinfo.
+fn http_client(base: &Url, jar: Arc<Jar>) -> Result<HttpClient> {
+    let origin = base.origin();
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        ("sec-fetch-site", "same-origin"),
+        ("sec-fetch-mode", "cors"),
+        ("sec-fetch-dest", "empty"),
+    ] {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+    Ok(HttpClient::builder()
+        .cookie_provider(jar)
+        .default_headers(headers)
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("too many redirects")
+            } else if attempt.url().origin() != origin {
+                attempt.error("cross-origin redirect is forbidden")
+            } else if !attempt.url().username().is_empty() || attempt.url().password().is_some() {
+                attempt.error("redirect credentials are forbidden")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()?)
+}
+
+/// Stable per account and device, so the site recognizes the bot as one device.
+fn device_fingerprint(login: &str, device: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::new()
+        .chain_update(login.as_bytes())
+        .chain_update(device.as_bytes())
+        .finalize();
+    hash[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub struct Workspace {
     http: HttpClient,
+    jar: Arc<Jar>,
     base: Url,
+    platform: Platform,
     permits: Arc<Semaphore>,
+    discovery: Arc<Mutex<Discovery>>,
+    discovery_seen: AtomicU64,
     endpoints: RwLock<Endpoints>,
-    candidates: Mutex<Option<Candidates>>,
     refresh_lock: Mutex<()>,
-    digital_refs: RwLock<ReferenceData>,
+    /// Halls, presets and pair types accumulated from every digital week this session read.
+    digital_refs: RwLock<Arc<ReferenceData>>,
     pub subgroup: String,
     pub group: i64,
     pub teacher: String,
     branch: String,
     pub session_id: String,
     pub session_cookie: String,
+    pub expires_at: Option<String>,
 }
 
 impl Workspace {
-    pub async fn login(
-        base: Url,
-        device: &str,
-        login: &str,
-        password: &str,
-        permits: Arc<Semaphore>,
-    ) -> Result<Self> {
-        let origin = base.origin();
-        let mut default_headers = reqwest::header::HeaderMap::new();
-        default_headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-site"),
-            reqwest::header::HeaderValue::from_static("same-origin"),
-        );
-        default_headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-mode"),
-            reqwest::header::HeaderValue::from_static("cors"),
-        );
-        default_headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-dest"),
-            reqwest::header::HeaderValue::from_static("empty"),
-        );
-        let http = HttpClient::builder()
-            .cookie_store(true)
-            .default_headers(default_headers)
-            .user_agent(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-            )
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() >= 5 {
-                    attempt.error("too many redirects")
-                } else if attempt.url().origin() != origin {
-                    attempt.error("cross-origin redirect is forbidden")
-                } else if !attempt.url().username().is_empty() || attempt.url().password().is_some()
-                {
-                    attempt.error("redirect credentials are forbidden")
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .build()?;
-        let mut this = Self {
-            http,
-            base,
-            permits,
-            endpoints: RwLock::new(Endpoints::default()),
-            candidates: Mutex::new(None),
+    fn new(site: &Site, jar: Arc<Jar>) -> Result<Self> {
+        Ok(Self {
+            http: http_client(&site.base, jar.clone())?,
+            jar,
+            base: site.base.clone(),
+            platform: site.platform,
+            permits: site.permits.clone(),
+            discovery: site.discovery.clone(),
+            discovery_seen: AtomicU64::new(0),
+            endpoints: RwLock::default(),
             refresh_lock: Mutex::new(()),
-            digital_refs: RwLock::new(ReferenceData::default()),
+            digital_refs: RwLock::default(),
             subgroup: String::new(),
             group: 0,
             teacher: String::new(),
             branch: String::new(),
             session_id: String::new(),
             session_cookie: String::new(),
-        };
-        if this.base.host_str() == Some("ktk.education-system.ru") {
-            let permit = this.permits.acquire().await?;
-            let login = login.trim();
-            let password = password.trim();
-            let welcome_referer = this.base.join("/welcome?redirect=%2F")?;
-            let fingerprint = {
-                use sha2::{Digest, Sha256};
-                use std::fmt::Write;
-                let mut hasher = Sha256::new();
-                hasher.update(login.as_bytes());
-                hasher.update(device.as_bytes());
-                let hash = hasher.finalize();
-                let mut fp = String::with_capacity(32);
-                for b in &hash[..16] {
-                    let _ = write!(&mut fp, "{:02x}", b);
-                }
-                fp
-            };
-            let sign_in_body = json!({
-                "t": {
-                    "t": 10, "i": 0, "p": {
-                        "k": ["data"],
-                        "v": [{
-                            "t": 10, "i": 1, "p": {
-                                "k": ["collegeId", "password", "fingerprint"],
-                                "v": [
-                                    { "t": 1, "s": login },
-                                    { "t": 1, "s": password },
-                                    { "t": 1, "s": fingerprint }
-                                ]
-                            },
-                            "o": 0
-                        }]
-                    },
-                    "o": 0
-                },
-                "f": 127,
-                "m": []
-            });
-            let mut sign_in_path = DEFAULT_DIGITAL_SIGN_IN.to_string();
-            let mut response = this
-                .http
-                .post(this.base.join(&sign_in_path)?)
-                .header("Origin", this.base.origin().ascii_serialization())
-                .header("Referer", welcome_referer.as_str())
-                .header("Sec-Fetch-Site", "same-origin")
-                .header("Sec-Fetch-Mode", "cors")
-                .header("Sec-Fetch-Dest", "empty")
-                .header("x-tsr-serverfn", "true")
-                .header("x-application-storage-mode", "ordinary")
-                .header(
-                    "accept",
-                    "application/x-tss-framed, application/x-ndjson, application/json",
-                )
-                .json(&sign_in_body)
-                .send()
-                .await
-                .map_err(|e| e.without_url())?;
-            if (response.status().as_u16() == 404 || response.status().as_u16() == 410)
-                && let Ok(c) = this.discover(true).await
-                && let Some(new_sign_in) = c.digital_sign_in
-            {
-                sign_in_path = new_sign_in;
-                response = this
-                    .http
-                    .post(this.base.join(&sign_in_path)?)
-                    .header("Origin", this.base.origin().ascii_serialization())
-                    .header("Referer", welcome_referer.as_str())
-                    .header("Sec-Fetch-Site", "same-origin")
-                    .header("Sec-Fetch-Mode", "cors")
-                    .header("Sec-Fetch-Dest", "empty")
-                    .header("x-tsr-serverfn", "true")
-                    .header("x-application-storage-mode", "ordinary")
-                    .header(
-                        "accept",
-                        "application/x-tss-framed, application/x-ndjson, application/json",
-                    )
-                    .json(&sign_in_body)
-                    .send()
-                    .await
-                    .map_err(|e| e.without_url())?;
-            }
-            ensure_status(&response)?;
-            let mut session_cookie = String::new();
-            for h in response.headers().get_all(reqwest::header::SET_COOKIE) {
-                if let Ok(s) = h.to_str()
-                    && s.starts_with("education_system_auth_session=")
-                {
-                    if let Some((cookie_pair, _)) = s.split_once(';') {
-                        session_cookie = cookie_pair.trim().to_string();
-                    } else {
-                        session_cookie = s.trim().to_string();
-                    }
-                    break;
-                }
-            }
-            this.session_cookie = session_cookie;
-            let body = read_body(response, JSON_LIMIT).await?;
-            drop(permit);
-            let raw: Value = serde_json::from_slice(&body)?;
-            let decoded = decode_seroval(&raw);
-            if decoded["user"].is_null() {
-                let msg = decoded["error"]["appError"]["message"]
-                    .as_str()
-                    .or_else(|| decoded["error"]["message"].as_str())
-                    .unwrap_or("unauthorized");
-                bail!("{msg}");
-            }
-            this.session_id = decoded["session"]["id"]
-                .as_str()
-                .or_else(|| decoded["user"]["session"]["id"].as_str())
-                .unwrap_or_default()
-                .to_string();
-            let user = &decoded["user"];
-            let is_student = user["isStudent"].as_bool().unwrap_or(true);
-            if is_student {
-                this.group = user["group"]
-                    .as_str()
-                    .and_then(|g| g.parse().ok())
-                    .unwrap_or(0);
-                this.subgroup = "left".into();
-            } else {
-                this.teacher = user["hash"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("teacher")
-                    .into();
-                this.group = 0;
-            }
-            this.branch = user["branch"].as_str().unwrap_or_default().into();
-            let candidates = this.discover(false).await.unwrap_or_default();
-            let personal_endpoint = if is_student {
-                candidates
-                    .digital_student_schedule
-                    .unwrap_or_else(|| DEFAULT_DIGITAL_STUDENT.to_string())
-            } else {
-                candidates
-                    .digital_teacher_schedule
-                    .unwrap_or_else(|| DEFAULT_DIGITAL_TEACHER.to_string())
-            };
-            let group_endpoint = candidates
-                .digital_group_schedule
-                .unwrap_or_else(|| DEFAULT_DIGITAL_GROUP.to_string());
-            let logout_endpoint = candidates
-                .digital_logout
-                .unwrap_or_else(|| DEFAULT_DIGITAL_LOGOUT.to_string());
-            *this.endpoints.write().await = Endpoints {
-                personal: personal_endpoint,
-                group: group_endpoint,
-                logout: logout_endpoint,
-                branch: this.branch.clone(),
-                ..Default::default()
-            };
-            return Ok(this);
+            expires_at: None,
+        })
+    }
+
+    pub async fn login(site: &Site, login: &str, password: &str) -> Result<Self> {
+        let mut this = Self::new(site, Arc::new(Jar::default()))?;
+        match site.platform {
+            Platform::Digital => this.digital_login(&site.device, login, password).await?,
+            Platform::Legacy => this.legacy_login(&site.device, login, password).await?,
         }
-        let permit = this.permits.acquire().await?;
-        let response = this
-            .http
-            .post(this.base.join("/sign-in")?)
-            .header("Origin", this.base.origin().ascii_serialization())
-            .header("Referer", this.base.as_str())
-            .json(&json!({"Login": login, "Password": password, "Device": device}))
-            .send()
-            .await
-            .map_err(|e| e.without_url())?;
+        Ok(this)
+    }
+
+    async fn digital_login(&mut self, device: &str, login: &str, password: &str) -> Result<()> {
+        let (login, password) = (login.trim(), password.trim());
+        let fingerprint = device_fingerprint(login, device);
+        let result = self
+            .call(
+                ServerFn::SignIn,
+                &[
+                    ("collegeId", login),
+                    ("password", password),
+                    ("fingerprint", &fingerprint),
+                ],
+            )
+            .await?;
+        let user = &result["user"];
+        if user.is_null() {
+            let message = result["error"]["appError"]["message"]
+                .as_str()
+                .or_else(|| result["error"]["message"].as_str())
+                .unwrap_or("unauthorized");
+            bail!("{message}");
+        }
+        self.session_cookie = self.auth_cookie().unwrap_or_default();
+        self.session_id = result["session"]["id"]
+            .as_str()
+            .or_else(|| user["session"]["id"].as_str())
+            .unwrap_or_default()
+            .into();
+        self.expires_at = result["session"]["expiresAt"].as_str().map(Into::into);
+        if user["isStudent"].as_bool().unwrap_or(true) {
+            self.group = positive_id(&user["group"]).unwrap_or(0);
+            // The account does not name a subgroup; App infers it from the timetable.
+            self.subgroup = find_subgroup(user).unwrap_or_default().into();
+        } else {
+            self.teacher = user["hash"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("teacher")
+                .into();
+            self.group = 0;
+        }
+        self.branch = user["branch"].as_str().unwrap_or_default().into();
+        self.endpoints.get_mut().branch = self.branch.clone();
+        Ok(())
+    }
+
+    async fn legacy_login(&mut self, device: &str, login: &str, password: &str) -> Result<()> {
+        let url = self.base.join("/sign-in")?;
+        let credentials = json!({"Login": login, "Password": password, "Device": device});
+        let (response, permit) = self
+            .send(
+                || {
+                    self.http
+                        .post(url.clone())
+                        .header("Origin", self.base.origin().ascii_serialization())
+                        .header("Referer", self.base.as_str())
+                        .json(&credentials)
+                },
+                false,
+            )
+            .await?;
         ensure_status(&response)?;
         let body = read_body(response, JSON_LIMIT).await?;
         drop(permit);
         if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-            this.subgroup = find_subgroup(&value).unwrap_or_default().into();
-            this.group = find_group(&value).unwrap_or(0);
+            self.subgroup = find_subgroup(&value).unwrap_or_default().into();
+            self.group = find_group(&value).unwrap_or(0);
         }
-        let candidates = this.discover(false).await?;
+        let candidates = self.discover(false).await?;
         let mut info_paths = candidates.info.clone();
         for path in candidates.schedules.iter().chain(candidates.calls.iter()) {
             unique(&mut info_paths, &sibling(path, "info"));
         }
         let mut info = None;
         for path in info_paths {
-            if let Ok(value) = this.get_json::<Value>(&path, &[]).await
+            if let Ok(value) = self.get_json::<Value>(&path, &[]).await
                 && value["IsStudent"].is_boolean()
             {
                 info = Some(value);
@@ -482,88 +528,45 @@ impl Workspace {
         }
         let info = info.context("could not determine workspace account type")?;
         if let Some(group) = find_group(&info) {
-            this.group = group;
+            self.group = group;
         }
         if let Some(subgroup) = find_subgroup(&info) {
-            this.subgroup = subgroup.into();
+            self.subgroup = subgroup.into();
         }
-        this.branch = info["Branch"].as_str().unwrap_or_default().into();
+        self.branch = info["Branch"].as_str().unwrap_or_default().into();
         if info["IsStudent"] == false {
-            this.teacher = info["Hash"]
+            self.teacher = info["Hash"]
                 .as_str()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("teacher")
                 .into();
         }
-        Ok(this)
+        Ok(())
     }
 
-    pub fn from_session(
-        base: Url,
-        record: &SessionRecord,
-        permits: Arc<Semaphore>,
-    ) -> Result<Self> {
-        let origin = base.origin();
-        let mut default_headers = reqwest::header::HeaderMap::new();
-        default_headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-site"),
-            reqwest::header::HeaderValue::from_static("same-origin"),
+    /// Rebuild a signed-in session from the encrypted cache instead of signing in again.
+    pub fn from_session(site: &Site, record: &SessionRecord) -> Result<Self> {
+        let jar = Arc::new(Jar::default());
+        jar.add_cookie_str(&record.cookie, &site.base);
+        ensure!(
+            jar.cookies(&site.base).is_some(),
+            "saved session cookie is unusable"
         );
-        default_headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-mode"),
-            reqwest::header::HeaderValue::from_static("cors"),
-        );
-        default_headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-dest"),
-            reqwest::header::HeaderValue::from_static("empty"),
-        );
-        if !record.cookie.is_empty() {
-            default_headers.insert(
-                reqwest::header::COOKIE,
-                reqwest::header::HeaderValue::from_str(&record.cookie)?,
-            );
-        }
-        let http = HttpClient::builder()
-            .cookie_store(true)
-            .default_headers(default_headers)
-            .user_agent(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-            )
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() >= 5 {
-                    attempt.error("too many redirects")
-                } else if attempt.url().origin() != origin {
-                    attempt.error("cross-origin redirect is forbidden")
-                } else if !attempt.url().username().is_empty() || attempt.url().password().is_some()
-                {
-                    attempt.error("redirect credentials are forbidden")
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .build()?;
-        Ok(Self {
-            http,
-            base,
-            permits,
-            endpoints: RwLock::new(Endpoints {
-                personal: record.personal_endpoint.clone(),
-                group: record.group_endpoint.clone(),
-                branch: record.branch.clone(),
-                ..Default::default()
-            }),
-            candidates: Mutex::new(None),
-            refresh_lock: Mutex::new(()),
-            digital_refs: RwLock::new(ReferenceData::default()),
-            subgroup: record.subgroup.clone(),
-            group: record.group,
-            teacher: record.teacher.clone(),
+        let mut this = Self::new(site, jar)?;
+        *this.endpoints.get_mut() = Endpoints {
+            personal: record.personal_endpoint.clone(),
+            group: record.group_endpoint.clone(),
             branch: record.branch.clone(),
-            session_id: record.session_id.clone(),
-            session_cookie: record.cookie.clone(),
-        })
+            ..Default::default()
+        };
+        this.subgroup = record.subgroup.clone();
+        this.group = record.group;
+        this.teacher = record.teacher.clone();
+        this.branch = record.branch.clone();
+        this.session_id = record.session_id.clone();
+        this.session_cookie = record.cookie.clone();
+        this.expires_at = record.expires_at.clone();
+        Ok(this)
     }
 
     pub async fn session_record(&self) -> SessionRecord {
@@ -577,66 +580,69 @@ impl Workspace {
             branch: self.branch.clone(),
             personal_endpoint: ep.personal.clone(),
             group_endpoint: ep.group.clone(),
+            expires_at: self.expires_at.clone(),
         }
     }
 
+    pub fn platform(&self) -> Platform {
+        self.platform
+    }
+
+    /// End the session on the site, so it does not linger in the account's session list.
     pub async fn revoke_session(&self) -> Result<()> {
-        if self.session_id.is_empty() || self.base.host_str() != Some("ktk.education-system.ru") {
+        if self.platform != Platform::Digital || self.session_id.is_empty() {
             return Ok(());
         }
-        let e = self.endpoints.read().await.clone();
-        let logout_path = if !e.logout.is_empty() {
-            &e.logout
-        } else {
-            DEFAULT_DIGITAL_LOGOUT
-        };
-        let revoke_url = self.base.join(logout_path)?;
-        let body = json!({
-            "t": {
-                "t": 10, "i": 0, "p": {
-                    "k": ["data"],
-                    "v": [{
-                        "t": 10, "i": 1, "p": {
-                            "k": ["id"],
-                            "v": [{ "t": 1, "s": self.session_id }]
-                        },
-                        "o": 0
-                    }]
-                },
-                "o": 0
-            },
-            "f": 127,
-            "m": []
-        });
-        let _ = self
-            .http
-            .post(revoke_url)
-            .header("Origin", self.base.origin().ascii_serialization())
-            .header("Referer", self.base.as_str())
-            .header("Sec-Fetch-Site", "same-origin")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("x-tsr-serverfn", "true")
-            .json(&body)
-            .send()
-            .await;
-        Ok(())
+        let result = self
+            .call(ServerFn::Logout, &[("id", &self.session_id)])
+            .await?;
+        server_error(&result).map_or(Ok(()), Err)
     }
 
+    fn auth_cookie(&self) -> Option<String> {
+        let header = self.jar.cookies(&self.base)?;
+        header
+            .to_str()
+            .ok()?
+            .split(';')
+            .map(str::trim)
+            .find(|pair| {
+                pair.split_once('=')
+                    .is_some_and(|(name, _)| name == AUTH_COOKIE)
+            })
+            .map(Into::into)
+    }
+
+    /// Crawl the page and its scripts once per deployment; `force` skips a cached crawl unless
+    /// another session already refreshed it since this session last looked.
     pub async fn discover(&self, force: bool) -> Result<Candidates> {
-        let mut cache = self.candidates.lock().await;
-        if !force && let Some(c) = cache.as_ref() {
-            return Ok(c.clone());
+        let mut shared = self.discovery.lock().await;
+        let seen = self.discovery_seen.load(Ordering::Relaxed);
+        if let Some(candidates) = &shared.candidates
+            && (!force || shared.generation > seen)
+        {
+            self.discovery_seen
+                .store(shared.generation, Ordering::Relaxed);
+            return Ok(candidates.clone());
         }
+        let candidates = self.crawl().await?;
+        shared.generation += 1;
+        shared.candidates = Some(candidates.clone());
+        self.discovery_seen
+            .store(shared.generation, Ordering::Relaxed);
+        Ok(candidates)
+    }
+
+    async fn crawl(&self) -> Result<Candidates> {
         let root = self.base.join("/")?;
         let html = self.get_text(root.clone()).await?;
         let mut candidates = Candidates::default();
         candidates.add(&html);
         let mut queue: VecDeque<_> = script_urls(&html, &root).into();
         let mut seen = HashSet::new();
-        while !queue.is_empty() && seen.len() < 64 {
+        while !queue.is_empty() && seen.len() < MAX_SCRIPTS {
             let mut batch = Vec::new();
-            while batch.len() < 4 && seen.len() < 64 {
+            while batch.len() < 4 && seen.len() < MAX_SCRIPTS {
                 let Some(url) = queue.pop_front() else { break };
                 if url.origin() == self.base.origin() && seen.insert(url.clone()) {
                     batch.push(url);
@@ -661,42 +667,58 @@ impl Workspace {
                 }
             }
         }
-        *cache = Some(candidates.clone());
         Ok(candidates)
     }
 
-    async fn request(&self, url: Url, limit: usize) -> Result<Vec<u8>> {
-        for attempt in 0..3 {
+    /// Send under a request permit, retrying idempotent requests on 5xx, connection errors
+    /// and timeouts. The permit is returned so the caller reads the body under it.
+    async fn send(
+        &self,
+        request: impl Fn() -> RequestBuilder,
+        idempotent: bool,
+    ) -> Result<(Response, SemaphorePermit<'_>)> {
+        let attempts = if idempotent { 3 } else { 1 };
+        let mut attempt = 0;
+        loop {
             let permit = self.permits.acquire().await?;
-            let response = self
-                .http
-                .get(url.clone())
-                .header("Referer", self.base.as_str())
-                .header("Accept", "application/json,text/html,*/*")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .send()
-                .await;
-            let result = match response {
-                Ok(response) => {
-                    if response.status().is_server_error() && attempt < 2 {
-                        drop(response);
-                        drop(permit);
-                        tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
-                        continue;
-                    }
-                    ensure_status(&response)?;
-                    read_body(response, limit).await
-                }
-                Err(e) if (e.is_connect() || e.is_timeout()) && attempt < 2 => {
-                    drop(permit);
-                    tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
-                    continue;
-                }
-                Err(e) => Err(e.without_url().into()),
-            };
-            return result;
+            attempt += 1;
+            let retry = attempt < attempts;
+            match request().send().await {
+                Ok(response) if retry && response.status().is_server_error() => (),
+                Ok(response) => return Ok((response, permit)),
+                Err(error) if retry && (error.is_connect() || error.is_timeout()) => (),
+                Err(error) => return Err(error.without_url().into()),
+            }
+            drop(permit);
+            tokio::time::sleep(Duration::from_millis(100 << (attempt - 1))).await;
         }
-        bail!("workspace retries exhausted")
+    }
+
+    fn endpoint_url(&self, path: &str) -> Result<Url> {
+        ensure!(!path.is_empty(), "workspace endpoint unavailable");
+        let url = self.base.join(path)?;
+        ensure!(
+            url.origin() == self.base.origin(),
+            "API endpoint has a different origin"
+        );
+        Ok(url)
+    }
+
+    async fn request(&self, url: Url, limit: usize) -> Result<Vec<u8>> {
+        let (response, _permit) = self
+            .send(
+                || {
+                    self.http
+                        .get(url.clone())
+                        .header("Referer", self.base.as_str())
+                        .header("Accept", "application/json,text/html,*/*")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                },
+                true,
+            )
+            .await?;
+        ensure_status(&response)?;
+        read_body(response, limit).await
     }
 
     async fn get_text(&self, url: Url) -> Result<String> {
@@ -708,16 +730,84 @@ impl Workspace {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<T> {
-        ensure!(!path.is_empty(), "workspace endpoint unavailable");
-        let mut url = self.base.join(path)?;
-        ensure!(
-            url.origin() == self.base.origin(),
-            "API endpoint has a different origin"
-        );
+        let mut url = self.endpoint_url(path)?;
         url.query_pairs_mut()
             .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
         let bytes = self.request(url, JSON_LIMIT).await?;
         serde_json::from_slice(&bytes).map_err(|_| ApiError(None).into())
+    }
+
+    /// One server function request, framed like the website's own client does it.
+    async fn call_once(
+        &self,
+        function: ServerFn,
+        path: &str,
+        fields: &[(&str, &str)],
+    ) -> Result<Value> {
+        let url = self.endpoint_url(path)?;
+        let payload = seroval_request(fields);
+        let referer = match function {
+            ServerFn::SignIn => self.base.join("/welcome?redirect=%2F")?,
+            _ => self.base.clone(),
+        };
+        let method = function.method();
+        let (response, _permit) = self
+            .send(
+                || {
+                    let request = if method == Method::GET {
+                        let mut url = url.clone();
+                        url.query_pairs_mut()
+                            .append_pair("payload", &payload.to_string());
+                        self.http.get(url)
+                    } else {
+                        self.http.post(url.clone()).json(&payload)
+                    };
+                    request
+                        .header("Origin", self.base.origin().ascii_serialization())
+                        .header("Referer", referer.as_str())
+                        .header("x-tsr-serverfn", "true")
+                        .header("x-application-storage-mode", "ordinary")
+                        .header(
+                            "Accept",
+                            "application/x-tss-framed, application/x-ndjson, application/json",
+                        )
+                },
+                method == Method::GET,
+            )
+            .await?;
+        ensure_status(&response)?;
+        let body = read_body(response, JSON_LIMIT).await?;
+        let raw: Value = serde_json::from_slice(&body).map_err(|_| ApiError(None))?;
+        decode_seroval(&raw)
+    }
+
+    /// Call a server function; after a redeploy its id changes, so look it up once again.
+    async fn call(&self, function: ServerFn, fields: &[(&str, &str)]) -> Result<Value> {
+        let path = {
+            let mut endpoints = self.endpoints.write().await;
+            let slot = function.slot(&mut endpoints);
+            if slot.is_empty() {
+                *slot = function.default_path().into();
+            }
+            slot.clone()
+        };
+        let error = match self.call_once(function, &path, fields).await {
+            Err(error) if rediscover(&error) => error,
+            result => return result,
+        };
+        let Ok(candidates) = self.discover(true).await else {
+            return Err(error);
+        };
+        let Some(found) = function
+            .discovered(&candidates)
+            .filter(|found| **found != path)
+            .cloned()
+        else {
+            return Err(error);
+        };
+        tracing::info!(function = ?function, "server function moved; using rediscovered address");
+        *function.slot(&mut *self.endpoints.write().await) = found.clone();
+        self.call_once(function, &found, fields).await
     }
 
     async fn raw_schedule(
@@ -725,7 +815,7 @@ impl Workspace {
         path: &str,
         group: i64,
         teacher: &str,
-        week: i64,
+        week: Week,
     ) -> Result<(Vec<ScheduleDay>, bool)> {
         let mut query = vec![
             (
@@ -737,14 +827,10 @@ impl Workspace {
                 },
             ),
             ("Teacher", teacher.into()),
-            ("Week", week.to_string()),
+            ("Week", week.millis.to_string()),
         ];
         if !teacher.is_empty() {
-            let now = chrono::Utc::now();
-            query.push((
-                "Year",
-                (now.year() - i32::from(now.month() < 9)).to_string(),
-            ));
+            query.push(("Year", week.academic_year().to_string()));
         }
         let value: Value = self.get_json(path, &query).await?;
         let has_grades = has_grade_fields(&value);
@@ -752,7 +838,7 @@ impl Workspace {
         Ok((days, has_grades))
     }
 
-    pub async fn refresh(&self, group: i64, week: i64, force: bool) -> Result<()> {
+    pub async fn refresh(&self, group: i64, week: Week, force: bool) -> Result<()> {
         let _guard = self.refresh_lock.lock().await;
         if !force && !self.endpoints.read().await.personal.is_empty() {
             return Ok(());
@@ -788,7 +874,7 @@ impl Workspace {
                         }
                         if let Ok((other_days, _)) = self.raw_schedule(path, other, "", week).await
                             && other_days.iter().any(|d| !d.subjects.is_empty())
-                            && fingerprint(&other_days) != fingerprint(&days)
+                            && lesson_fingerprint(&other_days) != lesson_fingerprint(&days)
                         {
                             group_aware = true;
                             break;
@@ -838,7 +924,7 @@ impl Workspace {
                         }
                         if let Ok((other_days, _)) = self.raw_schedule(path, other, "", week).await
                             && other_days.iter().any(|d| !d.subjects.is_empty())
-                            && fingerprint(&other_days) != fingerprint(&days)
+                            && lesson_fingerprint(&other_days) != lesson_fingerprint(&days)
                         {
                             return Some((
                                 path.clone(),
@@ -900,6 +986,7 @@ impl Workspace {
             branch,
             file_hash: candidates.files.first().cloned().unwrap_or_default(),
             homework_hash: candidates.homework.first().cloned().unwrap_or_default(),
+            sign_in: String::new(),
             logout: String::new(),
         };
         Ok(())
@@ -914,151 +1001,49 @@ impl Workspace {
         None
     }
 
-    pub async fn schedule(&self, group: i64, week: i64, scope: &str) -> Result<Vec<ScheduleDay>> {
-        if self.base.host_str() == Some("ktk.education-system.ru") {
-            let is_group = scope.starts_with("group:");
-            let is_teacher = scope.starts_with("teacher:") || !self.teacher.is_empty();
-            let date_str = {
-                use chrono::DateTime;
-                let dt = DateTime::from_timestamp_millis(week).unwrap_or_else(chrono::Utc::now);
-                dt.with_timezone(&chrono_tz::Asia::Yekaterinburg)
-                    .format("%Y-%m-%d")
-                    .to_string()
-            };
-            for attempt in 0..2 {
-                let e = self.endpoints.read().await.clone();
-                let (path, payload_json) = if is_group {
-                    (
-                        if !e.group.is_empty() {
-                            e.group.clone()
-                        } else {
-                            DEFAULT_DIGITAL_GROUP.to_string()
-                        },
-                        json!({
-                            "t": {
-                                "t": 10, "i": 0, "p": {
-                                    "k": ["data"],
-                                    "v": [{
-                                        "t": 10, "i": 1, "p": {
-                                            "k": ["groupId", "weekStart"],
-                                            "v": [
-                                                { "t": 1, "s": group.to_string() },
-                                                { "t": 1, "s": date_str }
-                                            ]
-                                        },
-                                        "o": 0
-                                    }]
-                                },
-                                "o": 0
-                            },
-                            "f": 127,
-                            "m": []
-                        }),
-                    )
-                } else if is_teacher {
-                    (
-                        if !e.personal.is_empty() {
-                            e.personal.clone()
-                        } else {
-                            DEFAULT_DIGITAL_TEACHER.to_string()
-                        },
-                        json!({
-                            "t": {
-                                "t": 10, "i": 0, "p": {
-                                    "k": ["data"],
-                                    "v": [{
-                                        "t": 10, "i": 1, "p": {
-                                            "k": ["weekStart"],
-                                            "v": [{ "t": 1, "s": date_str }]
-                                        },
-                                        "o": 0
-                                    }]
-                                },
-                                "o": 0
-                            },
-                            "f": 127,
-                            "m": []
-                        }),
-                    )
-                } else {
-                    (
-                        if !e.personal.is_empty() {
-                            e.personal.clone()
-                        } else {
-                            DEFAULT_DIGITAL_STUDENT.to_string()
-                        },
-                        json!({
-                            "t": {
-                                "t": 10, "i": 0, "p": {
-                                    "k": ["data"],
-                                    "v": [{
-                                        "t": 10, "i": 1, "p": {
-                                            "k": ["weekStart"],
-                                            "v": [{ "t": 1, "s": date_str }]
-                                        },
-                                        "o": 0
-                                    }]
-                                },
-                                "o": 0
-                            },
-                            "f": 127,
-                            "m": []
-                        }),
-                    )
-                };
-                let permit = self.permits.acquire().await?;
-                let payload_str = serde_json::to_string(&payload_json)?;
-                let mut url = self.base.join(&path)?;
-                url.query_pairs_mut().append_pair("payload", &payload_str);
-                let response = self
-                    .http
-                    .get(url)
-                    .header("Origin", self.base.origin().ascii_serialization())
-                    .header("Referer", self.base.as_str())
-                    .header("Sec-Fetch-Site", "same-origin")
-                    .header("Sec-Fetch-Mode", "cors")
-                    .header("Sec-Fetch-Dest", "empty")
-                    .header("x-tsr-serverfn", "true")
-                    .header("x-application-storage-mode", "ordinary")
-                    .header(
-                        "accept",
-                        "application/x-tss-framed, application/x-ndjson, application/json",
-                    )
-                    .send()
-                    .await
-                    .map_err(|e| e.without_url())?;
-                if (response.status().as_u16() == 404 || response.status().as_u16() == 410)
-                    && attempt == 0
-                {
-                    drop(permit);
-                    if let Ok(c) = self.discover(true).await {
-                        let mut ep = self.endpoints.write().await;
-                        if is_group && let Some(g) = c.digital_group_schedule {
-                            ep.group = g;
-                        } else if is_teacher && let Some(t) = c.digital_teacher_schedule {
-                            ep.personal = t;
-                        } else if let Some(s) = c.digital_student_schedule {
-                            ep.personal = s;
-                        }
-                    }
-                    continue;
-                }
-                ensure_status(&response)?;
-                let body = read_body(response, JSON_LIMIT).await?;
-                drop(permit);
-                let raw: Value = serde_json::from_slice(&body)?;
-                let (days, refs) = parse_digital_schedule(&raw)?;
-                {
-                    let mut guard = self.digital_refs.write().await;
-                    guard.halls.extend(refs.halls);
-                    guard.presets.extend(refs.presets);
-                    guard.types.extend(refs.types);
-                    guard.absence.extend(refs.absence);
-                }
-                return Ok(days);
-            }
-            bail!("digital schedule request failed after retry")
+    pub async fn schedule(&self, group: i64, week: Week, scope: &str) -> Result<Vec<ScheduleDay>> {
+        match self.platform {
+            Platform::Digital => self.digital_schedule(group, week, scope).await,
+            Platform::Legacy => self.legacy_schedule(group, week, scope).await,
         }
+    }
+
+    async fn digital_schedule(
+        &self,
+        group: i64,
+        week: Week,
+        scope: &str,
+    ) -> Result<Vec<ScheduleDay>> {
+        let week_start = week.start.format("%Y-%m-%d").to_string();
+        let result = if scope.starts_with("group:") {
+            let group = group.to_string();
+            self.call(
+                ServerFn::Group,
+                &[("groupId", &group), ("weekStart", &week_start)],
+            )
+            .await?
+        } else {
+            let function = if scope.starts_with("teacher:") || !self.teacher.is_empty() {
+                ServerFn::Teacher
+            } else {
+                ServerFn::Student
+            };
+            self.call(function, &[("weekStart", &week_start)]).await?
+        };
+        if let Some(error) = server_error(&result) {
+            return Err(error);
+        }
+        let (days, refs) = digital_week(&result)?;
+        self.absorb_references(refs).await;
+        Ok(days)
+    }
+
+    async fn legacy_schedule(
+        &self,
+        group: i64,
+        week: Week,
+        scope: &str,
+    ) -> Result<Vec<ScheduleDay>> {
         self.refresh(self.group.max(group), week, false).await?;
         for attempt in 0..2 {
             let e = self.endpoints.read().await.clone();
@@ -1082,10 +1067,32 @@ impl Workspace {
         bail!("schedule unavailable")
     }
 
-    pub async fn references(&self) -> ReferenceData {
-        if self.base.host_str() == Some("ktk.education-system.ru") {
-            return self.digital_refs.read().await.clone();
+    /// Reference data for rendering. Digital weeks carry their own references, accumulated
+    /// in memory; the legacy site serves them from four endpoints.
+    pub async fn references(&self) -> Arc<ReferenceData> {
+        match self.platform {
+            Platform::Digital => self.digital_refs.read().await.clone(),
+            Platform::Legacy => Arc::new(self.legacy_references().await),
         }
+    }
+
+    /// Start a digital session with the last persisted references, so cached weeks keep their
+    /// hall names and lesson times even before this session fetched anything.
+    pub async fn seed_references(&self, refs: ReferenceData) {
+        if self.platform == Platform::Digital {
+            self.absorb_references(refs).await;
+        }
+    }
+
+    async fn absorb_references(&self, refs: ReferenceData) {
+        let mut current = self.digital_refs.write().await;
+        let mut merged = ReferenceData::clone(&current);
+        if merged.merge(refs) {
+            *current = Arc::new(merged);
+        }
+    }
+
+    async fn legacy_references(&self) -> ReferenceData {
         let e = self.endpoints.read().await.clone();
         let branch_query = [("Branch", e.branch.clone())];
         let (halls, calls, types, absence) = tokio::join!(
@@ -1124,9 +1131,10 @@ impl Workspace {
         suffix: &str,
         query: &[(&str, String)],
     ) -> Result<T> {
-        if self.base.host_str() == Some("ktk.education-system.ru") {
-            bail!("legacy file endpoint unavailable on digital environment");
-        }
+        ensure!(
+            self.platform == Platform::Legacy,
+            "legacy file endpoint unavailable on digital environment"
+        );
         for attempt in 0..2 {
             let e = self.endpoints.read().await.clone();
             let hash = if homework {
@@ -1164,8 +1172,9 @@ impl Workspace {
         }
         Ok(doc)
     }
+
     pub async fn submission(&self, sheet: i64) -> Result<i64> {
-        if self.base.host_str() == Some("ktk.education-system.ru") {
+        if self.platform == Platform::Digital {
             return Ok(0);
         }
         let v: Value = self
@@ -1173,6 +1182,7 @@ impl Workspace {
             .await?;
         Ok(attachment_ids(&v)?.first().copied().unwrap_or(0))
     }
+
     pub async fn download(&self, id: i64) -> Result<(tempfile::TempPath, String)> {
         let value: Value = self
             .auxiliary(false, "open", &[("ID", id.to_string())])
@@ -1188,15 +1198,17 @@ impl Workspace {
                 && url.password().is_none(),
             "file link must use the workspace origin without credentials"
         );
-        let _permit = self.permits.acquire().await?;
-        let response = self
-            .http
-            .get(url)
-            .timeout(Duration::from_secs(60))
-            .header("Referer", self.base.as_str())
-            .send()
-            .await
-            .map_err(|e| e.without_url())?;
+        let (response, _permit) = self
+            .send(
+                || {
+                    self.http
+                        .get(url.clone())
+                        .timeout(Duration::from_secs(60))
+                        .header("Referer", self.base.as_str())
+                },
+                false,
+            )
+            .await?;
         ensure_status(&response)?;
         ensure!(
             response
@@ -1266,7 +1278,7 @@ fn has_grade_fields(value: &Value) -> bool {
         _ => false,
     }
 }
-fn fingerprint(days: &[ScheduleDay]) -> Vec<(String, i64, String, String, i64, String)> {
+fn lesson_fingerprint(days: &[ScheduleDay]) -> Vec<(String, i64, String, String, i64, String)> {
     let mut result: Vec<_> = days
         .iter()
         .flat_map(|d| {

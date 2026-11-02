@@ -1,6 +1,9 @@
 //! Optional local replay. The private archive is never embedded in the binary or committed.
 use base64::Engine;
-use ktk_schedule::{model::*, workspace::Workspace};
+use ktk_schedule::{
+    model::*,
+    workspace::{Candidates, Site, Workspace},
+};
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Semaphore;
@@ -91,14 +94,15 @@ async fn replay_captured_workspace_without_contacting_college() -> anyhow::Resul
             .await;
     }
     assert!(schedules > 0 && week > 0);
-    let client = Workspace::login(
-        server.uri().parse()?,
-        "test",
-        "synthetic",
-        "synthetic",
-        Arc::new(Semaphore::new(12)),
-    )
-    .await?;
+    let site = Site::new(server.uri().parse()?, "test", Arc::new(Semaphore::new(12)));
+    let client = Workspace::login(&site, "synthetic", "synthetic").await?;
+    let week = Week {
+        start: chrono::DateTime::from_timestamp_millis(week)
+            .unwrap()
+            .with_timezone(&chrono_tz::Asia::Yekaterinburg)
+            .date_naive(),
+        millis: week,
+    };
     let candidates = client.discover(false).await?;
     assert!(!candidates.personal_schedules.is_empty());
     assert!(!candidates.group_schedules.is_empty());
@@ -106,7 +110,7 @@ async fn replay_captured_workspace_without_contacting_college() -> anyhow::Resul
     // opened them); answer those from the captured personal schedule so that
     // discovery is still verified end to end.
     if let Some(body) = schedule_body {
-        let week_param = week.to_string();
+        let week_param = week.millis.to_string();
         for endpoint in candidates
             .group_schedules
             .iter()
@@ -155,6 +159,10 @@ async fn replay_captured_digital_environment_without_contacting_college() -> any
     let archive: Value = serde_json::from_slice(&std::fs::read(std::env::var("KTK_HAR_PATH")?)?)?;
     let entries = archive["log"]["entries"].as_array().unwrap();
     let mut verified_weeks = 0;
+    let mut scripts = Candidates::default();
+    let mut script_text = String::new();
+    // Server functions the browser actually called, classified by their payload fields.
+    let (mut sign_in, mut personal, mut group) = (None, None, None);
     for entry in entries {
         let url: reqwest::Url = entry["request"]["url"].as_str().unwrap().parse()?;
         if url.host_str() != Some("ktk.education-system.ru") || entry["response"]["status"] != 200 {
@@ -169,10 +177,51 @@ async fn replay_captured_digital_environment_without_contacting_college() -> any
         } else {
             text.as_bytes().to_vec()
         };
+        if content["mimeType"]
+            .as_str()
+            .is_some_and(|m| m.contains("javascript"))
+        {
+            let text = String::from_utf8_lossy(&bytes);
+            scripts.add(&text);
+            script_text.push_str(&text);
+            continue;
+        }
+        if url.path().starts_with("/_serverFn/") {
+            let payload = url
+                .query_pairs()
+                .find(|(k, _)| k == "payload")
+                .map(|(_, v)| v.into_owned())
+                .or_else(|| {
+                    entry["request"]["postData"]["text"]
+                        .as_str()
+                        .map(Into::into)
+                });
+            if let Some(payload) = payload {
+                let request: Value = serde_json::from_str(&payload)?;
+                let data = decode_seroval(&request["t"])?;
+                let mut keys: Vec<_> = data["data"]
+                    .as_object()
+                    .map(|m| m.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
+                keys.sort_unstable();
+                let path = Some(url.path().to_owned());
+                match keys.as_slice() {
+                    ["collegeId", "fingerprint", "password"] => sign_in = path,
+                    ["weekStart"] => personal = path,
+                    ["groupId", "weekStart"] => group = path,
+                    _ => (),
+                }
+            }
+        }
         let value: Value = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        // Strings arrive escaped for JavaScript embedding (`<` as `\x3C`); none may survive decoding.
+        assert!(
+            !contains_seroval_escape(&decode_seroval(&value)?),
+            "decoded server function response still contains seroval escapes"
+        );
         if let Ok((days, refs)) = parse_digital_schedule(&value) {
             assert!(!days.is_empty(), "digital schedule parsed empty days");
             let total_subjects: usize = days.iter().map(|d| d.subjects.len()).sum();
@@ -184,6 +233,41 @@ async fn replay_captured_digital_environment_without_contacting_college() -> any
         }
     }
     assert!(verified_weeks > 0, "no digital schedule weeks found in HAR");
-    println!("Digital environment HAR replay passed: {verified_weeks} schedule weeks verified");
+    // Discovery must find exactly the functions the website itself called, whenever the
+    // bundle that defines them was captured (cached bundles are missing from a HAR).
+    let mut verified_functions = Vec::new();
+    for (name, discovered, observed) in [
+        ("sign-in", &scripts.digital_sign_in, &sign_in),
+        (
+            "personal schedule",
+            &scripts.digital_student_schedule,
+            &personal,
+        ),
+        ("group schedule", &scripts.digital_group_schedule, &group),
+    ] {
+        let Some(path) = observed else { continue };
+        if script_text.contains(path.trim_start_matches("/_serverFn/")) {
+            assert_eq!(discovered, observed, "{name} server function");
+            verified_functions.push(name);
+        }
+    }
+    println!(
+        "Digital environment HAR replay passed: {verified_weeks} schedule weeks; observed sign-in={} personal={} group={}; discovery verified for {verified_functions:?}",
+        sign_in.is_some(),
+        personal.is_some(),
+        group.is_some()
+    );
     Ok(())
+}
+
+/// `\x3C` is seroval's escape for `<`; JSON itself never produces it.
+fn contains_seroval_escape(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.contains("\\x3C"),
+        Value::Array(items) => items.iter().any(contains_seroval_escape),
+        Value::Object(map) => map.iter().any(|(k, v)| {
+            contains_seroval_escape(&Value::String(k.clone())) || contains_seroval_escape(v)
+        }),
+        _ => false,
+    }
 }

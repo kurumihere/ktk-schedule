@@ -304,7 +304,7 @@ fn lenient_day(raw: &Value) -> Option<ScheduleDay> {
     Some(day)
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Hall {
     #[serde(rename = "ID", deserialize_with = "null_default")]
@@ -338,7 +338,7 @@ impl Hall {
         }
     }
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Call {
     #[serde(deserialize_with = "null_default")]
@@ -348,7 +348,7 @@ pub struct Call {
     #[serde(deserialize_with = "null_default")]
     pub pair_number: i64,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Preset {
     #[serde(rename = "ID", deserialize_with = "null_default")]
@@ -358,7 +358,7 @@ pub struct Preset {
     #[serde(deserialize_with = "null_default")]
     pub call_set: Vec<Call>,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PairType {
     #[serde(rename = "ID", deserialize_with = "null_default")]
@@ -387,7 +387,7 @@ pub struct Document {
     pub icon: String,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ReferenceData {
     pub halls: HashMap<i64, Hall>,
     pub presets: HashMap<i64, Preset>,
@@ -395,7 +395,35 @@ pub struct ReferenceData {
     pub absence: HashMap<i64, String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+impl ReferenceData {
+    pub fn is_empty(&self) -> bool {
+        self.halls.is_empty()
+            && self.presets.is_empty()
+            && self.types.is_empty()
+            && self.absence.is_empty()
+    }
+
+    /// Add or replace entries from `other`; returns whether anything changed.
+    pub fn merge(&mut self, other: ReferenceData) -> bool {
+        fn absorb<V: PartialEq>(into: &mut HashMap<i64, V>, from: HashMap<i64, V>) -> bool {
+            let mut changed = false;
+            for (id, value) in from {
+                if into.get(&id) != Some(&value) {
+                    into.insert(id, value);
+                    changed = true;
+                }
+            }
+            changed
+        }
+        // Non-short-circuiting `|`: every map must be merged.
+        absorb(&mut self.halls, other.halls)
+            | absorb(&mut self.presets, other.presets)
+            | absorb(&mut self.types, other.types)
+            | absorb(&mut self.absence, other.absence)
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub cookie: String,
     pub session_id: String,
@@ -405,100 +433,302 @@ pub struct SessionRecord {
     pub branch: String,
     pub personal_endpoint: String,
     pub group_endpoint: String,
+    /// RFC 3339 expiry reported at sign-in; absent in records saved by older versions.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
-pub fn decode_seroval(raw: &Value) -> Value {
-    fn inner(node: &Value, map: &mut HashMap<i64, Value>) -> Value {
-        match node {
-            Value::Object(obj) => {
-                let id = obj.get("i").and_then(Value::as_i64);
-                if let Some(i) = id
-                    && let Some(cached) = map.get(&i)
-                {
-                    return cached.clone();
-                }
-                let t = obj.get("t").and_then(Value::as_i64);
-                let result = match t {
-                    Some(0 | 1) => obj.get("s").cloned().unwrap_or(Value::Null),
-                    Some(2) => match obj.get("s").and_then(Value::as_i64) {
-                        Some(2) => Value::Bool(true),
-                        Some(3) => Value::Bool(false),
-                        _ => Value::Null,
-                    },
-                    Some(3..=5) => obj.get("s").cloned().unwrap_or(Value::Null),
-                    Some(9) => {
-                        let arr = obj.get("a").and_then(Value::as_array);
-                        match arr {
-                            Some(list) => {
-                                let decoded: Vec<Value> =
-                                    list.iter().map(|item| inner(item, map)).collect();
-                                Value::Array(decoded)
-                            }
-                            None => Value::Array(Vec::new()),
-                        }
-                    }
-                    Some(10) => {
-                        let p = obj.get("p");
-                        let keys = p.and_then(|p| p.get("k")).and_then(Value::as_array);
-                        let values = p.and_then(|p| p.get("v")).and_then(Value::as_array);
-                        match (keys, values) {
-                            (Some(k_list), Some(v_list)) => {
-                                let mut out_map = serde_json::Map::with_capacity(k_list.len());
-                                for (k, v) in k_list.iter().zip(v_list.iter()) {
-                                    if let Some(key_str) = k.as_str() {
-                                        out_map.insert(key_str.to_string(), inner(v, map));
-                                    }
-                                }
-                                Value::Object(out_map)
-                            }
-                            _ => Value::Object(serde_json::Map::new()),
-                        }
-                    }
-                    Some(11) => {
-                        let p = obj.get("p");
-                        let keys = p.and_then(|p| p.get("k")).and_then(Value::as_array);
-                        match keys {
-                            Some(k_list) => {
-                                let decoded: Vec<Value> =
-                                    k_list.iter().map(|item| inner(item, map)).collect();
-                                Value::Array(decoded)
-                            }
-                            None => Value::Array(Vec::new()),
-                        }
-                    }
-                    _ => {
-                        let mut out_map = serde_json::Map::with_capacity(obj.len());
-                        for (k, v) in obj {
-                            out_map.insert(k.clone(), inner(v, map));
-                        }
-                        Value::Object(out_map)
-                    }
-                };
-                if let Some(i) = id {
-                    map.insert(i, result.clone());
-                }
-                result
-            }
-            Value::Array(arr) => Value::Array(arr.iter().map(|item| inner(item, map)).collect()),
-            primitive => primitive.clone(),
+impl SessionRecord {
+    /// A session that is about to expire is not worth restoring: sign in again instead.
+    pub fn expired(&self, now: DateTime<chrono::Utc>) -> bool {
+        self.expires_at
+            .as_deref()
+            .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| at <= now + chrono::Duration::minutes(5))
+    }
+}
+
+/// The cookie authenticates the account: keep it out of logs.
+impl std::fmt::Debug for SessionRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRecord")
+            .field("cookie", &"<redacted>")
+            .field("group", &self.group)
+            .field("teacher", &!self.teacher.is_empty())
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The week a request is about: its Monday, and the Monday 06:00 local timestamp the legacy
+/// API expects (`week_millis`). Both come from the configured `TIMEZONE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Week {
+    pub start: NaiveDate,
+    pub millis: i64,
+}
+
+impl Week {
+    pub fn new(date: NaiveDate, tz: Tz) -> Result<Self> {
+        Ok(Self {
+            start: week_start(date),
+            millis: week_millis(date, tz)?,
+        })
+    }
+
+    /// Academic year the week belongs to (the year of its September 1st).
+    pub fn academic_year(self) -> i32 {
+        academic_year_start(self.start).year()
+    }
+}
+
+/// Monday of week 1 of the academic year containing `date`; week 1 contains September 1st.
+/// Total for every `NaiveDate`, including the extremes chrono can represent.
+pub fn academic_year_start(date: NaiveDate) -> NaiveDate {
+    let start = week_start(date);
+    let first_week = |year| NaiveDate::from_ymd_opt(year, 9, 1).map(week_start);
+    first_week(start.year())
+        .filter(|first| *first <= start)
+        .or_else(|| first_week(start.year() - 1))
+        .unwrap_or(start)
+}
+
+/// A student's personal timetable lists only their own subgroup's split lessons, so one
+/// subgroup alone is conclusive; none or both prove nothing.
+pub fn infer_subgroup(days: &[ScheduleDay]) -> Option<&'static str> {
+    let mut found = None;
+    for subject in days.iter().flat_map(|d| &d.subjects) {
+        match (personal_subgroup(&subject.subgroup), found) {
+            (Some(sub), None) => found = Some(sub),
+            (Some(sub), Some(seen)) if sub != seen => return None,
+            _ => (),
         }
     }
+    found
+}
 
-    let mut map = HashMap::new();
-    let decoded = inner(raw, &mut map);
-    if let Some(res) = decoded.get("result") {
-        res.clone()
-    } else {
-        decoded
+/// References (`t: 4`) expand to copies of earlier nodes, so a few kilobytes could
+/// otherwise decode into gigabytes. Real schedule weeks stay below 20 000 nodes.
+const MAX_SEROVAL_NODES: usize = 1 << 20;
+
+/// Characters seroval escapes in every string node (`serializeString`), in the order
+/// `deserializeString` matches them.
+const SEROVAL_ESCAPES: [(&str, char); 10] = [
+    ("\\\\", '\\'),
+    ("\\\"", '"'),
+    ("\\n", '\n'),
+    ("\\r", '\r'),
+    ("\\b", '\u{8}'),
+    ("\\t", '\t'),
+    ("\\f", '\u{c}'),
+    ("\\u2028", '\u{2028}'),
+    ("\\u2029", '\u{2029}'),
+    ("\\x3C", '<'),
+];
+
+/// seroval `serializeString`: strings sent to a server function must be escaped exactly as the
+/// website escapes them, because the server unescapes every string node it receives.
+pub fn seroval_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match SEROVAL_ESCAPES.iter().find(|(_, raw)| *raw == c) {
+            Some((escaped, _)) => out.push_str(escaped),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// seroval `deserializeString`: left-to-right, unknown sequences stay as they are.
+pub fn seroval_unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        match SEROVAL_ESCAPES
+            .iter()
+            .find(|(escaped, _)| tail.starts_with(escaped))
+        {
+            Some((escaped, raw)) => {
+                out.push(*raw);
+                rest = &tail[escaped.len()..];
+            }
+            None => {
+                out.push('\\');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Server function payload: `{ data: { field: value, ... } }` serialized as a seroval tree,
+/// framed the way the website's own client sends it.
+pub fn seroval_request(fields: &[(&str, &str)]) -> Value {
+    let (keys, values): (Vec<_>, Vec<_>) = fields
+        .iter()
+        .map(|(key, value)| {
+            (
+                seroval_escape(key),
+                serde_json::json!({ "t": 1, "s": seroval_escape(value) }),
+            )
+        })
+        .unzip();
+    serde_json::json!({
+        "t": {
+            "t": 10, "i": 0, "p": {
+                "k": ["data"],
+                "v": [{ "t": 10, "i": 1, "p": { "k": keys, "v": values }, "o": 0 }]
+            },
+            "o": 0
+        },
+        "f": 127,
+        "m": []
+    })
+}
+
+/// Decode a seroval tree (TanStack Start server function wire format) into plain JSON.
+/// A request frame `{ t, f, m }` is unwrapped, and so is a `{ result }` envelope.
+pub fn decode_seroval(raw: &Value) -> Result<Value> {
+    let root = match raw.get("t") {
+        Some(node @ Value::Object(_)) if raw.get("f").is_some() => node,
+        _ => raw,
+    };
+    let mut decoder = Seroval::default();
+    Ok(match decoder.decode(root)? {
+        Value::Object(mut map) if map.contains_key("result") => {
+            map.remove("result").unwrap_or_default()
+        }
+        decoded => decoded,
+    })
+}
+
+#[derive(Default)]
+struct Seroval {
+    /// Node id -> decoded value and the number of nodes it expands to.
+    nodes_by_id: HashMap<i64, (Value, usize)>,
+    nodes: usize,
+}
+
+impl Seroval {
+    // seroval `SerovalNodeType` values that can occur in JSON-compatible payloads.
+    const NUMBER: i64 = 0;
+    const STRING: i64 = 1;
+    const CONSTANT: i64 = 2;
+    const BIGINT: i64 = 3;
+    const DATE: i64 = 5;
+    const SET: i64 = 7;
+    const MAP: i64 = 8;
+    const ARRAY: i64 = 9;
+    const OBJECT: i64 = 10;
+    const NULL_CONSTRUCTOR: i64 = 11;
+
+    fn charge(&mut self, nodes: usize) -> Result<()> {
+        self.nodes = self.nodes.saturating_add(nodes);
+        ensure!(
+            self.nodes <= MAX_SEROVAL_NODES,
+            "server response exceeds {MAX_SEROVAL_NODES} nodes"
+        );
+        Ok(())
+    }
+
+    fn decode(&mut self, node: &Value) -> Result<Value> {
+        self.charge(1)?;
+        let start = self.nodes;
+        let map = match node {
+            Value::Object(map) => map,
+            Value::Array(items) => return self.list(items),
+            primitive => return Ok(primitive.clone()),
+        };
+        let id = map.get("i").and_then(Value::as_i64);
+        // Indexed values (`t: 4`) and repeated ids point at an already decoded node.
+        if let Some(id) = id
+            && let Some(size) = self.nodes_by_id.get(&id).map(|(_, size)| *size)
+        {
+            self.charge(size)?;
+            return Ok(self.nodes_by_id[&id].0.clone());
+        }
+        let Some(kind) = map.get("t").and_then(Value::as_i64) else {
+            // Plain JSON around the tree, such as an already unwrapped envelope.
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                out.insert(key.clone(), self.decode(value)?);
+            }
+            return Ok(Value::Object(out));
+        };
+        let value = match kind {
+            Self::STRING => Value::String(seroval_unescape(
+                map.get("s").and_then(Value::as_str).unwrap_or_default(),
+            )),
+            Self::NUMBER | Self::BIGINT | Self::DATE => map.get("s").cloned().unwrap_or_default(),
+            Self::CONSTANT => match map.get("s").and_then(Value::as_i64) {
+                Some(2) => Value::Bool(true),
+                Some(3) => Value::Bool(false),
+                _ => Value::Null,
+            },
+            Self::ARRAY | Self::SET => self.list(
+                map.get("a")
+                    .and_then(Value::as_array)
+                    .map_or(&[], Vec::as_slice),
+            )?,
+            Self::OBJECT | Self::NULL_CONSTRUCTOR => self.properties(map.get("p"), false)?,
+            Self::MAP => self.properties(map.get("e"), true)?,
+            // Promises, streams, symbols and dangling references carry no schedule data.
+            _ => Value::Null,
+        };
+        if let Some(id) = id {
+            let size = self.nodes - start + 1;
+            self.nodes_by_id.insert(id, (value.clone(), size));
+        }
+        Ok(value)
+    }
+
+    fn list(&mut self, items: &[Value]) -> Result<Value> {
+        items
+            .iter()
+            .map(|item| self.decode(item))
+            .collect::<Result<_>>()
+            .map(Value::Array)
+    }
+
+    /// Object properties carry escaped string keys; `Map` entries carry key nodes.
+    fn properties(&mut self, record: Option<&Value>, key_nodes: bool) -> Result<Value> {
+        let field = |name: &str| record.and_then(|r| r.get(name)).and_then(Value::as_array);
+        let (Some(keys), Some(values)) = (field("k"), field("v")) else {
+            return Ok(Value::Object(serde_json::Map::new()));
+        };
+        let mut out = serde_json::Map::with_capacity(keys.len());
+        for (key, value) in keys.iter().zip(values) {
+            let key = if key_nodes {
+                match self.decode(key)? {
+                    Value::String(key) => key,
+                    Value::Number(key) => key.to_string(),
+                    _ => continue,
+                }
+            } else if let Some(key) = key.as_str() {
+                seroval_unescape(key)
+            } else {
+                continue;
+            };
+            out.insert(key, self.decode(value)?);
+        }
+        Ok(Value::Object(out))
     }
 }
 
+/// Parse a digital week from the raw server response (seroval) or already decoded JSON.
 pub fn parse_digital_schedule(value: &Value) -> Result<(Vec<ScheduleDay>, ReferenceData)> {
-    let root = if value.get("t").is_some() || value.get("result").is_some() {
-        decode_seroval(value)
+    if value.get("t").is_some() || value.get("result").is_some() {
+        digital_week(&decode_seroval(value)?)
     } else {
-        value.clone()
-    };
+        digital_week(value)
+    }
+}
+
+/// Parse a decoded digital week: lessons plus the halls, pair types and bell presets it uses.
+pub fn digital_week(root: &Value) -> Result<(Vec<ScheduleDay>, ReferenceData)> {
     let days_raw = root
         .get("days")
         .and_then(Value::as_array)

@@ -2,15 +2,15 @@ mod support;
 use chrono::NaiveDate;
 use chrono_tz::Asia::Yekaterinburg as TZ;
 use ktk_schedule::{
-    model::{View, week_millis},
+    model::{View, Week},
     workspace::{Candidates, script_urls},
 };
 use std::sync::atomic::Ordering;
 use support::*;
 use wiremock::{Mock, ResponseTemplate, matchers::path};
 
-fn week() -> i64 {
-    week_millis(NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(), TZ).unwrap()
+fn week() -> Week {
+    Week::new(NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(), TZ).unwrap()
 }
 
 #[tokio::test]

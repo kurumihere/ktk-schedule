@@ -2,8 +2,8 @@ mod support;
 
 use flate2::{Compression, write::GzEncoder};
 use ktk_schedule::{
-    model::week_millis,
-    workspace::{FILE_LIMIT, Workspace},
+    model::Week,
+    workspace::{FILE_LIMIT, Site, Workspace},
 };
 use std::{io::Write, sync::Arc, time::Duration};
 use support::College;
@@ -76,16 +76,9 @@ impl Server {
     }
 
     async fn login(&self) -> Workspace {
-        let client = Workspace::login(
-            self.url.clone(),
-            "test",
-            "user",
-            "password",
-            Arc::new(Semaphore::new(12)),
-        )
-        .await
-        .unwrap();
-        let week = week_millis(
+        let site = Site::new(self.url.clone(), "test", Arc::new(Semaphore::new(12)));
+        let client = Workspace::login(&site, "user", "password").await.unwrap();
+        let week = Week::new(
             chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
             chrono_tz::Asia::Yekaterinburg,
         )

@@ -173,6 +173,7 @@ async fn session_cache_survives_a_restart_and_clears_on_account_switch() {
         branch: "branch-uuid".into(),
         personal_endpoint: "/personal".into(),
         group_endpoint: "/group".into(),
+        expires_at: Some("2026-12-03T00:00:00.000Z".into()),
     };
     store.save_session(42, &session).await.unwrap();
     store.close().await;
@@ -184,6 +185,14 @@ async fn session_cache_survives_a_restart_and_clears_on_account_switch() {
     assert_eq!(cached.cookie, "education_system_auth_session=abc123xyz");
     assert_eq!(cached.session_id, "sess-uuid-42");
     assert_eq!(cached.group, 269);
+    assert_eq!(
+        cached.expires_at.as_deref(),
+        Some("2026-12-03T00:00:00.000Z")
+    );
+    // Records written before expiry tracking still load.
+    let legacy: SessionRecord =
+        serde_json::from_str(r#"{"cookie":"c=1","session_id":"s","group":1,"subgroup":"","teacher":"","branch":"","personal_endpoint":"","group_endpoint":""}"#).unwrap();
+    assert!(legacy.expires_at.is_none());
 
     let mut switched = account(42);
     switched.login = "different".into();

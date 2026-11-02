@@ -5,7 +5,7 @@ use crate::{
     render::{self, Assets},
     storage::{Account, Storage},
     telegram,
-    workspace::{self, Workspace},
+    workspace::{self, Platform, Site, Workspace},
 };
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
@@ -54,13 +54,20 @@ impl Session {
                 .build(),
         }
     }
+    /// Digital references live in the session itself (cheap, always current); legacy ones cost
+    /// four requests, so a successful fetch is reused for an hour and a failed one is not kept.
     pub async fn references(&self) -> Arc<ReferenceData> {
-        let refs = self.client.references().await;
-        if refs.halls.is_empty() {
-            self.refs.get_with((), async { Arc::new(refs) }).await
-        } else {
-            Arc::new(refs)
+        if self.client.platform() == Platform::Digital {
+            return self.client.references().await;
         }
+        if let Some(refs) = self.refs.get(&()).await {
+            return refs;
+        }
+        let refs = self.client.references().await;
+        if !refs.is_empty() {
+            self.refs.insert((), refs.clone()).await;
+        }
+        refs
     }
     async fn document(&self, id: i64) -> Result<Document> {
         self.docs
@@ -131,13 +138,14 @@ impl Session {
 
 pub struct App {
     pub config: Config,
+    /// The college website and its shared request budget (12 concurrent requests).
+    pub site: Site,
     pub storage: Storage,
     pub bot: Telegram,
     pub bot_username: String,
     pub vk: Option<Arc<crate::vk::VkClient>>,
     sessions: Cache<i64, Arc<Session>>,
     schedules: Cache<ScheduleKey, Arc<Vec<ScheduleDay>>>,
-    permits: Arc<Semaphore>,
     pub downloads: Semaphore,
     limits: Mutex<HashMap<(i64, bool), RateWindow>>,
     circuit: crate::resilience::Circuit,
@@ -172,8 +180,14 @@ impl App {
         } else {
             None
         };
+        let site = Site::new(
+            config.base_url.clone(),
+            config.device.clone(),
+            Arc::new(Semaphore::new(12)),
+        );
         Ok(Self {
             config,
+            site,
             storage,
             bot,
             bot_username,
@@ -191,7 +205,6 @@ impl App {
                 .max_capacity(512)
                 .time_to_idle(Duration::from_secs(900))
                 .build(),
-            permits: Arc::new(Semaphore::new(12)),
             downloads: Semaphore::new(3),
             limits: Mutex::new(HashMap::new()),
             circuit: crate::resilience::Circuit::new(5, Duration::from_secs(30)),
@@ -245,24 +258,14 @@ impl App {
     pub async fn authenticate(&self, login: &str, password: &str) -> Result<Workspace> {
         tokio::time::timeout(
             Duration::from_secs(45),
-            Workspace::login(
-                self.config.base_url.clone(),
-                &self.config.device,
-                login,
-                password,
-                self.permits.clone(),
-            ),
+            Workspace::login(&self.site, login, password),
         )
         .await?
     }
 
     pub async fn sign_in(&self, id: i64, login: &str, password: &str) -> Result<Account> {
         if let Ok(Some(old_record)) = self.storage.session(id).await {
-            if let Ok(old_client) = Workspace::from_session(
-                self.config.base_url.clone(),
-                &old_record,
-                self.permits.clone(),
-            ) {
+            if let Ok(old_client) = Workspace::from_session(&self.site, &old_record) {
                 let _ = old_client.revoke_session().await;
             }
             let _ = self.storage.delete_session(id).await;
@@ -306,11 +309,7 @@ impl App {
             .try_get_with(account.id, async {
                 if let Ok(Some(record)) = self.storage.session(account.id).await
                     && !record.cookie.is_empty()
-                    && let Ok(client) = Workspace::from_session(
-                        self.config.base_url.clone(),
-                        &record,
-                        self.permits.clone(),
-                    )
+                    && let Ok(client) = Workspace::from_session(&self.site, &record)
                 {
                     return Ok::<_, anyhow::Error>(Arc::new(Session::new(client)));
                 }
@@ -333,8 +332,7 @@ impl App {
         if let Some(session) = self.sessions.get(&id).await {
             let _ = session.client.revoke_session().await;
         } else if let Ok(Some(record)) = self.storage.session(id).await
-            && let Ok(client) =
-                Workspace::from_session(self.config.base_url.clone(), &record, self.permits.clone())
+            && let Ok(client) = Workspace::from_session(&self.site, &record)
         {
             let _ = client.revoke_session().await;
         }
@@ -375,14 +373,14 @@ impl App {
                 .schedules
                 .try_get_with(key.clone(), async {
                     let group = view.group.unwrap_or(account.group_id);
-                    let millis = week_millis(view.week(), self.config.timezone)?;
+                    let requested = Week::new(view.week(), self.config.timezone)?;
                     let permit = self
                         .circuit
                         .acquire()
                         .ok_or_else(|| anyhow!("workspace is temporarily unavailable"))?;
                     let result = tokio::time::timeout(
                         Duration::from_secs(45),
-                        client.schedule(group, millis, &scope),
+                        client.schedule(group, requested, &scope),
                     )
                     .await
                     .map_err(anyhow::Error::from)

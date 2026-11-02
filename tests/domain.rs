@@ -255,12 +255,132 @@ fn digital_environment_schedule_and_seroval_decoding_are_supported() {
 }
 
 #[test]
+fn seroval_strings_round_trip_like_the_website_escapes_them() {
+    for raw in [
+        "",
+        "plain",
+        r#"quote " and backslash \ and \n literal"#,
+        "line\nbreak\ttab\r\u{8}\u{c}",
+        "<script>\u{2028}\u{2029}",
+        r"\x3C already looks escaped",
+    ] {
+        assert_eq!(seroval_unescape(&seroval_escape(raw)), raw, "{raw:?}");
+    }
+    assert_eq!(seroval_escape("<b>\"x\""), r#"\x3Cb>\"x\""#);
+    // deserializeString leaves unknown sequences alone.
+    assert_eq!(seroval_unescape(r"a\qb\x3Cc"), r"a\qb<c");
+    let request = seroval_request(&[("password", "a\"<b")]);
+    assert_eq!(
+        decode_seroval(&request).unwrap()["data"]["password"],
+        "a\"<b"
+    );
+    assert_eq!(request["f"], 127);
+}
+
+#[test]
+fn seroval_dictionaries_sets_and_maps_decode_to_json() {
+    let node = json!({"t": 10, "i": 0, "p": {"k": ["byId", "tags", "map"], "v": [
+        // Null-prototype dictionaries (`indexById`) are objects, not key lists.
+        {"t": 11, "i": 1, "p": {"k": ["269", "V011"], "v": [{"t": 0, "s": 1}, {"t": 0, "s": 2}]}, "o": 0},
+        {"t": 7, "i": 2, "l": 2, "a": [{"t": 1, "s": "a"}, {"t": 4, "i": 3}]},
+        {"t": 8, "i": 4, "e": {"k": [{"t": 1, "s": "x\\x3C"}], "v": [{"t": 2, "s": 2}], "s": 1}}
+    ]}});
+    let decoded = decode_seroval(&node).unwrap();
+    assert_eq!(decoded["byId"], json!({"269": 1, "V011": 2}));
+    // A dangling reference decodes to null instead of failing the whole response.
+    assert_eq!(decoded["tags"], json!(["a", null]));
+    assert_eq!(decoded["map"], json!({"x<": true}));
+}
+
+#[test]
+fn seroval_references_cannot_expand_beyond_the_node_budget() {
+    // 1000 nodes referenced 2000 times would expand to two million copies.
+    let big: Vec<_> = (0..1000).map(|n| json!({"t": 0, "s": n})).collect();
+    let mut items = vec![json!({"t": 9, "i": 1, "a": big})];
+    items.extend((0..2000).map(|_| json!({"t": 4, "i": 1})));
+    let bomb = json!({"t": 9, "i": 0, "a": items});
+    let error = decode_seroval(&bomb).unwrap_err();
+    assert!(error.to_string().contains("exceeds"), "{error}");
+}
+
+#[test]
+fn subgroups_are_inferred_only_from_conclusive_timetables() {
+    let day = |subgroups: &[&str]| ScheduleDay {
+        subjects: subgroups
+            .iter()
+            .map(|s| Subject {
+                subgroup: (*s).into(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(infer_subgroup(&[day(&["middle", "right"])]), Some("right"));
+    assert_eq!(infer_subgroup(&[day(&["left"]), day(&["1"])]), Some("left"));
+    assert_eq!(infer_subgroup(&[day(&["left"]), day(&["right"])]), None);
+    assert_eq!(infer_subgroup(&[day(&["middle"])]), None);
+    assert_eq!(infer_subgroup(&[]), None);
+}
+
+#[test]
+fn weeks_know_their_academic_year_and_sessions_their_expiry() {
+    let tz = TZ;
+    // The week of September 1st 2026 starts on August 31st but belongs to 2026/27.
+    assert_eq!(
+        Week::new(NaiveDate::from_ymd_opt(2026, 9, 3).unwrap(), tz)
+            .unwrap()
+            .academic_year(),
+        2026
+    );
+    assert_eq!(
+        Week::new(NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(), tz)
+            .unwrap()
+            .academic_year(),
+        2025
+    );
+    let now = chrono::Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap();
+    let mut record = SessionRecord {
+        expires_at: Some("2026-09-01T00:04:00.000Z".into()),
+        ..Default::default()
+    };
+    assert!(record.expired(now), "expiring within five minutes");
+    record.expires_at = Some("2026-09-02T00:00:00Z".into());
+    assert!(!record.expired(now));
+    record.expires_at = Some("not a date".into());
+    assert!(!record.expired(now));
+    record.cookie = "education_system_auth_session=SECRET".into();
+    assert!(
+        !format!("{record:?}").contains("SECRET"),
+        "cookies are never logged"
+    );
+}
+
+#[test]
+fn reference_merges_report_whether_anything_changed() {
+    let hall = |number: &str| Hall {
+        id: 1,
+        number: number.into(),
+        ..Default::default()
+    };
+    let mut refs = ReferenceData::default();
+    assert!(refs.is_empty());
+    let mut update = ReferenceData::default();
+    update.halls.insert(1, hall("301"));
+    assert!(refs.merge(update.clone()));
+    assert!(!refs.merge(update));
+    let mut renamed = ReferenceData::default();
+    renamed.halls.insert(1, hall("302"));
+    assert!(refs.merge(renamed));
+    assert_eq!(refs.halls[&1].number, "302");
+}
+
+#[test]
 fn digital_auth_decoding_for_students_and_teachers() {
     let student_seroval: Value = serde_json::from_str(
         r#"{"t":10,"i":0,"p":{"k":["result"],"v":[{"t":10,"i":1,"p":{"k":["user","session"],"v":[{"t":10,"i":2,"p":{"k":["hash","name","surname","patronymic","group","photo","branch","isStudent","accessLabel"],"v":[{"t":1,"s":"abc"},{"t":1,"s":"Иван"},{"t":1,"s":"Иванов"},{"t":1,"s":"Иванович"},{"t":1,"s":"269"},{"t":2,"s":0},{"t":1,"s":"branch-1"},{"t":2,"s":2},{"t":1,"s":"Студент"}]},"o":0},{"t":10,"i":3,"p":{"k":["id"],"v":[{"t":1,"s":"sess-1"}]},"o":0}]},"o":0}]},"o":0}"#,
     )
     .unwrap();
-    let decoded = decode_seroval(&student_seroval);
+    let decoded = decode_seroval(&student_seroval).unwrap();
     assert_eq!(decoded["user"]["isStudent"], true);
     assert_eq!(decoded["user"]["group"], "269");
     assert_eq!(decoded["user"]["name"], "Иван");
@@ -269,7 +389,7 @@ fn digital_auth_decoding_for_students_and_teachers() {
         r#"{"t":10,"i":0,"p":{"k":["result"],"v":[{"t":10,"i":1,"p":{"k":["user","session"],"v":[{"t":10,"i":2,"p":{"k":["hash","name","surname","patronymic","group","photo","branch","isStudent","accessLabel"],"v":[{"t":1,"s":"teacher-hash-123"},{"t":1,"s":"Ольга"},{"t":1,"s":"Петрова"},{"t":1,"s":"Сергеевна"},{"t":2,"s":0},{"t":2,"s":0},{"t":1,"s":"branch-1"},{"t":2,"s":3},{"t":1,"s":"Преподаватель"}]},"o":0},{"t":10,"i":3,"p":{"k":["id"],"v":[{"t":1,"s":"sess-2"}]},"o":0}]},"o":0}]},"o":0}"#,
     )
     .unwrap();
-    let decoded_t = decode_seroval(&teacher_seroval);
+    let decoded_t = decode_seroval(&teacher_seroval).unwrap();
     assert_eq!(decoded_t["user"]["isStudent"], false);
     assert_eq!(decoded_t["user"]["hash"], "teacher-hash-123");
 
@@ -277,7 +397,7 @@ fn digital_auth_decoding_for_students_and_teachers() {
         r#"{"t":10,"i":0,"p":{"k":["error"],"v":[{"t":10,"i":1,"p":{"k":["appError"],"v":[{"t":10,"i":2,"p":{"k":["type","code","message"],"v":[{"t":1,"s":"appError"},{"t":1,"s":"authRequired"},{"t":1,"s":"Неверный логин или пароль."}]},"o":0}]},"o":0}]},"o":0}"#,
     )
     .unwrap();
-    let decoded_err = decode_seroval(&error_seroval);
+    let decoded_err = decode_seroval(&error_seroval).unwrap();
     assert!(decoded_err["user"].is_null());
     assert_eq!(
         decoded_err["error"]["appError"]["message"],
