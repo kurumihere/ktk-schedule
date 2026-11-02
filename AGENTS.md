@@ -1,224 +1,237 @@
 # AGENTS.md - ktk-schedule
 
-KTK schedule Telegram bot in Rust (teloxide + sqlx/SQLite + reqwest to Workspace).
-This is NOT a web service and NOT a library: the only artifact is the `ktk-schedule` binary.
+KTK college schedule bot for Telegram and VK, in Rust (teloxide, sqlx/SQLite, reqwest).
+Not a web service, not a library: the only artifact is the `ktk-schedule` binary.
+Production talks to the digital platform `https://ktk.education-system.ru/` (TanStack Start
+server functions, seroval wire format); the legacy `workspace.ktk-45.ru` REST site is still
+supported and covered by tests.
 
-Layout:
-- `src/main.rs` - CLI (`--help`, `--version`, `--check`), dotenv, tracing, starts `app::run`.
-- `src/lib.rs` - only `pub mod` for reuse in `tests/`.
-- `src/app.rs` - `App`, `Session`, moka caches, rate limit, circuit breaker, notification background, teloxide dispatcher.
-- `src/telegram.rs` - handlers for `/start /login /logout /schedule /notify_on|off /stats /announce`, `schedule:*` callbacks, keyboards.
-- `src/vk.rs` - VK Bot Long Poll, keyboards, handlers, and event answering.
-- `src/workspace.rs` - Workspace login, JS-endpoint discovery, `schedule/references/document/submission/download`.
-- `src/model.rs` - `ScheduleDay/Subject/ExtraData/Homework`, `View/Screen`, `week_start/day_date/visible_subjects`, attachment limits.
-- `src/render.rs` - schedule text, `HELP`, `week_label`, `fit_text`, icons, lesson timings.
-- `src/storage.rs` - SQLite (`accounts/schedules/views`), encryption via `Cipher`.
-- `src/credentials.rs` - AES-256-GCM (`v2:` for passwords, `cache:v1:` for cache).
-- `src/config.rs` - `Config::load/from_values`, env validation.
-- `src/resilience.rs` - `Circuit` (threshold 5, cooldown 30s in `App::new`).
-- `migrations/0001_initial.sql`, `0002_encrypted_cache.sql` - schema source of truth, applied via `sqlx::migrate!()`.
-- `tests/support/mod.rs` - `College` (wiremock Workspace), `telegram_server()`, `app()`; other `tests/*.rs` are integration tests.
-- `deploy/ktk-schedule.service`, `deploy/ktk-schedule-test.service`, `deploy/switch-mode.sh`, `deploy/update.sh`, `deploy/receive.sh` - systemd and VDS deploy.
-- `.env.example` - config example; `.env` - local secret (gitignored); prod uses `/etc/ktk-schedule/bot.env`, test uses `/etc/ktk-schedule/bot-test.env`.
+## 0. Layout
 
-Generated: `target/`, `data/*.sqlite*` - never commit, never read as source of truth.
+- `src/main.rs` - CLI (`--help`, `--version`, `--check`), dotenv, tracing (plain text unless stdout is a terminal), starts `app::run`.
+- `src/lib.rs` - only `pub mod`, so `tests/` can reach everything.
+- `src/app.rs` - `App`, `Session`, `Loaded`, `LoginRequired`; moka caches, rate limit, circuit breaker, sign-in/out, `load/resolve/show/present`, notifications, `run` (dispatcher, VK loop, two-phase shutdown).
+- `src/telegram.rs` - commands, `schedule:*` callbacks, keyboards, `/announce`, file download.
+- `src/vk.rs` - VK Bots Long Poll loop, paced API client (`VkClient`), keyboards, handlers.
+- `src/workspace.rs` - one signed-in site session (`Workspace`): `Platform`, `Site`, discovery, server functions, legacy REST, files.
+- `src/model.rs` - schedule data, `View/Screen/Week`, date helpers, seroval codec, digital week parser, `SessionRecord`, `ReferenceData`, limits.
+- `src/render.rs` - **every user-facing text**, schedule formatting, week labels, `fit_text`.
+- `src/storage.rs` - SQLite: `accounts`, `sessions`, `schedules`, `views`, `reference_cache`; sealing via `Cipher`.
+- `src/credentials.rs` - AES-256-GCM `cache:v1:` sealing bound to a context.
+- `src/config.rs` - `Config::load/from_values`; secrets from systemd credentials or env.
+- `src/systemd.rs` - `sd_notify` over `$NOTIFY_SOCKET` (READY, WATCHDOG, STOPPING), no libsystemd.
+- `src/resilience.rs` - `Circuit` (5 failures -> 30 s cooldown -> one probe).
+- `migrations/0001..0005_*.sql` - schema history, applied by `sqlx::migrate!()` in `Storage::open`. 0005 is the current shape.
+- `tests/support/mod.rs` - `College` (legacy wiremock site), `Digital` (digital platform mock answering in seroval), `telegram_server()`, `app()`, `digital_app()`, `vk_app()`.
+- `tests/*.rs` - integration tests; `tests/har.rs` replays a private HAR (ignored by default).
+- `deploy/` - systemd units, `ktk-schedule-deploy`, `ktk-schedule-backup`, `install.sh`, `ctl.sh`, `update.sh` (section 11).
+- `.github/` - `ci.yml`, `deploy.yml`, `security.yml`, `actions/setup-rust`.
+- `.env.example` - local config template; `.env` is gitignored.
+
+Generated, never committed, never a source of truth: `target/`, `data/`, `*.sqlite3*`, `*.har`.
 
 ## 1. Golden rules - never violate
 
-1. Private chat first: `/login`, `/logout`, `/schedule`, `/notify_*`, personal buttons - only `message.chat.is_private()`. Group chats get a refusal. A violation is a P0 bug.
-2. Never log the `/login` password and never send it to Workspace if `delete_message` failed - login is cancelled (see `telegram.rs:message_inner`).
-3. `KTK_BASE_URL` must be HTTPS without userinfo; redirects only same-origin without credentials; file links only from the Workspace origin (`workspace.rs:login/download/request`, `config.rs:from_values`). The HTTPS bypass for loopback wiremock exists only in `tests/support/mod.rs:app` - never move it into prod code.
-4. Personal cache is strictly per-user: scope `personal` / `group:{id}` / `teacher:{hash}` (`model.rs:View::scope`). Always fetch another group separately, never mix grades/homework from personal scope into group scope. Mixing scopes is forbidden.
-5. Passwords (`v2:` + AAD=telegram_id) and cache (`cache:v1:` + AAD=`("schedules"|"views",...)`) only via `credentials::Cipher`. Plaintext in SQLite is forbidden. `CREDENTIALS_SECRET` must be stable across restarts (otherwise all cache/passwords fail to decrypt).
-6. Limits are mandatory: `MAX_ATTACHMENTS=64`, `JSON_LIMIT=4MiB`, `FILE_LIMIT=50MiB`, attachment depth 32, nodes 4096 (`model.rs`, `workspace.rs`). Lift a limit only with explicit user approval.
-7. `unsafe_code = "forbid"` (`Cargo.toml:[lints.rust]`). `unsafe` is forbidden without explicit permission.
-8. Minimal diff: fix at the breakage point, do not refactor neighbors, do not reformat чужой код (others' lines). `cargo fmt` is mandatory, but no manual reshuffling.
-9. An explicit user override lifts any rule except 7 (unsafe) and 3 (HTTP/credentials in prod) - for those, ask twice.
+1. **Private chat first.** `/login`, `/logout`, `/schedule`, `/notify_*`, personal buttons, `/stats`, `/announce`: Telegram only in `private()` chats (`chat.is_private() && from.id == chat.id`), VK only when `peer_id == from_id`. In groups the bot ignores everything but its own commands. A violation is a P0 bug.
+2. **Passwords are never stored and never logged.** `/login` sends the password to the site once (`App::sign_in`) and keeps only the resulting site session (`sessions` table, sealed). No re-login with stored credentials exists or may be added: a rejected session means `LoginRequired` -> the user signs in again. In Telegram the `/login` message is deleted first; if `delete_message` fails, the login is cancelled and nothing is sent anywhere.
+3. **HTTPS only, credentials never in URLs.** `KTK_BASE_URL` and `VK_API_URL` must be HTTPS without userinfo (`config.rs:https_url`). Redirects stay same-origin without userinfo, file links must be on the site origin (`workspace.rs:http_client/download`). The loopback-HTTP bypass exists only in `tests/support/mod.rs`. Errors that may carry a URL with a secret (VK long poll key) are logged `without_url()`.
+4. **Per-user scopes.** Cache scope is `personal`, `group:{id}` or `teacher:{hash}` (`View::scope`). Another group is always fetched separately; grades/homework from `personal` never leak into a `group:` scope.
+5. **Everything stored is sealed.** Sessions, schedules, views and reference data go through `Storage::seal/unseal` (`cache:v1:`, AES-256-GCM, context = `("sessions", id)`, `("schedules", id, scope, week)`, `("views", id, message)`, `("references", id)`). Plaintext in SQLite is forbidden. `CREDENTIALS_SECRET` must stay stable; `Storage::check_secret` refuses a secret that cannot read the saved sessions.
+6. **Limits are mandatory:** `MAX_ATTACHMENTS=64`, attachment depth 32 / nodes 4096, `JSON_LIMIT=4 MiB`, `FILE_LIMIT=50 MiB`, seroval `MAX_SEROVAL_NODES=1 Mi` (references cannot amplify), dates within `MAX_DAYS_FROM_TODAY=3650`. Lift a limit only with explicit user approval.
+7. **`unsafe_code = "forbid"`** (`Cargo.toml`). No exceptions without explicit permission (this also forbids `std::env::set_var` in tests).
+8. **Texts live in `render.rs`** and stay short and neutral: no greetings, no addressing the user, no promotion. VK points to Telegram only with the plain link `render::TELEGRAM_BOT`. `tests/domain.rs:bot_texts_stay_short_neutral_and_free_of_promotion` guards this. Keyboards and the timetable layout are part of the product: change them only on request.
+9. **Minimal diff, `cargo fmt` always.** Fix at the breakage point; do not reformat or reshuffle unrelated code.
+10. An explicit user instruction overrides any rule except 3 (HTTPS/credentials) and 7 (unsafe); for those, ask twice.
 
-## 2. Naming and grouping
+## 2. Naming
 
-Callbacks: `schedule:` prefix + colon-separated action.
+Callbacks always start with `schedule:`; data elsewhere is ignored.
 
 | Group | Meaning | Example |
 |---|---|---|
 | `schedule:week:prev/next/select/page:{-1,1}/open:{millis}/today` | week navigation | `schedule:week:open:1725147600000` |
 | `schedule:prev/next/today/refresh` | day navigation | `schedule:refresh` |
-| `schedule:day:{index}` | day selection from `loaded.days` | `schedule:day:3` |
-| `schedule:subgroup:left/right/all` | subgroup filter (students) | `schedule:subgroup:left` |
-| `schedule:my` | back to own schedule | `schedule:my` |
-| `schedule:group:select` + numeric input + `schedule:back` | чужой группы (another group's) view | `schedule:group:select` |
-| `schedule:download` | download day files | `schedule:download` |
+| `schedule:day:{index}` | day from `loaded.days` | `schedule:day:3` |
+| `schedule:subgroup:left/right/all` | subgroup filter (Telegram, students) | `schedule:subgroup:left` |
+| `schedule:subgroup:menu`, `schedule:subgroup:set:{left,right,all}` | VK menu and its filter buttons | `schedule:subgroup:set:all` |
+| `schedule:my` | back to the own schedule | `schedule:my` |
+| `schedule:group:select` + number + `schedule:back` | another group's schedule | `schedule:group:select` |
+| `schedule:download` | files of the day (VK answers with the Telegram link) | `schedule:download` |
 
-Invalid: callback without `schedule:` (ignored in `handle_callback`), `schedule:day:01x` (parse error), scope like `Group:269` (only `group:269`).
+Invalid: no `schedule:` prefix, `schedule:day:01x` (ignored in VK, error in Telegram), scope `Group:269` (only `group:269`).
 
-Commands: `/start /my_id /login /logout /schedule [date] /notify_on /notify_off /stats /announce`. The `HELP` text lives in `render.rs:HELP` - change it there, not in `telegram.rs`.
+Commands: `/start /my_id /login /logout /schedule [date] /notify_on /notify_off /stats /announce`; VK also accepts `/refresh`, `/my` and the words "Начать", "Обновить", "Моё" in any case. Both platforms parse with `telegram::command`. Help text: `render::HELP` / `render::VK_HELP`.
 
-Subgroups: canon `left/right`, input normalized by `personal_subgroup()` (`1/первая/left -> left`, `2/вторая/right -> right`), display via `subgroup_label()`.
+Subgroups: canonical `left/right`; input normalized by `personal_subgroup()` (`1/первая/left -> left`); labels via `subgroup_label()`.
 
 ## 3. Minimal change pattern
 
-A handler holds `lock_user(id)`, reads `View` from storage, mutates it, calls `present/show`, saves:
+A handler takes `lock_user(id)`, reads the `View` from storage, mutates it, renders, saves:
 
 ```rust
 let _guard = app.lock_user(id).await;
 let Some(a) = account(app, id).await? else { return Ok(()); };
 let Some(mut view) = app.storage.view(id, message.0).await? else { /* stale */ return Ok(()); };
-// ... one match arm on data, e.g. view.select_date(...); view.screen = Screen::Schedule;
+// one match arm on `data`, e.g. view.select_date(...); view.screen = Screen::Schedule;
 app.show(&a, &view, Some(message), refresh).await
 ```
 
-Rules:
-- Early return for stale/guard (`account is None`, `view is None`, чужой callback - someone else's callback) - see `callback_inner`.
-- Do not reindent the whole `match` for one arm.
-- Add a new button as one arm + one line in `schedule_keyboard`, without rewriting the keyboard.
-- Workspace error -> `tracing::warn!` + "try later", never panic and never show `{:?}` to the user.
+- Early return for stale views, missing accounts and foreign buttons (`callback_inner`, `vk::handle_callback`).
+- One new button = one match arm + one line in `schedule_keyboard`/`schedule_keyboard_vk`.
+- Errors: `tracing::warn!` + a `render` text. `telegram::failure(&error)` picks `LOGIN_AGAIN` for `LoginRequired`, `SCHEDULE_FAILED` otherwise; `telegram::login_failure` picks `LOGIN_REJECTED` (typed `CredentialsRejected`) or `SITE_DOWN`. Never show `{:?}` to a user, never panic.
 
 ## 4. Boundaries
 
-Inline up to ~5-7 lines stays in `telegram.rs/app.rs`; more - extract.
-
 | Logic | Where |
 |---|---|
-| Date/week/visibility parsing (`week_start`, `day_date`, `parse_date`, `visible_subjects`, `non_school_day`) | `model.rs` |
-| Message text, emoji, declensions, UTF-16 truncation | `render.rs` (`schedule`, `fit_text`, `week_label`) |
-| Workspace HTTP, discovery, retries, JSON parsing | `workspace.rs` |
-| Encryption/decryption | `credentials.rs` (`encrypt/decrypt/encrypt_cache/decrypt_cache`) |
-| SQL and migrations | `storage.rs` + `migrations/*.sql` |
-| Keyboards and commands/callbacks | `telegram.rs` |
-| Moka caches, circuit, rate limit, background | `app.rs` |
-| Env validation | `config.rs` (`from_values` - pure, testable without env) |
+| Dates, weeks, visibility (`week_start`, `shift`, `Week`, `day_date`, `parse_date`, `within_reach`, `visible_subjects*`, `non_school_day*`, `infer_subgroup`) | `model.rs` |
+| seroval encode/decode, digital week parsing | `model.rs` |
+| Texts, emoji, declensions, UTF-16 truncation | `render.rs` |
+| Site HTTP, discovery, retries, server functions, files | `workspace.rs` |
+| Sealing | `credentials.rs` + `Storage::seal/unseal` |
+| SQL, migrations | `storage.rs` + `migrations/*.sql` |
+| Keyboards, commands, callbacks | `telegram.rs`, `vk.rs` |
+| Caches, sessions, circuit, rate limit, background, shutdown | `app.rs` |
+| Env and credentials | `config.rs` (`from_values` is pure and testable) |
 
-Do not duplicate: lesson timings - only `render::timings`; privacy check - `private()/owner()` in `telegram.rs`; stale-cache check - `App::load`.
+Do not duplicate: lesson timings only `render::timings`; privacy checks only `private()/owner()` and the VK `peer_id` check; stale-cache logic only `App::load`; Sunday "today = next week" only `App::resolve`.
 
-## 5. Hotspot files table
+## 5. Hotspots
 
-Never read big files top to bottom: grep the symbol first, then `read` with offset/limit.
+Grep the symbol first, then read with offset/limit.
 
 | Path | ~Lines | Owns | Caution |
 |---|---|---|---|
-| `src/workspace.rs` | 780 | login/discover/schedule/download, regex `API/SCRIPTS/FILE/HOMEWORK/SCHEDULE_LOADER/BRANCH` | discovery is fragile to Workspace markup; change regex only with a test in `tests/workspace.rs` |
-| `src/telegram.rs` | 730 | commands, `handle_message/handle_callback/callback_inner/download/announce` | privacy and the login `delete_message` guard; callbacks check ownership |
-| `src/app.rs` | 660 | `App/Session/Loaded`, `load/show/show_loaded/present`, `background`, `run` | caches `sessions/schedules/pending_groups`, semaphores `permits=12/downloads=3`, timeouts 45/120s |
-| `src/model.rs` | 440 | schedule structs, `attachment_ids/limited_file_ids/parse_schedule`, `View::scope` | limits 64/4096/32; two schedule formats (Date / DayList+Pairs+Subgroups) |
-| `src/render.rs` | 330 | day formatting, `HELP`, `fit_text` UTF-16 4096 | Telegram limit is 4096 UTF-16 units, cut by `char`, append `…` |
-| `src/storage.rs` | 230 | `accounts/schedules/views`, `prune` | pool `max_connections=1`, WAL, `PRAGMA wal_checkpoint(TRUNCATE)`; `save_account` wipes schedules+views |
-| `src/config.rs` | 85 | all env (`BOT_TOKEN`, `CREDENTIALS_SECRET`, `KTK_BASE_URL`, `DATABASE_PATH`, ...) | `from_values` - the spot for unit tests without env |
+| `src/workspace.rs` | 1340 | `Platform/Site/Workspace`, `call/call_once`, `discover/crawl`, legacy `refresh` probing, files | server function ids change on site deploys: rediscovery handles 404; change classification only with `tests/digital.rs` + HAR replay |
+| `src/model.rs` | 1250 | schedule types, seroval codec, `digital_week`, `View::scope`, limits | two legacy shapes (Date / DayList) plus digital `days/pages/pairs` and `ordinary/directions` |
+| `src/vk.rs` | 1190 | long poll loop, `VkClient` pacing, handlers | inline keyboards: <= 6 rows, <= 10 buttons, labels <= 40 chars (`tests/vk.rs`) |
+| `src/app.rs` | 980 | sessions, `load`, `resolve`, `render_schedule_content`, `notify_one`, `run` | caches `sessions/schedules/pending_groups`, permits 12, downloads 3, deadlines 45/120 s |
+| `src/telegram.rs` | 730 | commands, callbacks, download, announce | privacy, login `delete_message` guard, owner tools private only |
+| `src/render.rs` | 470 | all texts, `schedule`, `fit_text` | Telegram limit is 4096 UTF-16 units; cut by `char`, append `…` |
+| `src/storage.rs` | 360 | tables, sealing, prune | single connection, WAL, `synchronous=NORMAL`, `secure_delete=ON`; `save_account` wipes caches |
 
-Before touching a hotspot check existing helpers: `render::fit_text/week_label/short_day`, `model::week_millis/day_date/shift` (shift is in `telegram.rs`), `workspace::unauthorized`.
+## 6. Extension points
 
-## 6. Shared extension points
-
-| Point | What it gives | When to extend |
+| Point | Gives | Extend when |
 |---|---|---|
-| `App::load(&account, &view, refresh)` | days + `session` + `stale`, SQLite fallback on 5xx | new schedule source goes here, not into the handler |
-| `Session::assets(&subjects, teacher, refresh)` | `Assets{documents, submissions}` with dedup and `buffered(4)` | new attachment types go here |
-| `App::show/show_loaded/present` | render + keyboard + `save_view` | new screen means a new `Screen`, rendered via `show*` |
-| `App::session(&account)` | moka Workspace session (idle TTL 24h) | never create `Workspace::login` bypassing it |
-| `App::allow(id, login)` | rate limit: login 5/60s block 300s; normal 8/10s block 20s | new expensive commands go through `allow` |
-| `App::lock_user(id)` | per-user `Mutex` via `Weak` + cleanup every 300s | any view/account mutation goes under the lock |
-| `storage::{account,view,schedule}` | persistent state reads | handlers never keep View in memory between messages |
-| `telegram::{schedule_keyboard, week_keyboard, shift, command}` | keyboards and parsing | new buttons go here |
+| `App::load(&account, &view, refresh)` | days + session + `stale`; SQLite fallback on site failure; `LoginRequired` when the site rejected the session | a new schedule source |
+| `App::resolve` | the `(View, Loaded)` actually shown (Sunday -> next week) | anything that shows "today" |
+| `Session::references/assets` | references (digital: in memory, legacy: 1 h cache) and attachments | new attachment types |
+| `App::session(&account)` | the in-memory or restored site session | never create `Workspace::login` outside `sign_in` |
+| `App::allow(id, login)` | rate limit: login 5/60 s (block 300 s), other 8/10 s (block 20 s); VK buttons included | new expensive commands |
+| `App::lock_user(id)` | per-user mutex | any account/view mutation |
+| `Workspace::call(ServerFn, fields)` | one digital server function with rediscovery | new digital endpoints |
 
-Rule of three: the third copy of login/render/parsing logic gets extracted into shared code. No-op by default: a new feature does not change existing screen text/keyboard without asking.
+Rule of three: the third copy of logic gets extracted. New features do not change existing screens unless asked.
 
-## 7. Helpers
+## 7. Helpers (check before writing new ones)
 
-All helpers live next to their owner, there is no `utils.rs`. Check before creating:
+- `model.rs`: `personal_subgroup`, `subgroup_label`, `week_start`, `shift`, `week_millis`, `Week::new/academic_year`, `academic_year_start`, `within_reach`, `day_date`, `parse_date`, `visible_subjects(_scoped)`, `non_school_day(_scoped)`, `infer_subgroup`, `attachment_ids`, `limited_file_ids`, `parse_schedule`, `parse_digital_schedule`, `digital_week`, `seroval_escape/unescape/request`, `decode_seroval`, `null_default`, `positive_id`, `ReferenceData::merge/is_empty`, `PlatformUser`.
+- `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
+- `workspace.rs`: `unauthorized`, `CredentialsRejected`, `Platform::detect`, `Site::new`, `script_urls`, `find_group`, `find_subgroup`, `Candidates::add`.
+- `telegram.rs`: `schedule_keyboard`, `week_keyboard`, `command`, `failure`, `login_failure`, `private`, `owner`, `account`.
+- `app.rs`: `login_required`, `notification_due`, `App::{now, lock_user, allow, sign_in, session, sign_out, load, resolve, send, show, show_loaded, present, stats, notify_one}`.
+- `systemd.rs`: `notify`, `watchdog`.
 
-- `model.rs`: `personal_subgroup`, `subgroup_label`, `week_start`, `week_millis`, `day_date`, `parse_date`, `visible_subjects`, `non_school_day`, `attachment_ids`, `limited_file_ids`, `parse_schedule`, `null_default`, `positive_id`.
-- `render.rs`: `week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`, `HELP`.
-- `workspace.rs`: `unauthorized`, `rediscover`, `script_urls`, `find_group`, `find_subgroup`, `Candidates::add`.
-- `telegram.rs`: `button`, `schedule_keyboard`, `week_keyboard`, `shift`, `command`, `private`, `owner`, `account`, `announce`, `download`.
-- `app.rs`: `notification_due`, `App::{now, lock_user, allow, authenticate, sign_in, session, sign_out, load, send, show, present, stats}`.
-- `credentials.rs`: `Cipher::{new, encrypt, decrypt, encrypt_cache, decrypt_cache}`.
+## 8. Lifecycle and configuration
 
-Naming: snake_case functions, `schedule:*` callbacks, `schedule:week:*` week subgroup.
+`app::run`:
+1. `getMe`, `App::new` (opens and migrates SQLite, `check_secret`), dispatcher (`worker_queue_size=16`, polling errors logged as warnings), VK loop, background, watchdog; then `READY=1`.
+2. On SIGTERM/SIGINT: `STOPPING=1`; `stop` token ends polling and scheduling; requests already running get 25 s (`DRAIN`); then `app.cancel` aborts the rest; background tasks get 3 s; SQLite closes. systemd's `TimeoutStopSec=35` covers this.
 
-## 8. Lifecycle bus and config pattern
-
-Central dispatcher - `app::run`: `Dispatcher::builder` + `dptree::entry` with two branches (`filter_message -> handle_message`, `filter_callback_query -> handle_callback`), `worker_queue_size=16`, graceful shutdown on SIGTERM/SIGINT + `CancellationToken` + `dispatcher.shutdown_token()` (handler timeout 25s, background 3s).
-
-Background - `App::background`: 30s ticker, notifications when `notification_due(now, notify_time)` (window 0..120s), fan-out `buffer_unordered(4)`, cleanup of `user_locks/limits` + `storage.prune()` every 300s.
-
-| Method | Caller | Purpose |
+| Task | Owner | Notes |
 |---|---|---|
-| `handle_message/message_inner` | dispatcher | commands; 120s timeout, error -> "try later" |
-| `handle_callback/callback_inner` | dispatcher | buttons; ownership check + `answer_callback_query`; 120s timeout |
-| `App::load` | `show/download/notify_one/callback` | 2 attempts (2nd after session invalidation on 401/403), SQLite fallback, `stale` flag |
-| `App::show_loaded` | `show/notify_one/callback` | day selection, `refs+assets` via `join!`, group/stale prefixes |
-| `notify_one` | `background` | `View::own(today)`, skip non-school days, `mark_notified` |
-| `Workspace::refresh` | `schedule` | personal/group endpoint selection, `force` on `rediscover` (404/410) |
-| `Workspace::discover` | `login/refresh/auxiliary` | parsing `/` + JS (up to 64 scripts, batches of 4), cache in `candidates` |
-
-Config: `Config::from_values(get)` - pure function; `load()` - env wrapper. Add a new variable to both + `.env.example` + here (table below). Access from another layer goes via `app.config.*`, never read `std::env` in handlers (typical mistake).
+| `telegram::handle_message/callback` | dispatcher | 120 s deadline (`/announce` 1 h), errors answered with `render` texts |
+| `vk::run` -> `dispatch` | `JoinSet`, 16 at once | 120 s deadline, answers on failure, drained on shutdown |
+| `App::background` | 30 s ticker | notifications when `notification_due` (0..120 s window), fan-out 4; cleanup of locks/limits + `prune` every 300 s |
+| `systemd::watchdog` | `WATCHDOG_USEC / 3` | only under systemd |
+| `App::load` | everyone | moka 5 min cache, circuit, 45 s timeout, `LoginRequired` / SQLite fallback |
 
 | Env | Default | Rule |
 |---|---|---|
-| `BOT_TOKEN` | required `id:secret` | digits + `:` + no whitespace |
-| `CREDENTIALS_SECRET` | required, trimmed len >= 32 | stable; rotation breaks decryption |
-| `KTK_BASE_URL` | `https://workspace.ktk-45.ru/` | HTTPS + host + no userinfo |
-| `DATABASE_PATH` | `data/bot.sqlite3` | `:memory:` only in tests |
-| `KTK_DEVICE_NAME` | `ktk-schedule` | sent to `/sign-in` as `Device` |
+| `BOT_TOKEN` | required | `digits:secret`; credential `bot_token` wins over env |
+| `CREDENTIALS_SECRET` | required, >= 32 bytes | stable forever; credential `credentials_secret` |
+| `KTK_BASE_URL` | `https://ktk.education-system.ru/` | HTTPS, host, no userinfo; the host picks `Platform` |
+| `DATABASE_PATH` | `data/bot.sqlite3` | set by the unit in production; `:memory:` only in tests |
+| `KTK_DEVICE_NAME` | `ktk-schedule` | part of the sign-in fingerprint |
 | `DEFAULT_GROUP_ID` | `269` | 1..=100000 |
-| `DEFAULT_SUBGROUP` | `1` | parsed by `personal_subgroup` |
-| `OWNER_TELEGRAM_ID` | `0` | `0` = announce/stats off |
-| `OWNER_VK_ID` | `0` | `0` = VK announce/stats off |
+| `DEFAULT_SUBGROUP` | `1` | fallback when the timetable does not reveal it |
+| `OWNER_TELEGRAM_ID` / `OWNER_VK_ID` | `0` | `0` disables `/stats` and `/announce` |
 | `NOTIFY_TIME` | `07:30` | `HH:MM` |
-| `TIMEZONE` | `Asia/Yekaterinburg` | `chrono-tz::Tz` |
+| `TIMEZONE` | `Asia/Yekaterinburg` | drives `Week` (digital `weekStart` and legacy millis) |
+| `VK_GROUP_TOKEN` | none | credential `vk_group_token`; empty = VK off |
+| `VK_GROUP_ID` | none | required with the token, positive |
+| `VK_API_URL` | `https://api.vk.com/method/` | HTTPS, no userinfo, normalized to end with `/` |
 | `RUST_LOG` | `ktk_schedule=info,teloxide=warn` | observability only |
-| `VK_GROUP_TOKEN` | none (optional) | group access token with messages scope |
-| `VK_GROUP_ID` | none (optional) | positive integer |
-| `VK_API_URL` | `https://api.vk.com/method/` | HTTPS URL to VK API |
 
-## 9. Persistence, settings, strings, assets
+New variable -> `config.rs` (`from_values` + `load` if secret) + `.env.example` + this table. Never read `std::env` outside `config.rs`/`systemd.rs`.
 
-- SQLite via sqlx, single connection (`max_connections=1`), WAL, `secure_delete=ON`, `busy_timeout=5s`. Migrations in `migrations/*.sql` are append-only, applied by `sqlx::migrate!()` in `Storage::open`. Manual `ALTER` outside migrations is forbidden.
-- `accounts`: password encrypted `v2:`, AAD=telegram_id. `login/group_id/personal_subgroup/subgroup/show_all/teacher_hash/notify` are open. `save_account` deletes the user's schedules+views (account switch = clean cache). `delete_account` cascade-cleans schedules+views (FK).
-- `schedules(telegram_id,scope,week)`: day JSON, `cache:v1:` cipher, context `("schedules",id,scope,week)`. `views(telegram_id,message_id)`: `View` JSON, context `("views",id,message)`. `reference_cache(telegram_id)`: `ReferenceData` JSON (hall names, call presets for offline rendering), context `("references",id)`; written on every online view, read when the session is gone (stale), wiped on account switch. `session_cache(telegram_id)`: `SessionRecord` JSON (cookie, session ID, endpoints), context `("sessions",id)`; reuses a single active session across restarts, revoked on logout. `prune`: views older than 30 days, schedules older than 90 days.
-- User settings: `subgroup/show_all` (`set_subgroup`), `notify` (`set_notify`), `notified_date` (`mark_notified`). Notifications: `notification_ids(date)` = `notify=1 AND notified_date<>date`.
-- Strings: all user-facing text in Russian lives in `render.rs`. Do not scatter magic strings; pair-type emoji in `render::pair_type`, file icons in `file_icon`.
-- Homework assets: `assets.submissions(sheet->file_id)` TTL 60s, `docs(file_id->Document)` TTL 256/900s, `refs` TTL 1h. Teacher (`teacher_hash != ""`) gets no assets. Download: `downloads` semaphore 3, stream into `tempfile::NamedTempFile`, 50MiB limit, `PrivateTmp=true` in the unit.
+## 9. Persistence (schema 0005, all tables STRICT)
 
-## 10. Gotchas and pitfalls
+- `accounts(user_id PK, group_id, personal_subgroup, subgroup, show_all, teacher_hash, notify, notified_date, created_at)` - settings only. `user_id` = Telegram ID, or VK ID + `VK_ID_OFFSET` (10^18).
+- `sessions(user_id PK -> accounts, data, updated_at)` - sealed `SessionRecord` (cookie header, session id, endpoints). No row = the user has to `/login`. Rotated cookies are re-saved (`App::persist_cookies`).
+- `schedules(user_id, scope, week)`, `views(user_id, message_id)` (VK uses the conversation message id), `reference_cache(user_id)` - sealed caches; `prune` drops views after 30 days and weeks after 90.
+- `save_account(account, session)` wipes the user's caches and stores the session in one transaction; `notify`/`notified_date` survive a re-login. `delete_account` cascades.
+- `notification_ids(date)` = `notify = 1`, not yet notified on `date`, **and a session exists**.
+- Migrations are append-only. Rebuilding a table: rename the old ones first, copy, drop children before parents (a cascade would otherwise hit the copies) - see 0005.
 
-1. `delete_message` after `/login` failed -> login is cancelled, password goes nowhere. Do not "fix" by retrying without deletion - this protects the password from staying in chat history.
-2. Private chat is mandatory: `private()` checks `chat.is_private() && from.id == chat.id`; callbacks check `query.from.id == chat.id`. чужой кнопки test (someone else's button) - "personal buttons are only for the owner".
-3. `View::scope` decides whose grades you see: `group:{id}` for another group, `teacher:{hash}` for a teacher, `personal` otherwise. Mix it up and you leak grades/homework.
-4. Empty days (`pair_type==9 || lecture_type==9`) are `non_school_day`, skipped in `notify_one` and shown as "not a school day". An empty week is not frozen in the 5-minute cache (`App::load` invalidates it).
-5. `fit_text(text, 4096)` counts UTF-16 units, cuts by `char`, appends `…`. Byte-slicing the string panics/corrupts unicode, forbidden.
-6. Workspace discovery: endpoints are found in HTML+JS (`SCHEDULE_LOADER` wins over `API`), `personal` is picked by `(has_grades, subject_count)`, group by a `group_aware` probe of neighbor groups. Breaks on site redesign - fix regex + `tests/workspace.rs`, do not hardcode paths.
-7. `Circuit`: 5 failures -> 30s cooldown, single probe. Always call `permit.finish(healthy)`; `unauthorized` counts as healthy (does not trip the circuit). A lost `finish` = stuck probe.
-8. `week_millis` = Monday 06:00 local time in `TIMEZONE`. Changing `TIMEZONE` shifts the requested week.
-9. `Config::from_values` trims and substitutes defaults on empty strings. Empty `BOT_TOKEN` without `:` is a "BOT_TOKEN is required" error, not a panic.
-10. `storage.prune` and `mark_notified(date=%Y-%m-%d)` rely on date strings; change the format everywhere at once (`notify_one`, `background`, `storage.rs` tests).
-11. `announce`: owner only (`OWNER_TELEGRAM_ID>0`/`OWNER_VK_ID>0` and equal to sender), text or reply; fan-out `buffer_unordered(4)` via `send_message/copy_message` (TG) or `send_message` (VK). Empty DB -> "nobody to send to". Recipients filtered by platform (`VK_ID_OFFSET`).
-12. Deploy: systemd `TimeoutStopSec=35` > 25s handler + 3s background; `receive.sh [test|prod]` checks `--version` and `NRestarts==0`. Targets: `test` -> `/opt/ktk-schedule/ktk-schedule-test` (`ktk-schedule-test.service`), `prod` -> `/opt/ktk-schedule/ktk-schedule` (`ktk-schedule.service`). Binary over 100MiB or empty is rejected.
-13. Oct 2026 site update (`/v0/<hash>/...` API, `assets/0.55.2`): the backend sends explicit `null` for unfilled fields (`LectureTheme/LectureHomework`) - all schedule/reference scalars use `null_default`, and `parse_schedule` (`model.rs`) skips malformed subjects/days with a warning, failing only when nothing usable remains (stale fallback). After any site update replay a fresh HAR: `KTK_HAR_PATH=... cargo test --test har -- --ignored` (partial captures are completed from the personal schedule inside the test).
-14. VK Bot login: VK Bots cannot delete user incoming messages in 1-on-1 private dialogs; login warns user to delete credentials message manually. VK IDs are stored with `VK_ID_OFFSET = 1_000_000_000_000_000_000` to prevent collision with Telegram IDs.
+## 10. Gotchas
+
+1. **Digital wire format.** Requests are `{t: node, f: 127, m: []}`; responses are bare seroval nodes. Every string node is escaped like JavaScript (`<` -> `\x3C`, `"` -> `\"`): use `seroval_request`/`decode_seroval`, never raw `{"t":1,"s":...}`. `t:11` (null-prototype dictionaries) are objects.
+2. **Sessions slide.** A digital session lives 30 days after its last use (`expiresAt - lastSeen = 30 d`); there is nothing to refresh proactively. Failures come in-band as `{error: {appError: {code: "authRequired"}}}` with HTTP 200 -> `server_error` maps them to 401 -> `LoginRequired` (a refused *group* timetable ends the session only if the personal one is refused too).
+3. **Server function ids** are content hashes: a site deploy changes them. `Workspace::call` rediscovers once on 404/410 or a non-JSON answer, and one crawl serves all sessions (`Site` discovery generation). Known-good defaults live in `DEFAULT_DIGITAL_*`; verify them with a fresh HAR (section 11) when the site changes.
+4. **Subgroup.** The digital account does not name it; `App::detect_subgroup` reads the personal timetable (only the own split lessons appear). Inconclusive weeks fall back to `DEFAULT_SUBGROUP`.
+5. `delete_message` failure cancels a Telegram login (rule 2). VK cannot delete user messages: `render::vk_signed_in` says the password message should be deleted.
+6. `fit_text(text, 4096)` counts UTF-16; byte slicing panics.
+7. `Circuit`: always `permit.finish(healthy)`; a rejected session counts as healthy.
+8. `week_millis` = Monday 06:00 in `TIMEZONE`; `Week` carries both the date and the millis. Never convert millis back with a hardcoded zone.
+9. Dates from users go through `parse_date`/`within_reach`; `%Y` accepts "-262144", which used to panic in `week_label`.
+10. VK: the long poll key expires about hourly (`failed: 2`) - renew it and keep `ts`. API calls are paced (60 ms) under the 20/s limit; error 6/10 is retried once. Never log poll URLs.
+11. teloxide logs listener errors itself unless `dispatch_with_listener` gets a handler (`run` does this).
+12. `storage.prune` and `mark_notified` compare `%Y-%m-%d` strings; change the format everywhere at once.
+13. Root must not open the live SQLite file in WAL mode: it would leave root-owned `-wal/-shm` files. Deploy and backup scripts run `sqlite3` as `ktk-schedule`.
+14. wiremock `MockGuard` drops did not unmount scoped mocks reliably here: prefer `.up_to_n_times(n)`.
 
 ## 11. Workflows
 
-User by hand: `cp .env.example .env` + fill `BOT_TOKEN` (test bot), `CREDENTIALS_SECRET` (`openssl rand -base64 32`), `cargo run -- --check`, `cargo run`.
+Local checks (always, in this order; the pre-commit hook runs the first two):
+```
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+```
+HAR replay after a site change (never print HAR contents, they hold grades and the password):
+```
+KTK_HAR_PATH=/path/to/capture.har cargo test --locked --test har -- --ignored
+```
+Capture with DevTools -> Network, "Preserve log" and "Disable cache" on, so the main JS bundles are included (discovery is only verified when they are).
 
-Allowed for the agent (read-only + local checks):
-- `cargo fmt --all -- --check`
-- `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`
-- `cargo build --locked --release` (only if a binary was requested)
-- `./target/debug/ktk-schedule --help | --version | --check`
-- `cargo audit --deny unsound --deny yanked` (if cargo-audit is installed)
-- `rg/grep/glob/read` over code; do NOT run `gh workflow run deploy.yml` without asking
+**CI/CD.** `ci.yml` checks every push and PR. `deploy.yml` (manual, default branch only): RustSec audit -> build on `debian:13-slim` (same OS as the server) with all checks -> artifact with sha256 -> self-hosted runner `ktk-deploy` verifies the hash and runs `sudo -n /usr/local/sbin/ktk-schedule-deploy <test|prod>`. Start it with `deploy/update.sh [test|prod]`.
 
-Forbidden for the agent without explicit permission: commit/push, change `.env`/`/etc/ktk-schedule/bot.env`, touch `data/*.sqlite*`, run the prod bot with the prod token, deploy (`deploy/update.sh`, `sudo`, `systemctl`), change `rust-toolchain.toml` and the Rust version (1.98.1), add dependencies without a `cargo audit` reason.
+**Host** (Debian 13, systemd 257, SSH alias `vps`):
 
-Check order after a fix: `cargo fmt`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked --all-targets`. Tests need loopback wiremock network, no external calls. The pre-commit hook (`.githooks/pre-commit`) runs fmt+clippy.
+| Path | What |
+|---|---|
+| `/etc/systemd/system/ktk-schedule@.service` | instances `prod`, `test`: Type=notify, watchdog, sandbox, `MemoryMax=256M` |
+| `/etc/ktk-schedule/<instance>/bot.env` | settings (0600 root) |
+| `/etc/ktk-schedule/<instance>/{bot_token,credentials_secret,vk_group_token}.cred` | `systemd-creds` sealed secrets |
+| `/opt/ktk-schedule/<instance>/ktk-schedule[.prev]` | binary and the previous one |
+| `/var/lib/ktk-schedule/<instance>/bot.sqlite3` | data (owner `ktk-schedule`) |
+| `/var/backups/ktk-schedule/<instance>/` | 10 pre-deploy + 14 daily backups (`ktk-schedule-backup@<instance>.timer`) |
+| `/usr/local/sbin/ktk-schedule-{deploy,backup}`, `/etc/sudoers.d/ktk-schedule-runner` | tooling; the runner (`ktk-runner`) may only run the deploy script |
+
+`ktk-schedule-deploy` rehearses the migration on a copy of the live database, backs it up, swaps the binary, waits for READY and 15 s of stability, and restores the previous binary and database on any failure. `deploy/install.sh` (root, idempotent) provisions all of the above. `deploy/ctl.sh status|logs|follow|start|stop|restart|backup [prod|test]` manages it from a workstation.
+
+Rotate a secret on the host: `printf %s "$NEW" | systemd-creds encrypt --name=bot_token - /etc/ktk-schedule/prod/bot_token.cred && systemctl restart ktk-schedule@prod`. Changing `credentials_secret` makes every saved session unreadable (users must `/login` again).
+
+Agent permissions: read-only commands and the local checks above are always fine. Committing, pushing, deploying, `ssh` changes on the host and dependency changes need the user's go-ahead (dependencies also need a `cargo audit` reason). Never change `rust-toolchain.toml` (Rust 1.98.1) on your own.
 
 ## 12. Self-maintenance
 
-- New env -> Config tables (section 8) + `.env.example`.
-- New callback/command -> Naming table (section 2) + `HELP` if it is a command.
-- New shared helper -> section 7; third copy -> consolidate.
-- New lifecycle method (background/fan-out/cache) -> section 8 table.
-- New SQLite table/column -> `migrations/` new file + section 9.
-- New pitfall from a session -> section 10 numbered item with file:line.
-- Tribal knowledge rots: when limits/timeouts/semaphores change, update sections 4/8/10 in the same commit.
+- New env -> section 8 table + `.env.example`.
+- New callback/command -> section 2 + `HELP`/`VK_HELP` if it is a command.
+- New text -> `render.rs` and the style test in `tests/domain.rs`.
+- New helper -> section 7; third copy -> consolidate.
+- New table/column -> a new migration + section 9.
+- New pitfall -> section 10 with file/function.
+- Limits, timeouts, semaphores, paths changed -> sections 1, 5, 8, 11 in the same commit.
