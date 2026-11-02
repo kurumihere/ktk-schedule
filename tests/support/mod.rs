@@ -438,6 +438,27 @@ pub async fn digital_app(digital: &Digital, telegram: &MockServer, database: &st
     app
 }
 
+/// An App with the VK bot enabled against `vk` (owner VK ID 777).
+pub async fn vk_app(college: &College, telegram: &MockServer, vk: &MockServer) -> App {
+    let mut config = Config::from_values(|key| match key {
+        "BOT_TOKEN" => Some("123456:TEST".into()),
+        "CREDENTIALS_SECRET" => Some("x".repeat(32)),
+        "DATABASE_PATH" => Some(":memory:".into()),
+        "VK_GROUP_TOKEN" => Some("vk_test_token".into()),
+        "VK_GROUP_ID" => Some("242576636".into()),
+        "OWNER_VK_ID" => Some("777".into()),
+        _ => None,
+    })
+    .unwrap();
+    // Only test fixtures bypass the production HTTPS requirement for loopback mocks.
+    config.base_url = college.server.uri().parse().unwrap();
+    config.vk_api_url = format!("{}/", vk.uri()).parse().unwrap();
+    let bot = Bot::new("123456:TEST")
+        .set_api_url(telegram.uri().parse().unwrap())
+        .throttle(Limits::default());
+    App::new(config, bot, "test_bot".into()).await.unwrap()
+}
+
 async fn app_at(college: &MockServer, telegram: &MockServer, database: &str) -> App {
     let mut config = Config::from_values(|key| match key {
         "BOT_TOKEN" => Some("123456:TEST".into()),

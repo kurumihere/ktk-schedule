@@ -299,3 +299,45 @@ async fn non_school_day_on_saturday_keeps_current_week() {
     );
     assert_eq!(saved_view.date, saturday);
 }
+
+#[tokio::test]
+async fn groups_only_hear_the_bots_own_commands_and_owner_tools_stay_private() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let mut app = app(&college, &server).await;
+    app.config.owner_id = 42;
+    let app = Arc::new(app);
+    // Another bot's command, chatter and the owner's statistics: silence in a group.
+    for text in ["/unknown", "hello", "/stats"] {
+        handle_message(app.clone(), message(-100, text))
+            .await
+            .unwrap();
+    }
+    handle_message(app.clone(), message(-100, "/announce hi"))
+        .await
+        .unwrap();
+    let texts: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let body: Value = r.body_json().unwrap();
+            body["text"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(texts, ["Нет доступа."]);
+    // In a private chat the owner still gets the statistics.
+    handle_message(app.clone(), message(42, "/stats"))
+        .await
+        .unwrap();
+    let last: Value = server
+        .received_requests()
+        .await
+        .unwrap()
+        .last()
+        .unwrap()
+        .body_json()
+        .unwrap();
+    assert!(last["text"].as_str().unwrap().starts_with("📊 Статистика"));
+}

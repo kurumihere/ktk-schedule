@@ -658,6 +658,12 @@ fn invalid_configuration_fails_before_network_requests() {
         ("BOT_TOKEN", "invalid"),
         ("OWNER_VK_ID", "-1"),
         ("OWNER_VK_ID", "abc"),
+        // The community token goes to VK_API_URL: never over plain HTTP.
+        ("VK_API_URL", "http://api.vk.com/method/"),
+        ("VK_API_URL", "https://token@api.vk.com/method/"),
+        ("VK_GROUP_ID", "0"),
+        ("VK_GROUP_ID", "-5"),
+        ("VK_GROUP_TOKEN", "token-without-a-community"),
     ] {
         let previous = values.insert(key, value);
         assert!(
@@ -670,6 +676,24 @@ fn invalid_configuration_fails_before_network_requests() {
             values.remove(key);
         }
     }
+}
+
+#[test]
+fn vk_settings_are_normalized() {
+    let values = HashMap::from([
+        ("BOT_TOKEN", "123456:TEST"),
+        ("CREDENTIALS_SECRET", "01234567890123456789012345678901"),
+        ("VK_GROUP_TOKEN", "token"),
+        ("VK_GROUP_ID", "242576636"),
+        ("VK_API_URL", "https://api.vk.com/method"),
+    ]);
+    let config = Config::from_values(|k| values.get(k).map(|v| v.to_string())).unwrap();
+    assert_eq!(config.vk_group_id, Some(242576636));
+    // Method names are joined onto the base, so it must end with a slash.
+    assert_eq!(
+        config.vk_api_url.join("messages.send").unwrap().as_str(),
+        "https://api.vk.com/method/messages.send"
+    );
 }
 
 #[test]

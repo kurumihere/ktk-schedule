@@ -1,12 +1,33 @@
-use crate::{app::App, model::*, render, storage::Account};
-use anyhow::{Result, anyhow};
-use chrono::{Datelike, NaiveDate};
+use crate::{
+    app::{App, login_required},
+    model::*,
+    render,
+    storage::Account,
+};
+use anyhow::{Result, bail, ensure};
+use chrono::NaiveDate;
 use chrono_tz::Tz;
-use futures::{StreamExt, stream};
-use serde::{Deserialize, Serialize};
+use futures::{StreamExt, future::BoxFuture, stream};
+use reqwest::Url;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicI32, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
+
+const API_VERSION: &str = "5.199";
+/// A community token may call the API 20 times per second; keep a margin.
+const CALL_SPACING: Duration = Duration::from_millis(60);
+/// Updates handled at once; the long poll waits while all slots are busy.
+const HANDLERS: usize = 16;
+const HANDLER_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VkKeyboard {
@@ -38,7 +59,8 @@ pub enum VkAction {
     },
 }
 
-#[derive(Deserialize, Debug)]
+/// Long poll access. The key reads the community's events: never log it.
+#[derive(Deserialize)]
 pub struct LongPollServer {
     pub key: String,
     pub server: String,
@@ -69,7 +91,7 @@ pub struct MessageNewObject {
     pub message: MessageObject,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct MessageObject {
     #[serde(default)]
     pub id: i64,
@@ -86,6 +108,18 @@ pub struct MessageObject {
     pub reply_message: Option<Box<MessageObject>>,
 }
 
+/// Message text may be `/login` with a password: keep it out of logs.
+impl std::fmt::Debug for MessageObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MessageObject")
+            .field("id", &self.id)
+            .field("peer_id", &self.peer_id)
+            .field("from_id", &self.from_id)
+            .field("text", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct MessageEventObject {
     pub user_id: i64,
@@ -97,7 +131,7 @@ pub struct MessageEventObject {
     pub payload: Value,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct VkApiEnvelope<T> {
     response: Option<T>,
     error: Option<VkApiError>,
@@ -108,6 +142,26 @@ struct VkApiError {
     error_code: i64,
     error_msg: String,
 }
+
+/// An error VK reported for a method call.
+#[derive(Debug)]
+pub struct VkError {
+    pub method: &'static str,
+    pub code: i64,
+    pub message: String,
+}
+
+impl std::fmt::Display for VkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "VK {} error {}: {}",
+            self.method, self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for VkError {}
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -128,77 +182,126 @@ pub struct VkClient {
     http: reqwest::Client,
     token: String,
     group_id: i64,
-    api_url: String,
+    api: Url,
+    /// Earliest moment the next API call may start.
+    next_call: tokio::sync::Mutex<Instant>,
+    random_id: AtomicI32,
 }
 
 impl VkClient {
-    pub fn new(token: String, group_id: i64, api_url: String) -> Self {
+    /// `api` is the HTTPS method base, such as `https://api.vk.com/method/`.
+    pub fn new(token: String, group_id: i64, api: Url) -> Result<Self> {
         let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(35))
-            .build()
-            .unwrap_or_default();
-        Self {
+            .build()?;
+        // random_id deduplicates sends per peer: unique per process, distinct across restarts.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i32 & 0x3fff_ffff)
+            .unwrap_or(1);
+        Ok(Self {
             http,
             token,
             group_id,
-            api_url,
-        }
+            api,
+            next_call: tokio::sync::Mutex::new(Instant::now()),
+            random_id: AtomicI32::new(seed),
+        })
     }
 
     pub fn group_id(&self) -> i64 {
         self.group_id
     }
 
-    pub async fn get_long_poll_server(&self) -> Result<LongPollServer> {
-        let url = format!(
-            "{}/groups.getLongPollServer",
-            self.api_url.trim_end_matches('/')
-        );
-        let res: VkApiEnvelope<LongPollServer> = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .form(&[
-                ("group_id", self.group_id.to_string()),
-                ("v", "5.199".to_string()),
-            ])
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(err) = res.error {
-            return Err(anyhow!(
-                "VK getLongPollServer error {}: {}",
-                err.error_code,
-                err.error_msg
-            ));
+    async fn throttle(&self) {
+        let wait = {
+            let mut next = self.next_call.lock().await;
+            let now = Instant::now();
+            let slot = (*next).max(now);
+            *next = slot + CALL_SPACING;
+            slot - now
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
         }
-        res.response
-            .ok_or_else(|| anyhow!("empty response from getLongPollServer"))
     }
 
-    pub async fn poll(
+    /// Call an API method. Rate limiting (6) and internal errors (10) get one calm retry.
+    async fn call<T: DeserializeOwned>(
         &self,
-        server: &str,
-        key: &str,
-        ts: &str,
-        wait: u32,
-    ) -> Result<LongPollResponse> {
-        let server_url = if server.starts_with("http") {
-            server.to_string()
-        } else {
-            format!("https://{server}")
-        };
-        let sep = if server_url.contains('?') { '&' } else { '?' };
-        let poll_url = format!("{server_url}{sep}act=a_check&key={key}&ts={ts}&wait={wait}");
-        let res = self
+        method: &'static str,
+        mut params: Vec<(&'static str, String)>,
+    ) -> Result<T> {
+        let url = self.api.join(method)?;
+        params.push(("v", API_VERSION.into()));
+        for attempt in 0..2 {
+            self.throttle().await;
+            let envelope: VkApiEnvelope<T> = self
+                .http
+                .post(url.clone())
+                .bearer_auth(&self.token)
+                .form(&params)
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(|e| e.without_url())?
+                .json()
+                .await
+                .map_err(|e| e.without_url())?;
+            match (envelope.response, envelope.error) {
+                (_, Some(error)) if attempt == 0 && matches!(error.error_code, 6 | 10) => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                (_, Some(error)) => {
+                    return Err(VkError {
+                        method,
+                        code: error.error_code,
+                        message: error.error_msg,
+                    }
+                    .into());
+                }
+                (Some(response), None) => return Ok(response),
+                (None, None) => bail!("VK {method}: empty response"),
+            }
+        }
+        bail!("VK {method}: still rate limited")
+    }
+
+    pub async fn get_long_poll_server(&self) -> Result<LongPollServer> {
+        self.call(
+            "groups.getLongPollServer",
+            vec![("group_id", self.group_id.to_string())],
+        )
+        .await
+    }
+
+    pub async fn poll(&self, server: &LongPollServer, wait: u32) -> Result<LongPollResponse> {
+        let mut url = Url::parse(&server.server)
+            .or_else(|_| Url::parse(&format!("https://{}", server.server)))?;
+        ensure!(
+            url.scheme() == "https",
+            "VK long poll server must use HTTPS"
+        );
+        url.query_pairs_mut()
+            .append_pair("act", "a_check")
+            .append_pair("key", &server.key)
+            .append_pair("ts", &server.ts)
+            .append_pair("wait", &wait.to_string());
+        // Errors carry no URL: it contains the long poll key.
+        Ok(self
             .http
-            .get(&poll_url)
+            .get(url)
             .send()
-            .await?
-            .json::<LongPollResponse>()
-            .await?;
-        Ok(res)
+            .await
+            .map_err(|e| e.without_url())?
+            .json()
+            .await
+            .map_err(|e| e.without_url())?)
+    }
+
+    fn next_random_id(&self) -> String {
+        (self.random_id.fetch_add(1, Ordering::Relaxed) & 0x7fff_ffff).to_string()
     }
 
     pub async fn send_message(
@@ -207,51 +310,32 @@ impl VkClient {
         text: &str,
         keyboard: Option<&VkKeyboard>,
     ) -> Result<i64> {
-        let url = format!("{}/messages.send", self.api_url.trim_end_matches('/'));
-        let random_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| (d.as_nanos() & 0x7FFF_FFFF) as i32)
-            .unwrap_or(1)
-            .to_string();
-        let mut form = vec![
+        let mut params = vec![
             ("peer_ids", peer_id.to_string()),
-            ("random_id", random_id),
+            ("random_id", self.next_random_id()),
             ("message", render::fit_text(text, 4096)),
-            ("v", "5.199".to_string()),
         ];
-        let kb_json;
-        if let Some(kb) = keyboard {
-            kb_json = serde_json::to_string(kb)?;
-            form.push(("keyboard", kb_json));
+        if let Some(keyboard) = keyboard {
+            params.push(("keyboard", serde_json::to_string(keyboard)?));
         }
-        let res: VkApiEnvelope<SendMessageResult> = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .form(&form)
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(err) = res.error {
-            return Err(anyhow!(
-                "VK messages.send error {}: {}",
-                err.error_code,
-                err.error_msg
-            ));
-        }
-        match res.response {
-            Some(SendMessageResult::Items(items)) if !items.is_empty() => {
-                let cmid = items[0].conversation_message_id;
-                if cmid > 0 {
-                    Ok(cmid)
-                } else {
-                    Ok(items[0].message_id)
-                }
-            }
-            Some(SendMessageResult::Id(id)) => Ok(id),
-            _ => Ok(0),
-        }
+        Ok(
+            match self
+                .call::<SendMessageResult>("messages.send", params)
+                .await?
+            {
+                SendMessageResult::Items(items) => items
+                    .first()
+                    .map(|item| {
+                        if item.conversation_message_id > 0 {
+                            item.conversation_message_id
+                        } else {
+                            item.message_id
+                        }
+                    })
+                    .unwrap_or(0),
+                SendMessageResult::Id(id) => id,
+            },
+        )
     }
 
     pub async fn edit_message(
@@ -261,42 +345,28 @@ impl VkClient {
         text: &str,
         keyboard: Option<&VkKeyboard>,
     ) -> Result<()> {
-        let url = format!("{}/messages.edit", self.api_url.trim_end_matches('/'));
-        let mut form = vec![
+        let mut params = vec![
             ("peer_id", peer_id.to_string()),
             (
                 "conversation_message_id",
                 conversation_message_id.to_string(),
             ),
             ("message", render::fit_text(text, 4096)),
-            ("v", "5.199".to_string()),
         ];
-        let kb_json;
-        if let Some(kb) = keyboard {
-            kb_json = serde_json::to_string(kb)?;
-            form.push(("keyboard", kb_json));
+        if let Some(keyboard) = keyboard {
+            params.push(("keyboard", serde_json::to_string(keyboard)?));
         }
-        let res: VkApiEnvelope<Value> = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .form(&form)
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(err) = res.error {
-            if err.error_code == 924 {
-                // Nothing changed
-                return Ok(());
+        match self.call::<Value>("messages.edit", params).await {
+            // Nothing changed.
+            Err(error)
+                if error
+                    .downcast_ref::<VkError>()
+                    .is_some_and(|e| e.code == 924) =>
+            {
+                Ok(())
             }
-            return Err(anyhow!(
-                "VK messages.edit error {}: {}",
-                err.error_code,
-                err.error_msg
-            ));
+            result => result.map(|_| ()),
         }
-        Ok(())
     }
 
     pub async fn send_event_answer(
@@ -306,36 +376,17 @@ impl VkClient {
         peer_id: i64,
         event_data: Option<&str>,
     ) -> Result<()> {
-        let url = format!(
-            "{}/messages.sendMessageEventAnswer",
-            self.api_url.trim_end_matches('/')
-        );
-        let mut form = vec![
+        let mut params = vec![
             ("event_id", event_id.to_string()),
             ("user_id", user_id.to_string()),
             ("peer_id", peer_id.to_string()),
-            ("v", "5.199".to_string()),
         ];
         if let Some(data) = event_data {
-            form.push(("event_data", data.to_string()));
+            params.push(("event_data", data.to_string()));
         }
-        let res: VkApiEnvelope<Value> = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .form(&form)
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(err) = res.error {
-            return Err(anyhow!(
-                "VK sendMessageEventAnswer error {}: {}",
-                err.error_code,
-                err.error_msg
-            ));
-        }
-        Ok(())
+        self.call::<Value>("messages.sendMessageEventAnswer", params)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -354,8 +405,6 @@ pub fn schedule_keyboard_vk(
     view: &View,
     today: NaiveDate,
     tz: Tz,
-    _file_count: usize,
-    _teacher: bool,
 ) -> VkKeyboard {
     let mut buttons = Vec::new();
 
@@ -544,11 +593,13 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
 
     let user_id = msg.from_id;
     let storage_id = PlatformUser::Vk(user_id).to_storage_id();
+    let text = msg.text.trim();
+    let (command, args) = crate::telegram::command(text);
+    // VK buttons and people type words like "Начать": compare them case-insensitively.
+    let word = text.to_lowercase();
 
     // 2. Rate limiting
-    let text = msg.text.trim();
-    let is_login = text.starts_with("/login");
-    if !app.allow(storage_id, is_login).await {
+    if !app.allow(storage_id, command == "/login").await {
         let _ = vk
             .send_message(
                 msg.peer_id,
@@ -562,14 +613,14 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     let _guard = app.lock_user(storage_id).await;
 
     // Handle commands
-    if text == "/start" || text.eq_ignore_ascii_case("начать") {
+    if command == "/start" || word == "начать" {
         vk.send_message(msg.peer_id, render::VK_HELP, None).await?;
         return Ok(());
     }
 
-    if is_login {
-        let parts: Vec<&str> = text.split_whitespace().collect();
-        if parts.len() != 3 {
+    if command == "/login" {
+        let credentials: Vec<&str> = args.split_whitespace().collect();
+        let [login, password] = credentials[..] else {
             vk.send_message(
                 msg.peer_id,
                 "Использование: /login <логин> <пароль>\nПример: /login 1000123 mypass\n\n💡 Совет: мы рекомендуем Telegram-бота, там вход безопаснее, так как пароль сразу удаляется:\n👉 https://t.me/ktk45_schedule_bot",
@@ -577,8 +628,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
             )
             .await?;
             return Ok(());
-        }
-        let (login, password) = (parts[1], parts[2]);
+        };
         match app.sign_in(storage_id, login, password).await {
             Ok(user_account) => {
                 let role = if !user_account.teacher_hash.is_empty() {
@@ -607,7 +657,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         return Ok(());
     }
 
-    if text == "/logout" {
+    if command == "/logout" {
         app.sign_out(storage_id).await?;
         vk.send_message(
             msg.peer_id,
@@ -618,13 +668,13 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         return Ok(());
     }
 
-    if text == "/my_id" {
+    if command == "/my_id" {
         vk.send_message(msg.peer_id, &format!("Ваш VK ID: {}", msg.from_id), None)
             .await?;
         return Ok(());
     }
 
-    if text == "/stats" {
+    if command == "/stats" {
         if app.config.owner_vk_id == 0 || msg.from_id != app.config.owner_vk_id {
             vk.send_message(msg.peer_id, "Команда доступна только администратору.", None)
                 .await?;
@@ -635,9 +685,8 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         return Ok(());
     }
 
-    if text.starts_with("/announce") {
-        let param = text.strip_prefix("/announce").unwrap_or("").trim();
-        announce_vk(app, vk, &msg, param).await?;
+    if command == "/announce" {
+        announce_vk(app, vk, &msg, args).await?;
         return Ok(());
     }
 
@@ -647,55 +696,43 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
         return Ok(());
     };
 
-    if text == "/notify_on" {
+    if command == "/notify_on" {
         app.storage.set_notify(storage_id, true).await?;
         vk.send_message(msg.peer_id, "🔔 Утренние уведомления включены.", None)
             .await?;
         return Ok(());
     }
 
-    if text == "/notify_off" {
+    if command == "/notify_off" {
         app.storage.set_notify(storage_id, false).await?;
         vk.send_message(msg.peer_id, "🔕 Утренние уведомления выключены.", None)
             .await?;
         return Ok(());
     }
 
-    if text.eq_ignore_ascii_case("/refresh") || text.eq_ignore_ascii_case("обновить") {
+    if command == "/refresh" || word == "обновить" {
         let view = View::own(&account, app.now().date_naive());
         show_vk(app, vk, &account, &view, None, true).await?;
         return Ok(());
     }
 
-    if text.eq_ignore_ascii_case("/my")
-        || text.eq_ignore_ascii_case("моё")
-        || text.eq_ignore_ascii_case("мое")
-    {
+    if command == "/my" || word == "моё" || word == "мое" {
         let view = View::own(&account, app.now().date_naive());
         show_vk(app, vk, &account, &view, None, false).await?;
         return Ok(());
     }
 
-    if text.starts_with("/schedule") {
-        let arg = text.strip_prefix("/schedule").unwrap_or("").trim();
-        let target_date = if arg.is_empty() {
-            app.now().date_naive()
-        } else {
-            match parse_date(arg, app.now().date_naive()) {
-                Ok(d) => d,
-                Err(_) => {
-                    vk.send_message(
-                        msg.peer_id,
-                        "Неверный формат даты. Используйте: /schedule ДД.ММ или /schedule ГГГГ-ММ-ДД",
-                        None,
-                    )
-                    .await?;
-                    return Ok(());
-                }
-            }
+    if command == "/schedule" {
+        let Ok(target_date) = parse_date(args, app.now().date_naive()) else {
+            vk.send_message(
+                msg.peer_id,
+                "Неверный формат даты. Используйте: /schedule ДД.ММ или /schedule ГГГГ-ММ-ДД",
+                None,
+            )
+            .await?;
+            return Ok(());
         };
-        let mut view = View::own(&account, target_date);
-        view.select_date(target_date);
+        let view = View::own(&account, target_date);
         show_vk(app, vk, &account, &view, None, false).await?;
         return Ok(());
     }
@@ -750,8 +787,8 @@ async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str)
     let all_ids = app.storage.ids().await?;
     let vk_recipients: Vec<i64> = all_ids
         .into_iter()
-        .filter(|&id| id >= crate::model::VK_ID_OFFSET)
-        .map(|id| id - crate::model::VK_ID_OFFSET)
+        .filter(|&id| id >= VK_ID_OFFSET)
+        .map(|id| id - VK_ID_OFFSET)
         .collect();
 
     if vk_recipients.is_empty() {
@@ -764,15 +801,15 @@ async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str)
         return Ok(());
     }
 
-    let results = stream::iter(vk_recipients.into_iter().map(|recipient| async move {
-        vk.send_message(recipient, &render::fit_text(text, 4096), None)
-            .await
-            .map(|_| ())
-    }))
-    .boxed()
-    .buffer_unordered(4)
-    .collect::<Vec<_>>()
-    .await;
+    // VkClient paces the calls; parallelism only hides network latency.
+    let results =
+        stream::iter(vk_recipients.into_iter().map(|recipient| async move {
+            vk.send_message(recipient, text, None).await.map(|_| ())
+        }))
+        .boxed()
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
 
     let sent = results.iter().filter(|r| r.is_ok()).count();
     vk.send_message(
@@ -810,28 +847,31 @@ pub async fn handle_callback(
         .send_event_answer(&event.event_id, event.user_id, event.peer_id, None)
         .await;
 
-    let Some(data) = extract_callback_data(&event.payload) else {
+    let Some(data) = extract_callback_data(&event.payload).filter(|d| d.starts_with("schedule:"))
+    else {
         return Ok(());
     };
-    if !data.starts_with("schedule:") {
+    let storage_id = PlatformUser::Vk(event.user_id).to_storage_id();
+    // Buttons are as expensive as commands: refresh hits the college site.
+    if !app.allow(storage_id, false).await {
         return Ok(());
     }
-
-    let storage_id = PlatformUser::Vk(event.user_id).to_storage_id();
+    let Ok(cmid) = i32::try_from(event.conversation_message_id) else {
+        return Ok(());
+    };
     let _guard = app.lock_user(storage_id).await;
 
     let Some(account) = app.storage.account(storage_id).await? else {
         return Ok(());
     };
+    let teacher = !account.teacher_hash.is_empty();
 
-    let cmid = event.conversation_message_id as i32;
     let mut view = match app.storage.view(storage_id, cmid).await? {
         Some(v) => v,
         None => View::own(&account, app.now().date_naive()),
     };
 
-    let now = app.now();
-    let today = now.date_naive();
+    let today = app.now().date_naive();
     let mut refresh = false;
 
     match data.as_str() {
@@ -865,7 +905,7 @@ pub async fn handle_callback(
             };
             vk.edit_message(
                 event.peer_id,
-                cmid as i64,
+                i64::from(cmid),
                 "Введите номер группы сообщением в чат (например: 269):",
                 Some(&keyboard),
             )
@@ -883,52 +923,56 @@ pub async fn handle_callback(
             view.screen = Screen::Weeks;
         }
         "schedule:week:prev" => {
-            view.week_start = shift(view.week(), -7)?;
             view.select_date(shift(view.date, -7)?);
             view.screen = Screen::Schedule;
         }
         "schedule:week:next" => {
-            view.week_start = shift(view.week(), 7)?;
             view.select_date(shift(view.date, 7)?);
             view.screen = Screen::Schedule;
         }
         "schedule:week:today" => {
             view.week_offset = 0;
-            view.week_start = week_start(today);
             view.select_date(today);
             view.screen = Screen::Schedule;
         }
         "schedule:subgroup:menu" => {
             view.screen = Screen::Subgroup;
         }
-        "schedule:subgroup:set:all" | "schedule:subgroup:all" => {
-            view.show_all = true;
-            let _ = app
-                .storage
-                .set_subgroup(storage_id, &view.subgroup, true)
-                .await;
-            view.screen = Screen::Schedule;
-        }
-        "schedule:subgroup:set:left" | "schedule:subgroup:left" => {
-            view.show_all = false;
-            view.subgroup = "left".into();
-            let _ = app.storage.set_subgroup(storage_id, "left", false).await;
-            view.screen = Screen::Schedule;
-        }
-        "schedule:subgroup:set:right" | "schedule:subgroup:right" => {
-            view.show_all = false;
-            view.subgroup = "right".into();
-            let _ = app.storage.set_subgroup(storage_id, "right", false).await;
+        "schedule:subgroup:set:all"
+        | "schedule:subgroup:all"
+        | "schedule:subgroup:set:left"
+        | "schedule:subgroup:left"
+        | "schedule:subgroup:set:right"
+        | "schedule:subgroup:right" => {
+            if teacher {
+                return Ok(());
+            }
+            view.show_all = data.ends_with(":all");
+            if !view.show_all {
+                view.subgroup = if data.ends_with(":right") {
+                    "right"
+                } else {
+                    "left"
+                }
+                .into();
+            }
+            // Filtering another group's timetable must not change the user's own preference.
+            if view.group.is_none() {
+                app.storage
+                    .set_subgroup(storage_id, &view.subgroup, view.show_all)
+                    .await?;
+            }
             view.screen = Screen::Schedule;
         }
         _ if data.starts_with("schedule:day:") => {
-            let idx = data
+            let Some(index) = data
                 .strip_prefix("schedule:day:")
-                .unwrap_or("")
-                .parse::<usize>()
-                .unwrap_or(0);
+                .and_then(|i| i.parse::<usize>().ok())
+            else {
+                return Ok(());
+            };
             let loaded = app.load(&account, &view, false).await?;
-            if let Some(day) = loaded.days.get(idx)
+            if let Some(day) = loaded.days.get(index)
                 && let Some(d) = day_date(&day.date, app.config.timezone)
             {
                 view.select_date(d);
@@ -973,36 +1017,7 @@ pub async fn show_vk(
     cmid: Option<i32>,
     refresh: bool,
 ) -> Result<()> {
-    let loaded = app.load(account, view, refresh).await?;
-    let now = app.now();
     let teacher = !account.teacher_hash.is_empty();
-
-    let (view, loaded) = if view.screen == Screen::Schedule
-        && view.date == now.date_naive()
-        && view.date.weekday() == chrono::Weekday::Sun
-        && view.week() == week_start(view.date)
-    {
-        let mut next_view = view.clone();
-        next_view.week_start = shift(view.week(), 7)?;
-        if let Ok(next) = app.load(account, &next_view, false).await
-            && !next.days.is_empty()
-        {
-            if let Some(first_day) = next.days.first()
-                && let Some(d) = day_date(&first_day.date, app.config.timezone)
-            {
-                next_view.select_date(d);
-            }
-            (next_view, next)
-        } else {
-            (view.clone(), loaded)
-        }
-    } else {
-        (view.clone(), loaded)
-    };
-
-    let view = &view;
-    let loaded = &loaded;
-
     match view.screen {
         Screen::Weeks => {
             let text = format!(
@@ -1052,18 +1067,18 @@ pub async fn show_vk(
             present_vk(app, vk, account.id, cmid, &text, keyboard, view).await
         }
         Screen::Schedule => {
-            let (text, file_count) = app
-                .render_schedule_content(account, view, loaded, refresh, "")
+            // Only the timetable needs the site; menus work while it is down.
+            let (view, loaded) = app.resolve(account, view, refresh).await?;
+            let (text, _) = app
+                .render_schedule_content(account, &view, &loaded, refresh, "")
                 .await?;
             let keyboard = schedule_keyboard_vk(
                 &loaded.days,
-                view,
-                now.date_naive(),
+                &view,
+                app.now().date_naive(),
                 app.config.timezone,
-                file_count,
-                teacher,
             );
-            present_vk(app, vk, account.id, cmid, &text, keyboard, view).await
+            present_vk(app, vk, account.id, cmid, &text, keyboard, &view).await
         }
     }
 }
@@ -1077,24 +1092,24 @@ pub async fn present_vk(
     keyboard: VkKeyboard,
     view: &View,
 ) -> Result<()> {
-    let peer_id = match PlatformUser::from_storage_id(storage_id) {
-        PlatformUser::Vk(id) => id,
-        PlatformUser::Telegram(_) => return Err(anyhow!("present_vk called for Telegram user")),
+    let PlatformUser::Vk(peer_id) = PlatformUser::from_storage_id(storage_id) else {
+        bail!("present_vk called for a Telegram user");
     };
 
+    let sent = |vk_id: i64| i32::try_from(vk_id).unwrap_or(0);
     let result_cmid = if let Some(id) = cmid {
         match vk
-            .edit_message(peer_id, id as i64, text, Some(&keyboard))
+            .edit_message(peer_id, i64::from(id), text, Some(&keyboard))
             .await
         {
-            Ok(_) => id,
+            Ok(()) => id,
             Err(e) => {
                 tracing::warn!(error=%e, "failed to edit vk message, sending new");
-                vk.send_message(peer_id, text, Some(&keyboard)).await? as i32
+                sent(vk.send_message(peer_id, text, Some(&keyboard)).await?)
             }
         }
     } else {
-        vk.send_message(peer_id, text, Some(&keyboard)).await? as i32
+        sent(vk.send_message(peer_id, text, Some(&keyboard)).await?)
     };
 
     if result_cmid > 0 {
@@ -1103,115 +1118,146 @@ pub async fn present_vk(
     Ok(())
 }
 
-async fn report(vk: &VkClient, peer: i64, error: &anyhow::Error) {
-    if crate::app::login_required(error) {
-        let _ = vk.send_message(peer, render::VK_LOGIN_AGAIN, None).await;
-    } else {
-        tracing::warn!(error = %error, "vk handler failed");
+/// Handle one update with a deadline; failures get an answer instead of silence.
+async fn dispatch(app: Arc<App>, vk: Arc<VkClient>, update: LongPollUpdate) {
+    let (peer, work): (i64, BoxFuture<'_, Result<()>>) = match update.event_type.as_str() {
+        "message_new" => {
+            let Ok(new) = serde_json::from_value::<MessageNewObject>(update.object) else {
+                return;
+            };
+            (
+                new.message.peer_id,
+                Box::pin(handle_message(&app, &vk, new.message)),
+            )
+        }
+        "message_event" => {
+            let Ok(event) = serde_json::from_value::<MessageEventObject>(update.object) else {
+                return;
+            };
+            (event.peer_id, Box::pin(handle_callback(&app, &vk, event)))
+        }
+        _ => return,
+    };
+    tokio::select! {
+        _ = app.cancel.cancelled() => (),
+        result = tokio::time::timeout(HANDLER_TIMEOUT, work) => match result {
+            Ok(Ok(())) => (),
+            Ok(Err(error)) if login_required(&error) => {
+                let _ = vk.send_message(peer, render::VK_LOGIN_AGAIN, None).await;
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "vk handler failed");
+                let _ = vk.send_message(peer, render::VK_FAILED, None).await;
+            }
+            Err(_) => {
+                let _ = vk.send_message(peer, render::VK_TIMEOUT, None).await;
+            }
+        }
     }
 }
 
-pub async fn run(app: Arc<App>, vk: Arc<VkClient>, cancel: CancellationToken) {
-    tracing::info!(group_id = vk.group_id(), "vk bot loop started");
-    let mut server_info: Option<LongPollServer> = None;
+/// Sleep for `delay` unless `stop` fires first; returns whether to stop.
+async fn pause(stop: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        _ = stop.cancelled() => true,
+        _ = tokio::time::sleep(delay) => false,
+    }
+}
 
-    while !cancel.is_cancelled() {
-        if server_info.is_none() {
-            match vk.get_long_poll_server().await {
-                Ok(info) => {
-                    tracing::info!(ts = %info.ts, "vk long poll server obtained");
-                    server_info = Some(info);
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to get vk long poll server; retrying in 5s");
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        _ = tokio::time::sleep(Duration::from_secs(5)) => (),
+/// VK Bots Long Poll until `stop`; then waits for the handlers still running.
+pub async fn run(app: Arc<App>, vk: Arc<VkClient>, stop: CancellationToken) {
+    tracing::info!(group_id = vk.group_id(), "vk bot loop started");
+    let slots = Arc::new(Semaphore::new(HANDLERS));
+    let mut handlers = JoinSet::new();
+    let mut server: Option<LongPollServer> = None;
+    // After an expired key, continue from the last event seen instead of skipping ahead.
+    let mut resume: Option<String> = None;
+    let mut backoff = Duration::from_secs(2);
+    while !stop.is_cancelled() {
+        while handlers.try_join_next().is_some() {}
+        if server.is_none() {
+            let fetched = tokio::select! {
+                _ = stop.cancelled() => break,
+                fetched = vk.get_long_poll_server() => fetched,
+            };
+            match fetched {
+                Ok(mut fresh) => {
+                    if let Some(ts) = resume.take() {
+                        fresh.ts = ts;
                     }
+                    backoff = Duration::from_secs(2);
+                    server = Some(fresh);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "could not get the vk long poll server; retrying in {backoff:?}");
+                    if pause(&stop, backoff).await {
+                        break;
+                    }
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
                     continue;
                 }
             }
         }
-
-        let current = server_info.as_ref().unwrap();
-        let poll_res = tokio::select! {
-            _ = cancel.cancelled() => break,
-            res = vk.poll(&current.server, &current.key, &current.ts, 25) => res,
+        let Some(current) = server.as_mut() else {
+            continue;
         };
-
-        match poll_res {
-            Ok(resp) => {
-                if let Some(failed) = resp.failed {
-                    match failed {
-                        1 => {
-                            if let Some(ts) = resp.ts
-                                && let Some(ref mut info) = server_info
-                            {
-                                info.ts = ts;
-                            }
-                        }
-                        2 | 3 => {
-                            tracing::warn!(
-                                code = failed,
-                                "vk long poll key/ts expired, re-fetching server"
-                            );
-                            server_info = None;
-                        }
-                        _ => {
-                            server_info = None;
-                        }
-                    }
-                    continue;
-                }
-
-                if let Some(ts) = resp.ts
-                    && let Some(ref mut info) = server_info
-                {
-                    info.ts = ts;
-                }
-
-                for update in resp.updates {
-                    match update.event_type.as_str() {
-                        "message_new" => {
-                            if let Ok(msg_obj) =
-                                serde_json::from_value::<MessageNewObject>(update.object)
-                            {
-                                let (app, vk) = (app.clone(), vk.clone());
-                                tokio::spawn(async move {
-                                    let peer = msg_obj.message.peer_id;
-                                    if let Err(e) = handle_message(&app, &vk, msg_obj.message).await
-                                    {
-                                        report(&vk, peer, &e).await;
-                                    }
-                                });
-                            }
-                        }
-                        "message_event" => {
-                            if let Ok(event_obj) =
-                                serde_json::from_value::<MessageEventObject>(update.object)
-                            {
-                                let (app, vk) = (app.clone(), vk.clone());
-                                tokio::spawn(async move {
-                                    let peer = event_obj.peer_id;
-                                    if let Err(e) = handle_callback(&app, &vk, event_obj).await {
-                                        report(&vk, peer, &e).await;
-                                    }
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+        let polled = tokio::select! {
+            _ = stop.cancelled() => break,
+            polled = vk.poll(current, 25) => polled,
+        };
+        let response = match polled {
+            Ok(response) => {
+                backoff = Duration::from_secs(2);
+                response
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "vk poll error; retrying in 2s");
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    _ = tokio::time::sleep(Duration::from_secs(2)) => (),
+            Err(error) => {
+                tracing::warn!(%error, "vk long poll failed; retrying in {backoff:?}");
+                if pause(&stop, backoff).await {
+                    break;
                 }
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
             }
+        };
+        match response.failed {
+            None => (),
+            // Events were lost; continue from the server's new position.
+            Some(1) => {
+                if let Some(ts) = response.ts {
+                    current.ts = ts;
+                }
+                continue;
+            }
+            // The key expires routinely (about hourly): renew it, keep the position.
+            Some(2) => {
+                tracing::debug!("vk long poll key expired; renewing");
+                resume = Some(current.ts.clone());
+                server = None;
+                continue;
+            }
+            Some(code) => {
+                tracing::info!(code, "vk long poll session lost; starting over");
+                server = None;
+                continue;
+            }
+        }
+        if let Some(ts) = response.ts {
+            current.ts = ts;
+        }
+        for update in response.updates {
+            let permit = tokio::select! {
+                _ = stop.cancelled() => break,
+                permit = slots.clone().acquire_owned() => permit,
+            };
+            let Ok(permit) = permit else { break };
+            let (app, vk) = (app.clone(), vk.clone());
+            handlers.spawn(async move {
+                let _permit = permit;
+                dispatch(app, vk, update).await;
+            });
         }
     }
-
+    // Requests already in progress finish; the caller bounds this wait.
+    while handlers.join_next().await.is_some() {}
     tracing::info!("vk bot loop stopped");
 }

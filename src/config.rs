@@ -2,6 +2,11 @@ use anyhow::{Context, Result, ensure};
 use chrono::NaiveTime;
 use chrono_tz::Tz;
 use reqwest::Url;
+use std::path::PathBuf;
+
+/// Secrets may come from systemd credentials (`LoadCredentialEncrypted=`, file name in
+/// lower case) instead of the environment; a credential wins over a variable.
+const SECRETS: [&str; 3] = ["BOT_TOKEN", "CREDENTIALS_SECRET", "VK_GROUP_TOKEN"];
 
 pub struct Config {
     pub token: String,
@@ -15,14 +20,23 @@ pub struct Config {
     pub owner_vk_id: i64,
     pub notify_time: NaiveTime,
     pub timezone: Tz,
+    /// Set together with `vk_group_id`; VK is off without it.
     pub vk_group_token: Option<String>,
     pub vk_group_id: Option<i64>,
-    pub vk_api_url: String,
+    /// HTTPS method base ending in `/`; the community token is sent there.
+    pub vk_api_url: Url,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        Self::from_values(|key| std::env::var(key).ok())
+        let credentials = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
+        Self::from_values(|key| {
+            credentials
+                .as_ref()
+                .filter(|_| SECRETS.contains(&key))
+                .and_then(|dir| std::fs::read_to_string(dir.join(key.to_ascii_lowercase())).ok())
+                .or_else(|| std::env::var(key).ok())
+        })
     }
 
     pub fn from_values(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
@@ -30,6 +44,11 @@ impl Config {
             get(key)
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| fallback.into())
+        };
+        let optional = |key: &str| {
+            get(key)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
         };
         let token = value("BOT_TOKEN", "").trim().to_owned();
         let (id, token_secret) = token
@@ -47,15 +66,10 @@ impl Config {
             secret.len() >= 32,
             "CREDENTIALS_SECRET must contain at least 32 bytes"
         );
-        let base_url = Url::parse(&value("KTK_BASE_URL", "https://ktk.education-system.ru/"))?;
-        ensure!(
-            base_url.scheme() == "https" && base_url.host_str().is_some(),
-            "KTK_BASE_URL must be an HTTPS URL"
-        );
-        ensure!(
-            base_url.username().is_empty() && base_url.password().is_none(),
-            "KTK_BASE_URL must not contain credentials"
-        );
+        let base_url = https_url(
+            "KTK_BASE_URL",
+            &value("KTK_BASE_URL", "https://ktk.education-system.ru/"),
+        )?;
         let default_group = value("DEFAULT_GROUP_ID", "269")
             .parse()
             .context("invalid DEFAULT_GROUP_ID")?;
@@ -74,17 +88,27 @@ impl Config {
             .parse()
             .context("invalid OWNER_VK_ID")?;
         ensure!(owner_vk_id >= 0, "OWNER_VK_ID cannot be negative");
-        let vk_group_token = get("VK_GROUP_TOKEN")
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty());
-        let vk_group_id = match get("VK_GROUP_ID")
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-        {
-            Some(s) => Some(s.parse::<i64>().context("invalid VK_GROUP_ID")?),
-            None => None,
-        };
-        let vk_api_url = value("VK_API_URL", "https://api.vk.com/method/");
+        let vk_group_token = optional("VK_GROUP_TOKEN");
+        let vk_group_id = optional("VK_GROUP_ID")
+            .map(|id| id.parse::<i64>().context("invalid VK_GROUP_ID"))
+            .transpose()?;
+        ensure!(
+            vk_group_id.is_none_or(|id| id > 0),
+            "VK_GROUP_ID must be a positive community ID"
+        );
+        ensure!(
+            vk_group_token.is_none() || vk_group_id.is_some(),
+            "VK_GROUP_ID is required when VK_GROUP_TOKEN is set"
+        );
+        let mut vk_api_url = https_url(
+            "VK_API_URL",
+            &value("VK_API_URL", "https://api.vk.com/method/"),
+        )?;
+        // Methods are joined onto this URL: without the slash the last segment would be lost.
+        if !vk_api_url.path().ends_with('/') {
+            let path = format!("{}/", vk_api_url.path());
+            vk_api_url.set_path(&path);
+        }
         Ok(Self {
             token,
             secret,
@@ -105,4 +129,18 @@ impl Config {
             vk_api_url,
         })
     }
+}
+
+/// Credentials and tokens never travel over plain HTTP or inside the URL itself.
+fn https_url(key: &str, raw: &str) -> Result<Url> {
+    let url = Url::parse(raw.trim()).with_context(|| format!("invalid {key}"))?;
+    ensure!(
+        url.scheme() == "https" && url.host_str().is_some(),
+        "{key} must be an HTTPS URL"
+    );
+    ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "{key} must not contain credentials"
+    );
+    Ok(url)
 }

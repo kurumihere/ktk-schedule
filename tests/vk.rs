@@ -2,14 +2,12 @@ mod support;
 use chrono::NaiveDate;
 use ktk_schedule::{
     app::App,
-    config::Config,
     model::{PlatformUser, Screen, View},
     vk::{self, MessageEventObject, MessageObject},
 };
 use serde_json::json;
 use std::sync::Arc;
 use support::*;
-use teloxide::{Bot, adaptors::throttle::Limits, requests::RequesterExt};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path_regex},
@@ -74,22 +72,7 @@ pub async fn vk_mock_server() -> MockServer {
 }
 
 async fn test_app(college: &College, tg_mock: &MockServer, vk_mock: &MockServer) -> Arc<App> {
-    let mut config = Config::from_values(|key| match key {
-        "BOT_TOKEN" => Some("123456:TEST".into()),
-        "CREDENTIALS_SECRET" => Some("x".repeat(32)),
-        "DATABASE_PATH" => Some(":memory:".into()),
-        "VK_GROUP_TOKEN" => Some("vk_test_token".into()),
-        "VK_GROUP_ID" => Some("242576636".into()),
-        "VK_API_URL" => Some(format!("{}/", vk_mock.uri())),
-        "OWNER_VK_ID" => Some("777".into()),
-        _ => None,
-    })
-    .unwrap();
-    config.base_url = college.server.uri().parse().unwrap();
-    let bot = Bot::new("123456:TEST")
-        .set_api_url(tg_mock.uri().parse().unwrap())
-        .throttle(Limits::default());
-    Arc::new(App::new(config, bot, "test_bot".into()).await.unwrap())
+    Arc::new(vk_app(college, tg_mock, vk_mock).await)
 }
 
 fn vk_message(peer_id: i64, from_id: i64, text: &str) -> MessageObject {
@@ -308,7 +291,7 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
         for teacher in [false, true] {
             for foreign_group in [None, Some(270)] {
                 view.group = foreign_group;
-                let kb = vk::schedule_keyboard_vk(&days, &view, today, tz, 0, teacher);
+                let kb = vk::schedule_keyboard_vk(&days, &view, today, tz);
                 assert!(kb.inline);
                 assert!(kb.buttons.len() <= 6, "rows exceeded: {}", kb.buttons.len());
                 let total_buttons: usize = kb.buttons.iter().map(|r| r.len()).sum();
@@ -474,4 +457,206 @@ async fn vk_bot_admin_commands_and_announce() {
         .unwrap();
     let body = String::from_utf8_lossy(&last.body);
     assert!(body.contains("%D0%9D%D0%B5%D0%BA%D0%BE%D0%BC%D1%83") || body.contains("Некому"));
+}
+
+fn count(requests: &[Request], method: &str) -> usize {
+    requests
+        .iter()
+        .filter(|r| {
+            r.url
+                .path()
+                .to_lowercase()
+                .ends_with(&method.to_lowercase())
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn vk_buttons_are_rate_limited_like_telegram_ones() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let storage_id = PlatformUser::Vk(42).to_storage_id();
+    let a = app.sign_in(storage_id, "user", "password").await.unwrap();
+    let view = View::own(&a, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    app.storage.save_view(storage_id, 100, &view).await.unwrap();
+    for _ in 0..10 {
+        vk::handle_callback(&app, &vk, vk_callback(42, 42, 100, "schedule:next"))
+            .await
+            .unwrap();
+    }
+    let requests = vk_mock.received_requests().await.unwrap();
+    assert_eq!(count(&requests, "messages.edit"), 8);
+}
+
+#[tokio::test]
+async fn vk_subgroup_filters_respect_foreign_groups_and_teachers() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let storage_id = PlatformUser::Vk(42).to_storage_id();
+    let a = app.sign_in(storage_id, "user", "password").await.unwrap();
+    let mut foreign = View::own(&a, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    foreign.group = Some(270);
+    app.storage
+        .save_view(storage_id, 100, &foreign)
+        .await
+        .unwrap();
+    vk::handle_callback(
+        &app,
+        &vk,
+        vk_callback(42, 42, 100, "schedule:subgroup:set:all"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        app.storage
+            .view(storage_id, 100)
+            .await
+            .unwrap()
+            .unwrap()
+            .show_all
+    );
+    // The user's own preference is untouched by filtering group 270.
+    assert!(
+        !app.storage
+            .account(storage_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .show_all
+    );
+
+    let teacher_college = College::start(true).await;
+    let app = test_app(&teacher_college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let t = app
+        .sign_in(storage_id, "teacher", "password")
+        .await
+        .unwrap();
+    let view = View::own(&t, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    app.storage.save_view(storage_id, 101, &view).await.unwrap();
+    vk::handle_callback(
+        &app,
+        &vk,
+        vk_callback(42, 42, 101, "schedule:subgroup:right"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(app.storage.view(storage_id, 101).await.unwrap(), Some(view));
+}
+
+#[tokio::test]
+async fn vk_menus_open_while_the_site_is_down() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let storage_id = PlatformUser::Vk(42).to_storage_id();
+    let a = app.sign_in(storage_id, "user", "password").await.unwrap();
+    let view = View::own(&a, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    app.storage.save_view(storage_id, 100, &view).await.unwrap();
+    college
+        .offline
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let before = college.server.received_requests().await.unwrap().len();
+    for data in ["schedule:subgroup:menu", "schedule:week:select"] {
+        vk::handle_callback(&app, &vk, vk_callback(42, 42, 100, data))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        college.server.received_requests().await.unwrap().len(),
+        before
+    );
+    assert_eq!(
+        app.storage
+            .view(storage_id, 100)
+            .await
+            .unwrap()
+            .unwrap()
+            .screen,
+        Screen::Weeks
+    );
+}
+
+#[tokio::test]
+async fn vk_words_match_regardless_of_case() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let storage_id = PlatformUser::Vk(42).to_storage_id();
+    app.sign_in(storage_id, "user", "password").await.unwrap();
+    let before = college.server.received_requests().await.unwrap().len();
+    // "Обновить" refreshes the timetable instead of answering with the help text.
+    vk::handle_message(&app, &vk, vk_message(42, 42, "Обновить"))
+        .await
+        .unwrap();
+    assert!(college.server.received_requests().await.unwrap().len() > before);
+}
+
+#[tokio::test]
+async fn vk_api_calls_are_paced_and_retried_when_rate_limited() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path_regex("(?i)/messages.send"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": {"error_code": 6, "error_msg": "Too many requests per second"}
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&vk_mock)
+        .await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let started = std::time::Instant::now();
+    for _ in 0..5 {
+        assert_eq!(vk.send_message(42, "hi", None).await.unwrap(), 100);
+    }
+    // One retry after a second, and at least 60 ms between any two calls.
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1240));
+    let requests = vk_mock.received_requests().await.unwrap();
+    assert_eq!(count(&requests, "messages.send"), 6);
+    let ids: std::collections::HashSet<_> = requests
+        .iter()
+        .filter_map(|r| {
+            String::from_utf8_lossy(&r.body)
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("random_id=").map(str::to_owned))
+        })
+        .collect();
+    assert!(ids.len() >= 5, "random_id must differ between messages");
+}
+
+#[tokio::test]
+async fn vk_long_poll_errors_never_reveal_the_key() {
+    let college = College::start(false).await;
+    let tg_mock = telegram_server().await;
+    let vk_mock = vk_mock_server().await;
+    let app = test_app(&college, &tg_mock, &vk_mock).await;
+    let vk = app.vk.clone().unwrap();
+    let server = vk::LongPollServer {
+        key: "SECRET-LONG-POLL-KEY".into(),
+        server: "https://127.0.0.1:9/whp/1".into(),
+        ts: "1".into(),
+    };
+    let error = vk.poll(&server, 1).await.unwrap_err();
+    assert!(
+        !format!("{error:#} {error:?}").contains("SECRET"),
+        "{error:#}"
+    );
+    let plain = vk::LongPollServer {
+        server: "http://lp.vk.com/whp/1".into(),
+        ..server
+    };
+    assert!(vk.poll(&plain, 1).await.is_err());
 }

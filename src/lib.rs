@@ -5,6 +5,7 @@ pub mod model;
 pub mod render;
 pub mod resilience;
 pub mod storage;
+pub mod systemd;
 pub mod telegram;
 pub mod vk;
 pub mod workspace;

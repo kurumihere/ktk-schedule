@@ -13,8 +13,8 @@ use chrono_tz::Tz;
 use futures::{StreamExt, stream};
 use moka::future::Cache;
 use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Weak},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, PoisonError, Weak},
     time::{Duration, Instant},
 };
 use teloxide::{
@@ -64,6 +64,8 @@ pub struct Session {
     submissions: Cache<i64, i64>,
     /// Cookie header last written to `sessions`, so rotated cookies get persisted.
     saved_cookies: std::sync::Mutex<String>,
+    /// References last written to `reference_cache`; unchanged ones are not rewritten.
+    saved_refs: std::sync::Mutex<Option<Arc<ReferenceData>>>,
 }
 
 impl Session {
@@ -71,6 +73,7 @@ impl Session {
         Self {
             client,
             saved_cookies: std::sync::Mutex::new(saved_cookies),
+            saved_refs: std::sync::Mutex::default(),
             refs: Cache::builder()
                 .max_capacity(1)
                 .time_to_live(Duration::from_secs(3600))
@@ -178,9 +181,9 @@ pub struct App {
     sessions: Cache<i64, Arc<Session>>,
     schedules: Cache<ScheduleKey, Arc<Vec<ScheduleDay>>>,
     pub downloads: Semaphore,
-    limits: Mutex<HashMap<(i64, bool), RateWindow>>,
+    limits: std::sync::Mutex<HashMap<(i64, bool), RateWindow>>,
     circuit: crate::resilience::Circuit,
-    user_locks: Mutex<HashMap<i64, Weak<Mutex<()>>>>,
+    user_locks: std::sync::Mutex<HashMap<i64, Weak<Mutex<()>>>>,
     pub pending_groups: Cache<i64, i32>,
     started: Instant,
     pub cancel: CancellationToken,
@@ -201,15 +204,14 @@ pub struct Loaded {
 impl App {
     pub async fn new(config: Config, bot: Telegram, bot_username: String) -> Result<Self> {
         let storage = Storage::open(&config.database_path, Cipher::new(&config.secret)?).await?;
-        let vk = if let Some(token) = config.vk_group_token.as_ref() {
-            let group_id = config.vk_group_id.unwrap_or_default();
-            Some(Arc::new(crate::vk::VkClient::new(
+        storage.check_secret().await?;
+        let vk = match (&config.vk_group_token, config.vk_group_id) {
+            (Some(token), Some(group)) => Some(Arc::new(crate::vk::VkClient::new(
                 token.clone(),
-                group_id,
+                group,
                 config.vk_api_url.clone(),
-            )))
-        } else {
-            None
+            )?)),
+            _ => None,
         };
         let site = Site::new(
             config.base_url.clone(),
@@ -237,9 +239,9 @@ impl App {
                 .time_to_idle(Duration::from_secs(900))
                 .build(),
             downloads: Semaphore::new(3),
-            limits: Mutex::new(HashMap::new()),
+            limits: std::sync::Mutex::default(),
             circuit: crate::resilience::Circuit::new(5, Duration::from_secs(30)),
-            user_locks: Mutex::new(HashMap::new()),
+            user_locks: std::sync::Mutex::default(),
             started: Instant::now(),
             cancel: CancellationToken::new(),
         })
@@ -251,7 +253,10 @@ impl App {
 
     pub async fn lock_user(&self, id: i64) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = {
-            let mut locks = self.user_locks.lock().await;
+            let mut locks = self
+                .user_locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if let Some(lock) = locks.get(&id).and_then(Weak::upgrade) {
                 lock
             } else {
@@ -266,7 +271,7 @@ impl App {
     pub async fn allow(&self, id: i64, login: bool) -> bool {
         let now = Instant::now();
         let (window, max, block) = if login { (60, 5, 300) } else { (10, 8, 20) };
-        let mut limits = self.limits.lock().await;
+        let mut limits = self.limits.lock().unwrap_or_else(PoisonError::into_inner);
         let rate = limits.entry((id, login)).or_default();
         if rate.blocked.is_some_and(|end| now < end) {
             return false;
@@ -598,28 +603,64 @@ impl App {
         message: Option<MessageId>,
         refresh: bool,
     ) -> Result<()> {
-        let loaded = self.load(account, view, refresh).await?;
+        let (view, loaded) = self.resolve(account, view, refresh).await?;
+        self.show_loaded(account, &view, message, &loaded, refresh, "")
+            .await
+    }
+
+    /// What to show for `view`. On a Sunday "today" means the coming week, once published.
+    pub async fn resolve(
+        &self,
+        account: &Account,
+        view: &View,
+        refresh: bool,
+    ) -> Result<(View, Loaded)> {
         if view.date == self.now().date_naive()
             && view.date.weekday() == chrono::Weekday::Sun
             && view.week() == week_start(view.date)
         {
             let mut next_view = view.clone();
-            next_view.week_start = shift(view.week(), 7)?;
-            if let Ok(next) = self.load(account, &next_view, false).await
+            next_view.select_date(shift(view.date, 1)?);
+            if let Ok(next) = self.load(account, &next_view, refresh).await
                 && !next.days.is_empty()
             {
-                if let Some(first_day) = next.days.first()
-                    && let Some(d) = day_date(&first_day.date, self.config.timezone)
+                if let Some(first) = next
+                    .days
+                    .first()
+                    .and_then(|day| day_date(&day.date, self.config.timezone))
                 {
-                    next_view.select_date(d);
+                    next_view.select_date(first);
                 }
-                return self
-                    .show_loaded(account, &next_view, message, &next, false, "")
-                    .await;
+                return Ok((next_view, next));
             }
         }
-        self.show_loaded(account, view, message, &loaded, refresh, "")
-            .await
+        Ok((view.clone(), self.load(account, view, refresh).await?))
+    }
+
+    /// Reference data survives restarts and outages, but only real and changed data is
+    /// worth a write: an empty result must never replace a good cache.
+    async fn persist_references(&self, id: i64, session: &Session, refs: &Arc<ReferenceData>) {
+        if refs.is_empty()
+            || session
+                .saved_refs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|saved| Arc::ptr_eq(saved, refs))
+        {
+            return;
+        }
+        match self.storage.save_references(id, refs).await {
+            Ok(()) => {
+                *session
+                    .saved_refs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(refs.clone())
+            }
+            Err(error) => {
+                tracing::warn!(user_id = id, error = %error, "could not persist reference cache")
+            }
+        }
     }
 
     pub async fn render_schedule_content(
@@ -640,16 +681,18 @@ impl App {
         let mut file_count = 0;
         let text = match selected {
             Some(day) if !non_school_day_scoped(day, view, teacher, is_personal) => {
+                let subjects = visible_subjects_scoped(day, view, teacher, is_personal);
                 let (refs, assets) = if let Some(session) = loaded.session.as_ref() {
-                    let subjects = visible_subjects_scoped(day, view, teacher, is_personal);
                     let (refs, assets) = tokio::join!(
                         session.references(),
                         session.assets(&subjects, teacher, refresh)
                     );
-                    let assets = assets?;
-                    if let Err(error) = self.storage.save_references(account.id, &refs).await {
-                        tracing::warn!(account_id = account.id, error=%error, "could not persist reference cache");
-                    }
+                    // Attachments are extras: the timetable itself must still be shown.
+                    let assets = assets.unwrap_or_else(|error| {
+                        tracing::warn!(user_id = account.id, error = %error, "attachments unavailable");
+                        Assets::default()
+                    });
+                    self.persist_references(account.id, session, &refs).await;
                     (refs, assets)
                 } else {
                     let refs = self
@@ -663,12 +706,17 @@ impl App {
                     (refs, Assets::default())
                 };
                 if !teacher {
-                    for s in visible_subjects_scoped(day, view, teacher, is_personal) {
-                        file_count += s.extra_data.homework.files.len();
-                        if assets.submissions.contains_key(&s.extra_data.sheet) {
-                            file_count += 1;
-                        }
-                    }
+                    // Exactly the files the download button delivers: unique IDs.
+                    file_count =
+                        subjects
+                            .iter()
+                            .flat_map(|s| s.extra_data.homework.files.iter().copied())
+                            .chain(subjects.iter().filter_map(|s| {
+                                assets.submissions.get(&s.extra_data.sheet).copied()
+                            }))
+                            .filter(|id| *id > 0)
+                            .collect::<HashSet<_>>()
+                            .len();
                 }
                 render::schedule(day, view, &refs, &assets, teacher, is_personal, now)
             }
@@ -806,7 +854,7 @@ impl App {
                 }
                 PlatformUser::Vk(_) => {
                     if let Some(vk) = self.vk.as_ref() {
-                        let _ = crate::vk::show_vk(self, vk, &account, &view, None, false).await;
+                        crate::vk::show_vk(self, vk, &account, &view, None, false).await?;
                     }
                 }
             }
@@ -814,12 +862,14 @@ impl App {
         self.storage.mark_notified(id, &today.to_string()).await
     }
 
-    async fn background(self: Arc<Self>) {
+    /// Morning notifications and cleanup. Stops between ticks on `stop`; a fan-out already
+    /// running continues until the hard cancel.
+    async fn background(self: Arc<Self>, stop: CancellationToken) {
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_cleanup = Instant::now();
         loop {
-            tokio::select! { _ = self.cancel.cancelled() => break, _ = ticker.tick() => () }
+            tokio::select! { _ = stop.cancelled() => break, _ = ticker.tick() => () }
             let now = self.now();
             if notification_due(now.time(), self.config.notify_time) {
                 match self
@@ -840,13 +890,16 @@ impl App {
             if last_cleanup.elapsed() >= Duration::from_secs(300) {
                 self.user_locks
                     .lock()
-                    .await
+                    .unwrap_or_else(PoisonError::into_inner)
                     .retain(|_, lock| lock.strong_count() > 0);
-                self.limits.lock().await.retain(|_, r| {
-                    r.times
-                        .back()
-                        .is_some_and(|t| t.elapsed() < Duration::from_secs(360))
-                });
+                self.limits
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retain(|_, r| {
+                        r.times
+                            .back()
+                            .is_some_and(|t| t.elapsed() < Duration::from_secs(360))
+                    });
                 if let Err(e) = self.storage.prune().await {
                     tracing::warn!(error = %e, "cache cleanup failed");
                 }
@@ -861,6 +914,9 @@ pub fn notification_due(now: chrono::NaiveTime, target: chrono::NaiveTime) -> bo
     (0..=120).contains(&delta)
 }
 
+/// Grace period for requests already in progress at shutdown; systemd allows 35 s in total.
+const DRAIN: Duration = Duration::from_secs(25);
+
 pub async fn run(config: Config) -> Result<()> {
     let http = teloxide::net::default_reqwest_settings()
         .connect_timeout(Duration::from_secs(5))
@@ -868,64 +924,67 @@ pub async fn run(config: Config) -> Result<()> {
         .build()?;
     let bot = Bot::with_client(&config.token, http).throttle(Limits::default());
     let me = bot.get_me().await?;
-    tracing::info!(
-        username = me.user.username.as_deref().unwrap_or_default(),
-        "bot started"
-    );
-    let app = Arc::new(App::new(config, bot.clone(), me.user.username.unwrap_or_default()).await?);
-    let cancel = app.cancel.clone();
+    let username = me.user.username.unwrap_or_default();
+    let app = Arc::new(App::new(config, bot.clone(), username.clone()).await?);
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(telegram::handle_message))
         .branch(Update::filter_callback_query().endpoint(telegram::handle_callback));
-    let mut dispatcher = Dispatcher::builder(bot, handler)
+    let mut dispatcher = Dispatcher::builder(bot.clone(), handler)
         .dependencies(dptree::deps![app.clone()])
         .worker_queue_size(16)
         .build();
     let shutdown = dispatcher.shutdown_token();
-    let mut background = tokio::spawn(app.clone().background());
+    // `stop` ends polling and scheduling; `app.cancel` aborts whatever outlives the drain.
+    let stop = CancellationToken::new();
+    let background = tokio::spawn(app.clone().background(stop.clone()));
     let vk_task = app
         .vk
         .clone()
-        .map(|vk| tokio::spawn(crate::vk::run(app.clone(), vk, cancel.clone())));
-    let signal = async {
-        #[cfg(unix)]
-        {
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("install SIGTERM handler");
-            tokio::select! { _ = tokio::signal::ctrl_c() => (), _ = terminate.recv() => () }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = tokio::signal::ctrl_c().await;
+        .map(|vk| tokio::spawn(crate::vk::run(app.clone(), vk, stop.clone())));
+    let watchdog = tokio::spawn(crate::systemd::watchdog(stop.clone()));
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // Connection resets on long polling are routine; teloxide retries with backoff.
+    let listener = teloxide::update_listeners::polling_default(bot).await;
+    let listener_errors = Arc::new(|error: teloxide::RequestError| async move {
+        tracing::warn!(%error, "telegram polling failed; retrying");
+    });
+    let dispatch = dispatcher.dispatch_with_listener(listener, listener_errors);
+    tokio::pin!(dispatch);
+    tracing::info!(%username, "bot started");
+    crate::systemd::notify("READY=1");
+    let dispatch_ended = tokio::select! {
+        _ = &mut dispatch => { tracing::error!("telegram dispatcher stopped unexpectedly"); true }
+        _ = tokio::signal::ctrl_c() => false,
+        _ = terminate.recv() => false,
+    };
+    tracing::info!("shutting down");
+    crate::systemd::notify("STOPPING=1");
+    stop.cancel();
+    let telegram = async {
+        if !dispatch_ended {
+            // The dispatcher drains its workers while it is being polled.
+            let _ = shutdown.shutdown();
+            (&mut dispatch).await;
         }
     };
-    let dispatch = dispatcher.dispatch();
-    tokio::pin!(dispatch);
-    tokio::select! {
-        _ = &mut dispatch => (),
-        _ = signal => {
-            tracing::info!("shutting down");
-            cancel.cancel();
-            let _ = shutdown.shutdown();
-            if tokio::time::timeout(Duration::from_secs(25), &mut dispatch).await.is_err() { tracing::warn!("handler shutdown timed out"); }
-        }
+    let drained = async {
+        tokio::join!(telegram, async {
+            if let Some(task) = vk_task {
+                let _ = task.await;
+            }
+        });
+    };
+    if tokio::time::timeout(DRAIN, drained).await.is_err() {
+        tracing::warn!("requests still running after {DRAIN:?}; cancelling them");
     }
-    cancel.cancel();
-    if let Some(mut vk_task) = vk_task
-        && tokio::time::timeout(Duration::from_secs(3), &mut vk_task)
+    app.cancel.cancel();
+    for task in [background, watchdog] {
+        if tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .is_err()
-    {
-        vk_task.abort();
-        let _ = vk_task.await;
-    }
-    if tokio::time::timeout(Duration::from_secs(3), &mut background)
-        .await
-        .is_err()
-    {
-        background.abort();
-        let _ = background.await;
+        {
+            tracing::warn!("background task did not stop in time");
+        }
     }
     app.storage.close().await;
     Ok(())

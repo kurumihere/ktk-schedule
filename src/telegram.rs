@@ -168,8 +168,10 @@ fn private(message: &Message) -> bool {
             .as_ref()
             .is_some_and(|u| u.id.0 as i64 == message.chat.id.0)
 }
+/// The bot owner, in a private chat: statistics and broadcasts never surface in groups.
 fn owner(app: &App, message: &Message) -> bool {
     app.config.owner_id > 0
+        && private(message)
         && message
             .from
             .as_ref()
@@ -187,10 +189,15 @@ async fn account(app: &App, id: i64) -> Result<Option<Account>> {
 
 pub async fn handle_message(app: Arc<App>, message: Message) -> Result<()> {
     let id = message.chat.id.0;
+    // A broadcast paces itself through Telegram's limits; only requests get the usual deadline.
+    let broadcast = message
+        .text()
+        .is_some_and(|text| command(text).0.split('@').next() == Some("/announce"));
+    let deadline = std::time::Duration::from_secs(if broadcast { 3600 } else { 120 });
     let work = message_inner(&app, &message);
     tokio::select! {
         _ = app.cancel.cancelled() => (),
-        result = tokio::time::timeout(std::time::Duration::from_secs(120), work) => {
+        result = tokio::time::timeout(deadline, work) => {
             match result {
                 Ok(Ok(())) => (),
                 Ok(Err(error)) if login_required(&error) => { let _ = app.send(id, render::LOGIN_AGAIN).await; }
@@ -383,6 +390,10 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
                 view.screen = Screen::Schedule;
                 app.show(&a, &view, None, false).await?;
                 app.pending_groups.invalidate(&id).await;
+                return Ok(());
+            }
+            // In groups the bot only answers its own commands; anything else is chatter.
+            if !private(message) {
                 return Ok(());
             }
             app.send(
@@ -700,13 +711,16 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
         app.send(a.id, "Нет файлов для скачивания.").await?;
         return Ok(());
     }
+    let caption = |id: i64| {
+        assets
+            .documents
+            .get(&id)
+            .map(|d| d.caption.clone())
+            .unwrap_or_else(|| format!("file_{id}"))
+    };
     let mut list = "📎 Файлы:".to_string();
     for id in &ids {
-        let name = assets
-            .documents
-            .get(id)
-            .map(|d| d.caption.clone())
-            .unwrap_or_else(|| format!("file_{id}"));
+        let name = caption(*id);
         let icon = assets
             .documents
             .get(id)
@@ -716,7 +730,7 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
     }
     app.send(a.id, &list).await?;
     stream::iter(ids.into_iter().map(|id| {
-        let session = &session;
+        let (session, caption) = (&session, &caption);
         async move {
             let work = async {
                 let _permit = app.downloads.acquire().await?;
@@ -734,7 +748,7 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
                 let _ = app
                     .send(
                         a.id,
-                        &format!("Ошибка: файл \"file_{id}\" не удалось получить"),
+                        &format!("Ошибка: файл \"{}\" не удалось получить", caption(id)),
                     )
                     .await;
             }
