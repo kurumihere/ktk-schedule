@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily backup of the KTK schedule bot database (%i)
+
+[Timer]
+OnCalendar=*-*-* 03:40:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

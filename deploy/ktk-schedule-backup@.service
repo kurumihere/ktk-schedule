@@ -1,0 +1,20 @@
+[Unit]
+Description=Back up the KTK schedule bot database (%i)
+
+[Service]
+Type=oneshot
+User=ktk-schedule
+Group=ktk-schedule
+UMask=0077
+ExecStart=/usr/local/sbin/ktk-schedule-backup %i
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Reading a WAL database needs its shared-memory file: the state directory stays writable.
+ReadWritePaths=/var/lib/ktk-schedule/%i /var/backups/ktk-schedule/%i
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

@@ -1,0 +1,122 @@
+#!/bin/sh
+# ktk-schedule-deploy prod|test < ktk-schedule
+#
+# Installs a new binary for one instance. Runs as root; the GitHub Actions runner calls it
+# through sudo (see deploy/install.sh). It never leaves the bot broken:
+#   1. take the binary (size-limited) and check that it runs
+#   2. rehearse on a copy of the live database: migrations and CREDENTIALS_SECRET
+#   3. back up the live database, swap the binary, restart, wait for READY and stability
+#   4. on failure restore the previous binary and database and start them again
+# SQLite files are only ever touched as the service user, so no root-owned -wal/-shm
+# can lock the bot out of its own database.
+set -eu
+
+instance="${1:-}"
+case "$instance" in
+    prod | test) ;;
+    *)
+        echo "usage: ktk-schedule-deploy prod|test < ktk-schedule" >&2
+        exit 64
+        ;;
+esac
+
+unit="ktk-schedule@$instance.service"
+bin_dir="/opt/ktk-schedule/$instance"
+bin="$bin_dir/ktk-schedule"
+conf="/etc/ktk-schedule/$instance"
+state="/var/lib/ktk-schedule/$instance"
+db="$state/bot.sqlite3"
+backups="/var/backups/ktk-schedule/$instance"
+limit=$((100 * 1024 * 1024))
+
+log() { printf 'deploy %s: %s\n' "$instance" "$*" >&2; }
+fail() {
+    log "FAILED: $*"
+    exit 1
+}
+as_bot() { runuser -u ktk-schedule -- "$@"; }
+
+umask 077
+exec 9>/run/lock/ktk-schedule-deploy.lock
+flock -w 300 9 || fail "another deployment is still running"
+
+[ -f "$conf/bot.env" ] || fail "$conf/bot.env is missing; run deploy/install.sh first"
+install -d -m 0755 "$bin_dir"
+install -d -m 0700 -o ktk-schedule -g ktk-schedule "$state" "$backups"
+
+next="$bin.next"
+work="$state/rehearsal"
+cleanup() { rm -rf "$next" "$work"; }
+trap cleanup EXIT HUP INT TERM
+
+# 1. At most $limit bytes: a larger binary is rejected, not truncated.
+head -c "$((limit + 1))" >"$next"
+size=$(stat -c %s "$next")
+[ "$size" -gt 0 ] || fail "empty binary"
+[ "$size" -le "$limit" ] || fail "binary exceeds 100 MiB"
+chmod 0755 "$next"
+version=$(timeout 15 runuser -u ktk-schedule -- "$next" --version) || fail "the binary does not run"
+log "received $version ($size bytes)"
+
+# 2. Rehearsal with the service's user, settings, credentials and sandbox.
+install -d -m 0700 -o ktk-schedule -g ktk-schedule "$work"
+if [ -f "$db" ]; then
+    as_bot sqlite3 "$db" ".backup '$work/bot.sqlite3'"
+fi
+systemd-run --quiet --wait --pipe --collect \
+    --uid=ktk-schedule --gid=ktk-schedule \
+    --property=EnvironmentFile="$conf/bot.env" \
+    --property=LoadCredentialEncrypted="bot_token:$conf/bot_token.cred" \
+    --property=LoadCredentialEncrypted="credentials_secret:$conf/credentials_secret.cred" \
+    --property=LoadCredentialEncrypted="vk_group_token:$conf/vk_group_token.cred" \
+    --property=PrivateTmp=yes --property=ProtectSystem=strict --property=ProtectHome=yes \
+    --property=ReadWritePaths="$work" \
+    --setenv=DATABASE_PATH="$work/bot.sqlite3" \
+    -- "$next" --check >&2 || fail "rehearsal failed; the running bot was not touched"
+rm -rf "$work"
+log "rehearsal passed"
+
+# 3. Back up, swap, restart.
+backup=""
+if [ -f "$db" ]; then
+    backup="$backups/$(date +%Y%m%dT%H%M%S)-pre-deploy.sqlite3"
+    as_bot sqlite3 "$db" ".backup '$backup'"
+    log "database saved to $backup"
+fi
+previous=no
+if [ -x "$bin" ]; then
+    cp -p "$bin" "$bin.prev"
+    previous=yes
+fi
+mv -f "$next" "$bin"
+
+rollback() {
+    log "rolling back"
+    systemctl stop "$unit" || true
+    journalctl -u "$unit" -n 40 --no-pager -o cat >&2 || true
+    if [ -n "$backup" ]; then
+        rm -f "$db-wal" "$db-shm"
+        as_bot cp "$backup" "$db"
+    fi
+    if [ "$previous" = yes ]; then
+        mv -f "$bin.prev" "$bin"
+        systemctl start "$unit" || log "the previous version did not start either"
+    fi
+}
+
+# Type=notify: restart returns once the bot reported READY=1, or failed.
+systemctl restart "$unit" || {
+    rollback
+    fail "$version did not start"
+}
+sleep 15
+if ! systemctl is-active --quiet "$unit" ||
+    [ "$(systemctl show "$unit" -p NRestarts --value)" != 0 ]; then
+    rollback
+    fail "$version did not stay up"
+fi
+systemctl enable --quiet "$unit"
+
+# 4. Keep the ten newest pre-deploy backups.
+ls -1t "$backups"/*-pre-deploy.sqlite3 2>/dev/null | tail -n +11 | xargs -r rm -f --
+log "running $version"

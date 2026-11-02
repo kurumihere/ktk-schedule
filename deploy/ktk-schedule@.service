@@ -1,0 +1,74 @@
+# One bot instance: ktk-schedule@prod or ktk-schedule@test.
+# Settings: /etc/ktk-schedule/%i/bot.env. Secrets: encrypted systemd credentials next to it
+# (deploy/install.sh creates both). Binary: /opt/ktk-schedule/%i, installed by
+# /usr/local/sbin/ktk-schedule-deploy. Data: /var/lib/ktk-schedule/%i.
+[Unit]
+Description=KTK schedule bot (%i)
+Documentation=https://github.com/kurumihere/ktk-schedule
+Wants=network-online.target
+After=network-online.target
+# Never give up: a network outage at startup must not leave the bot down for good.
+StartLimitIntervalSec=0
+
+[Service]
+# The bot reports READY=1 once Telegram answered and the database is migrated, and pings
+# the watchdog; a hung process is restarted.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+TimeoutStartSec=90
+# 25 s for requests in flight, then 3 s for background tasks.
+TimeoutStopSec=35
+Restart=on-failure
+RestartSec=10
+RestartSteps=6
+RestartMaxDelaySec=5min
+
+User=ktk-schedule
+Group=ktk-schedule
+ExecStart=/opt/ktk-schedule/%i/ktk-schedule
+EnvironmentFile=/etc/ktk-schedule/%i/bot.env
+Environment=DATABASE_PATH=%S/ktk-schedule/%i/bot.sqlite3
+LoadCredentialEncrypted=bot_token:/etc/ktk-schedule/%i/bot_token.cred
+LoadCredentialEncrypted=credentials_secret:/etc/ktk-schedule/%i/credentials_secret.cred
+LoadCredentialEncrypted=vk_group_token:/etc/ktk-schedule/%i/vk_group_token.cred
+StateDirectory=ktk-schedule/%i
+StateDirectoryMode=0700
+WorkingDirectory=%S/ktk-schedule/%i
+UMask=0077
+
+# The bot needs about 25 MiB; keep the host and its CI runner safe from a runaway.
+MemoryHigh=192M
+MemoryMax=256M
+TasksMax=64
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

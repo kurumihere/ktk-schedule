@@ -1,0 +1,30 @@
+#!/bin/sh
+# ktk-schedule-backup prod|test: consistent online copy of the bot's database.
+# Run by ktk-schedule-backup@.timer as the service user; keeps 14 daily copies.
+set -eu
+
+instance="${1:-}"
+case "$instance" in
+    prod | test) ;;
+    *)
+        echo "usage: ktk-schedule-backup prod|test" >&2
+        exit 64
+        ;;
+esac
+db="/var/lib/ktk-schedule/$instance/bot.sqlite3"
+dir="/var/backups/ktk-schedule/$instance"
+[ -f "$db" ] || {
+    echo "no database for $instance yet"
+    exit 0
+}
+umask 077
+target="$dir/daily-$(date +%Y%m%d).sqlite3"
+sqlite3 "$db" ".backup '$target.tmp'"
+[ "$(sqlite3 "$target.tmp" 'PRAGMA integrity_check')" = ok ] || {
+    rm -f "$target.tmp"
+    echo "backup of $instance failed the integrity check" >&2
+    exit 1
+}
+mv -f "$target.tmp" "$target"
+ls -1t "$dir"/daily-*.sqlite3 | tail -n +15 | xargs -r rm -f --
+echo "saved $target"
