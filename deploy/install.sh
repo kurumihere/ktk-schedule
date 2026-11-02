@@ -13,6 +13,7 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+umask 077
 [ "$(id -u)" = 0 ] || {
     echo "install.sh must run as root" >&2
     exit 1
@@ -58,6 +59,7 @@ for instance in prod test; do
             rm -f "$conf/$name.cred"
             setting "$key" "$legacy_env" | tr -d '\n' |
                 systemd-creds encrypt --name="$name" - "$conf/$name.cred"
+            chmod 0600 "$conf/$name.cred"
         done
         # DATABASE_PATH is the unit's business now.
         grep -vE '^[[:space:]]*(BOT_TOKEN|CREDENTIALS_SECRET|VK_GROUP_TOKEN|DATABASE_PATH)=' \
