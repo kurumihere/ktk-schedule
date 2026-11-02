@@ -3,6 +3,7 @@ use crate::{
     model::*,
     render,
     storage::Account,
+    workspace::CredentialsRejected,
 };
 use anyhow::{Result, anyhow};
 use chrono::NaiveDate;
@@ -154,6 +155,24 @@ pub fn week_keyboard(view: &View, tz: Tz) -> Result<Keyboard> {
     Ok(Keyboard::new(rows))
 }
 
+/// The reply for a failed request: a lost session needs the user, anything else just failed.
+pub fn failure(error: &anyhow::Error) -> &'static str {
+    if login_required(error) {
+        render::LOGIN_AGAIN
+    } else {
+        render::SCHEDULE_FAILED
+    }
+}
+
+/// The reply for a failed sign-in: wrong credentials, or the site did not answer.
+pub fn login_failure(error: &anyhow::Error) -> &'static str {
+    if error.is::<CredentialsRejected>() {
+        render::LOGIN_REJECTED
+    } else {
+        render::SITE_DOWN
+    }
+}
+
 pub fn command(text: &str) -> (&str, &str) {
     let text = text.trim();
     text.split_once(char::is_whitespace)
@@ -181,8 +200,7 @@ fn owner(app: &App, message: &Message) -> bool {
 async fn account(app: &App, id: i64) -> Result<Option<Account>> {
     let a = app.storage.account(id).await?;
     if a.is_none() {
-        app.send(id, "Сначала авторизуйся:\n/login логин пароль")
-            .await?;
+        app.send(id, render::LOGIN_FIRST).await?;
     }
     Ok(a)
 }
@@ -201,8 +219,8 @@ pub async fn handle_message(app: Arc<App>, message: Message) -> Result<()> {
             match result {
                 Ok(Ok(())) => (),
                 Ok(Err(error)) if login_required(&error) => { let _ = app.send(id, render::LOGIN_AGAIN).await; }
-                Ok(Err(error)) => { tracing::error!(chat_id=id, error=%error, "message handler failed"); let _ = app.send(id, "Не удалось выполнить запрос. Попробуй позже.").await; }
-                Err(_) => { let _ = app.send(id, "Расписание загружается слишком долго. Попробуй ещё раз.").await; }
+                Ok(Err(error)) => { tracing::error!(chat_id=id, error=%error, "message handler failed"); let _ = app.send(id, render::REQUEST_FAILED).await; }
+                Err(_) => { let _ = app.send(id, render::TIMEOUT).await; }
             }
         }
     }
@@ -240,8 +258,7 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
         }
         "/login" => {
             if !private(message) {
-                app.send(id, "Авторизация доступна только в личном чате с ботом.")
-                    .await?;
+                app.send(id, render::PRIVATE_ONLY).await?;
                 return Ok(());
             }
             if app
@@ -250,55 +267,47 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
                 .await
                 .is_err()
             {
-                app.send(id, "Не удалось удалить сообщение с паролем, поэтому вход отменён. Удали сообщение вручную и попробуй снова.").await?;
+                app.send(id, render::LOGIN_CANCELLED).await?;
                 return Ok(());
             }
             if !app.allow(id, true).await {
-                app.send(id, "Слишком много попыток входа. Попробуй позже.")
-                    .await?;
+                app.send(id, render::TOO_MANY_LOGINS).await?;
                 return Ok(());
             }
             let args: Vec<_> = args.split_whitespace().collect();
             if args.len() != 2 {
-                app.send(id, "Используй:\n/login логин пароль").await?;
+                app.send(id, render::LOGIN_USAGE).await?;
                 return Ok(());
             }
             match app.sign_in(id, args[0], args[1]).await {
                 Ok(a) => {
-                    let text = if a.teacher_hash.is_empty() {
-                        format!(
-                            "Авторизация успешна.\nГруппа: {}\nПодгруппа: {}\n\nТеперь напиши /schedule",
-                            a.group_id,
-                            subgroup_label(&a.subgroup)
-                        )
-                    } else {
-                        "Авторизация успешна (преподаватель).\n\nТеперь напиши /schedule".into()
-                    };
-                    app.send(id, &text).await?;
+                    app.send(id, &render::signed_in(&a)).await?;
+                    // The timetable right away: no extra command needed.
+                    if let Err(error) = app
+                        .show(&a, &View::own(&a, app.now().date_naive()), None, false)
+                        .await
+                    {
+                        tracing::warn!(chat_id=id,error=%error,"schedule after login failed");
+                        app.send(id, failure(&error)).await?;
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(chat_id=id,error=%error,"login failed");
-                    app.send(id, "Не удалось войти. Проверь логин и пароль.")
-                        .await?;
+                    app.send(id, login_failure(&error)).await?;
                 }
             }
         }
         "/logout" => {
             if !private(message) {
-                app.send(id, "Выход доступен только в личном чате с ботом.")
-                    .await?;
+                app.send(id, render::PRIVATE_ONLY).await?;
                 return Ok(());
             }
             app.sign_out(id).await?;
-            app.send(id, "Ты вышел из аккаунта. Сохранённые данные входа и кеш удалены, уведомления отключены.").await?;
+            app.send(id, render::LOGGED_OUT).await?;
         }
         "/schedule" => {
             if !private(message) {
-                app.send(
-                    id,
-                    "Персональное расписание доступно только в личном чате с ботом.",
-                )
-                .await?;
+                app.send(id, render::PRIVATE_ONLY).await?;
                 return Ok(());
             }
             if !app.allow(id, false).await {
@@ -310,30 +319,22 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
             let date = match parse_date(args, app.now().date_naive()) {
                 Ok(d) => d,
                 Err(_) => {
-                    app.send(id, "Не понял дату. Используй /schedule, /schedule 01.09 или /schedule 2026-09-01").await?;
+                    app.send(id, render::DATE_FORMAT).await?;
                     return Ok(());
                 }
             };
             app.pending_groups.invalidate(&id).await;
             match app.show(&a, &View::own(&a, date), None, false).await {
                 Ok(()) => (),
-                Err(error) if login_required(&error) => {
-                    app.send(id, render::LOGIN_AGAIN).await?;
-                }
                 Err(error) => {
                     tracing::warn!(chat_id=id,error=%error,"schedule failed");
-                    app.send(id, "Не удалось получить расписание. Попробуй позже.")
-                        .await?;
+                    app.send(id, failure(&error)).await?;
                 }
             }
         }
         "/notify_on" | "/notify_off" => {
             if !private(message) {
-                app.send(
-                    id,
-                    "Настройки уведомлений доступны только в личном чате с ботом.",
-                )
-                .await?;
+                app.send(id, render::PRIVATE_ONLY).await?;
                 return Ok(());
             }
             if account(app, id).await?.is_none() {
@@ -344,9 +345,9 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
             app.send(
                 id,
                 if enabled {
-                    "Утреннее расписание включено."
+                    render::NOTIFY_ON
                 } else {
-                    "Утреннее расписание выключено."
+                    render::NOTIFY_OFF
                 },
             )
             .await?;
@@ -368,11 +369,7 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
                     .ok()
                     .filter(|g| (1..=100_000).contains(g));
                 let Some(group) = group else {
-                    app.send(
-                        id,
-                        "Не понял номер группы. Напиши просто число, например: 269",
-                    )
-                    .await?;
+                    app.send(id, render::GROUP_FORMAT).await?;
                     return Ok(());
                 };
                 if !app.allow(id, false).await {
@@ -399,9 +396,9 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
             app.send(
                 id,
                 if owner(app, message) {
-                    "Чтобы разослать это сообщение, ответь на него командой /announce."
+                    render::ANNOUNCE_HINT
                 } else {
-                    "Неизвестная команда. Напиши /start"
+                    render::UNKNOWN_COMMAND
                 },
             )
             .await?;
@@ -413,19 +410,15 @@ async fn message_inner(app: &App, message: &Message) -> Result<()> {
 async fn announce(app: &App, message: &Message, text: &str) -> Result<()> {
     let id = message.chat.id.0;
     if app.config.owner_id == 0 {
-        app.send(
-            id,
-            "Рассылка отключена. Напиши /my_id и укажи OWNER_TELEGRAM_ID в .env.",
-        )
-        .await?;
+        app.send(id, render::ANNOUNCE_OFF).await?;
         return Ok(());
     }
     if !owner(app, message) {
-        app.send(id, "Нет доступа.").await?;
+        app.send(id, render::NO_ACCESS).await?;
         return Ok(());
     }
     if text.is_empty() && message.reply_to_message().is_none() {
-        app.send(id, "Используй:\n/announce текст\n\nИли ответь /announce на сообщение, которое нужно разослать.").await?;
+        app.send(id, render::ANNOUNCE_USAGE).await?;
         return Ok(());
     }
     let recipients = app.storage.ids().await?;
@@ -434,11 +427,7 @@ async fn announce(app: &App, message: &Message, text: &str) -> Result<()> {
         .filter(|&id| id < crate::model::VK_ID_OFFSET)
         .collect();
     if recipients.is_empty() {
-        app.send(
-            id,
-            "Некому отправлять: в базе нет авторизованных пользователей.",
-        )
-        .await?;
+        app.send(id, render::NO_RECIPIENTS).await?;
         return Ok(());
     }
     let results = stream::iter(recipients.into_iter().map(|recipient| async move {
@@ -463,14 +452,8 @@ async fn announce(app: &App, message: &Message, text: &str) -> Result<()> {
     .collect::<Vec<_>>()
     .await;
     let sent = results.iter().filter(|r| r.is_ok()).count();
-    app.send(
-        id,
-        &format!(
-            "Рассылка завершена.\nДоставлено: {sent}\nОшибок: {}",
-            results.len() - sent
-        ),
-    )
-    .await?;
+    app.send(id, &render::announce_done(sent, results.len() - sent))
+        .await?;
     Ok(())
 }
 
@@ -479,7 +462,7 @@ pub async fn handle_callback(app: Arc<App>, query: CallbackQuery) -> Result<()> 
         let _ = app
             .bot
             .answer_callback_query(query.id)
-            .text("Сообщение устарело. Напиши /schedule ещё раз.")
+            .text(render::STALE_MESSAGE)
             .await;
         return Ok(());
     };
@@ -487,7 +470,7 @@ pub async fn handle_callback(app: Arc<App>, query: CallbackQuery) -> Result<()> 
     if !message.chat().is_private() || query.from.id.0 as i64 != id {
         app.bot
             .answer_callback_query(query.id)
-            .text("Персональные кнопки доступны только владельцу в личном чате.")
+            .text(render::FOREIGN_BUTTONS)
             .show_alert(true)
             .await?;
         return Ok(());
@@ -505,9 +488,8 @@ pub async fn handle_callback(app: Arc<App>, query: CallbackQuery) -> Result<()> 
         result = tokio::time::timeout(std::time::Duration::from_secs(120), work) => {
             match result {
                 Ok(Ok(())) => (),
-                Ok(Err(error)) if login_required(&error) => { let _ = app.send(id, render::LOGIN_AGAIN).await; }
-                Ok(Err(error)) => { tracing::warn!(chat_id=id,error=%error,"callback failed"); let _ = app.send(id, "Не удалось получить расписание. Попробуй позже.").await; }
-                Err(_) => { let _ = app.send(id, "Расписание загружается слишком долго. Попробуй ещё раз.").await; }
+                Ok(Err(error)) => { tracing::warn!(chat_id=id,error=%error,"callback failed"); let _ = app.send(id, failure(&error)).await; }
+                Err(_) => { let _ = app.send(id, render::TIMEOUT).await; }
             }
         }
     }
@@ -520,8 +502,7 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
         return Ok(());
     };
     let Some(mut view) = app.storage.view(id, message.0).await? else {
-        app.send(id, "Сообщение устарело. Напиши /schedule ещё раз.")
-            .await?;
+        app.send(id, render::STALE_MESSAGE).await?;
         return Ok(());
     };
     let today = app.now().date_naive();
@@ -532,7 +513,7 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
             app.present(
                 id,
                 Some(message),
-                "Напиши номер группы (например: 269)",
+                render::GROUP_PROMPT,
                 Keyboard::new(vec![vec![button("↩️ Назад", "schedule:back")]]),
                 &view,
             )
@@ -669,10 +650,7 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
         app.present(
             id,
             Some(message),
-            &format!(
-                "Выбери неделю:\n\nСейчас открыта {}",
-                render::week_label(view.week())
-            ),
+            &render::week_label(view.week()),
             week_keyboard(&view, app.config.timezone)?,
             &view,
         )
@@ -685,8 +663,7 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
 async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
     let loaded = app.load(a, view, false).await?;
     let Some(session) = loaded.session else {
-        app.send(a.id, "Файлы недоступны без соединения с сайтом расписания.")
-            .await?;
+        app.send(a.id, render::FILES_OFFLINE).await?;
         return Ok(());
     };
     let Some(day) = loaded
@@ -708,7 +685,7 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
             .chain(assets.submissions.values().copied()),
     )?;
     if ids.is_empty() {
-        app.send(a.id, "Нет файлов для скачивания.").await?;
+        app.send(a.id, render::NO_FILES).await?;
         return Ok(());
     }
     let caption = |id: i64| {
@@ -718,7 +695,7 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
             .map(|d| d.caption.clone())
             .unwrap_or_else(|| format!("file_{id}"))
     };
-    let mut list = "📎 Файлы:".to_string();
+    let mut list = render::FILES_HEADER.to_string();
     for id in &ids {
         let name = caption(*id);
         let icon = assets
@@ -745,12 +722,7 @@ async fn download(app: &App, a: &Account, view: &View) -> Result<()> {
             };
             if let Err(e) = work.await {
                 tracing::warn!(document_id=id,error=%e,"file delivery failed");
-                let _ = app
-                    .send(
-                        a.id,
-                        &format!("Ошибка: файл \"{}\" не удалось получить", caption(id)),
-                    )
-                    .await;
+                let _ = app.send(a.id, &render::file_failed(&caption(id))).await;
             }
         }
     }))

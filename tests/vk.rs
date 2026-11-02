@@ -3,6 +3,7 @@ use chrono::NaiveDate;
 use ktk_schedule::{
     app::App,
     model::{PlatformUser, Screen, View},
+    render,
     vk::{self, MessageEventObject, MessageObject},
 };
 use serde_json::json;
@@ -401,62 +402,55 @@ async fn vk_bot_admin_commands_and_announce() {
     vk::handle_message(&app, &vk, vk_message(42, 42, "/stats"))
         .await
         .unwrap();
-    let requests = vk_mock.received_requests().await.unwrap();
-    let last = requests
-        .iter()
-        .rev()
-        .find(|r| r.url.path().contains("messages.send"))
-        .unwrap();
-    let body = String::from_utf8_lossy(&last.body);
-    assert!(
-        body.contains("%D0%9A%D0%BE%D0%BC%D0%B0%D0%BD%D0%B4%D0%B0+%D0%B4%D0%BE%D1%81%D1%82%D1%83%D0%BF%D0%BD%D0%B0")
-            || body.contains("администратору")
-    );
+    assert_eq!(last_text(&vk_mock).await, render::NO_ACCESS);
 
     // 3. /stats by owner (777) -> success
     vk::handle_message(&app, &vk, vk_message(777, 777, "/stats"))
         .await
         .unwrap();
-    let requests = vk_mock.received_requests().await.unwrap();
-    let last = requests
-        .iter()
-        .rev()
-        .find(|r| r.url.path().contains("messages.send"))
-        .unwrap();
-    let body = String::from_utf8_lossy(&last.body);
-    assert!(
-        body.contains("%D0%A1%D1%82%D0%B0%D1%82%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0")
-            || body.contains("Статистика")
-    );
+    assert!(last_text(&vk_mock).await.starts_with("📊 Статистика"));
 
     // 4. /announce by non-owner -> denied
     vk::handle_message(&app, &vk, vk_message(42, 42, "/announce Привет всем"))
         .await
         .unwrap();
-    let requests = vk_mock.received_requests().await.unwrap();
-    let last = requests
-        .iter()
-        .rev()
-        .find(|r| r.url.path().contains("messages.send"))
-        .unwrap();
-    let body = String::from_utf8_lossy(&last.body);
-    assert!(
-        body.contains("%D0%9D%D0%B5%D1%82+%D0%B4%D0%BE%D1%81%D1%82%D1%83%D0%BF%D0%B0")
-            || body.contains("доступа")
-    );
+    assert_eq!(last_text(&vk_mock).await, render::NO_ACCESS);
 
     // 5. /announce by owner with empty DB -> nobody to send to
     vk::handle_message(&app, &vk, vk_message(777, 777, "/announce Привет всем"))
         .await
         .unwrap();
-    let requests = vk_mock.received_requests().await.unwrap();
-    let last = requests
+    assert_eq!(last_text(&vk_mock).await, render::NO_RECIPIENTS);
+}
+
+/// The `message` of the last messages.send call, decoded from the form body.
+async fn last_text(vk: &MockServer) -> String {
+    let requests = vk.received_requests().await.unwrap();
+    let body = requests
         .iter()
         .rev()
         .find(|r| r.url.path().contains("messages.send"))
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
         .unwrap();
-    let body = String::from_utf8_lossy(&last.body);
-    assert!(body.contains("%D0%9D%D0%B5%D0%BA%D0%BE%D0%BC%D1%83") || body.contains("Некому"));
+    let encoded = body
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("message="))
+        .unwrap()
+        .replace('+', " ");
+    let mut bytes = Vec::new();
+    let mut chars = encoded.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let hex: String = [chars.next().unwrap(), chars.next().unwrap()]
+                .iter()
+                .map(|c| *c as char)
+                .collect();
+            bytes.push(u8::from_str_radix(&hex, 16).unwrap());
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).unwrap()
 }
 
 fn count(requests: &[Request], method: &str) -> usize {

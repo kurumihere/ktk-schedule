@@ -124,10 +124,7 @@ async fn login_in_a_group_does_not_send_credentials_to_workspace() {
     assert!(college.server.received_requests().await.unwrap().is_empty());
     let requests = server.received_requests().await.unwrap();
     let response: Value = requests[0].body_json().unwrap();
-    assert_eq!(
-        response["text"],
-        "Авторизация доступна только в личном чате с ботом."
-    );
+    assert_eq!(response["text"], ktk_schedule::render::PRIVATE_ONLY);
 }
 
 #[tokio::test]
@@ -173,7 +170,7 @@ async fn login_stops_if_the_credential_message_cannot_be_deleted() {
         .unwrap()
         .body_json()
         .unwrap();
-    assert!(response["text"].as_str().unwrap().contains("вход отменён"));
+    assert_eq!(response["text"], ktk_schedule::render::LOGIN_CANCELLED);
     assert!(!response["text"].as_str().unwrap().contains("password"));
 }
 
@@ -267,7 +264,7 @@ async fn offline_schedule_keeps_hall_names_and_lesson_times() {
         })
         .collect();
     assert_eq!(texts.len(), 2);
-    assert!(texts[1].contains("Сайт расписания недоступен"));
+    assert!(texts[1].starts_with(ktk_schedule::render::STALE_SCHEDULE));
     for text in &texts {
         assert!(text.contains("301"), "{text}");
         assert!(text.contains("08:00 - 09:30"), "{text}");

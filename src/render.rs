@@ -6,43 +6,121 @@ use std::{
     fmt::Write,
 };
 
-pub const HELP: &str = "Привет! Я ktk-schedule\n\nКоманды:\n/start (Показать список команд)\n/login логин пароль (Авторизоваться в workspace)\n/logout (Выйти и удалить сохранённые данные)\n/schedule [дата] (Показать расписание на текущую неделю или дату)\n/notify_on || _off (Включить || Отключить утренние уведомления)\n";
+// Every message the bot sends lives here: short, neutral, no greetings, no addressing.
+// Telegram and VK share them; VK only differs where the platform does.
+
+pub const TELEGRAM_BOT: &str = "https://t.me/ktk45_schedule_bot";
+
+pub const HELP: &str = "\
+/login логин пароль - вход
+/schedule [дата] - расписание
+/notify_on, /notify_off - утренняя рассылка
+/logout - выход и удаление данных";
 
 pub const VK_HELP: &str = "\
-Привет! Я ktk-schedule.
+/login логин пароль - вход
+/schedule [дата] - расписание
+/notify_on, /notify_off - утренняя рассылка
+/logout - выход и удаление данных
 
-💡 Совет: мы рекомендуем использовать Telegram-версию бота:
-👉 https://t.me/ktk45_schedule_bot
+Telegram: https://t.me/ktk45_schedule_bot";
 
-🔒 Безопасность: ВКонтакте не позволяет ботам удалять входящие сообщения, поэтому отправленное вами сообщение с логином и паролем остаётся в истории чата, пока вы не удалите его вручную. В Telegram бот автоматически и сразу удаляет сообщение с паролем после авторизации.
+pub const LOGIN_FIRST: &str = "Нужен вход: /login логин пароль";
+/// The site ended the session; with no stored password only the user can sign in again.
+pub const LOGIN_AGAIN: &str = "Сессия истекла. Нужен вход: /login логин пароль";
+pub const LOGIN_USAGE: &str = "Формат: /login логин пароль";
+pub const LOGIN_CANCELLED: &str = "Вход отменён: сообщение с паролем не удалось удалить.";
+pub const LOGIN_REJECTED: &str = "Неверный логин или пароль.";
+pub const SITE_DOWN: &str = "Сайт недоступен.";
+pub const TOO_MANY_LOGINS: &str = "Слишком много попыток входа.";
+pub const TOO_MANY_REQUESTS: &str = "Слишком много запросов.";
+pub const LOGGED_OUT: &str = "Выход выполнен, данные удалены.";
+pub const PRIVATE_ONLY: &str = "Только в личном чате с ботом.";
+pub const VK_PRIVATE_ONLY: &str = "Только в личных сообщениях сообщества.";
+/// VK snackbar: a plain string inside the event JSON.
+pub const VK_PRIVATE_BUTTONS: &str =
+    r#"{"type":"show_snackbar","text":"Только в личных сообщениях"}"#;
+pub const FOREIGN_BUTTONS: &str = "Кнопки только для владельца, в личном чате.";
+pub const STALE_MESSAGE: &str = "Сообщение устарело: /schedule";
+pub const REQUEST_FAILED: &str = "Не удалось выполнить запрос.";
+pub const SCHEDULE_FAILED: &str = "Не удалось получить расписание.";
+pub const TIMEOUT: &str = "Сайт не ответил вовремя.";
+pub const DATE_FORMAT: &str = "Формат даты: 01.09 или 2026-09-01.";
+pub const NOTIFY_ON: &str = "Утренняя рассылка включена.";
+pub const NOTIFY_OFF: &str = "Утренняя рассылка выключена.";
+pub const GROUP_PROMPT: &str = "Номер группы, например 269:";
+pub const GROUP_FORMAT: &str = "Номер группы - число, например 269.";
+pub const UNKNOWN_COMMAND: &str = "Неизвестная команда. Список: /start";
+pub const NO_ACCESS: &str = "Нет доступа.";
+pub const ANNOUNCE_HINT: &str = "Рассылка: /announce ответом на сообщение.";
+pub const ANNOUNCE_USAGE: &str = "Формат: /announce текст, или /announce ответом на сообщение.";
+pub const ANNOUNCE_OFF: &str = "Рассылка отключена: не задан OWNER_TELEGRAM_ID.";
+pub const VK_ANNOUNCE_OFF: &str = "Рассылка отключена: не задан OWNER_VK_ID.";
+pub const NO_RECIPIENTS: &str = "Получателей нет.";
+pub const NO_FILES: &str = "Файлов нет.";
+pub const FILES_OFFLINE: &str = "Файлы недоступны: сайт не отвечает.";
+pub const VK_FILES: &str = "Файлы доступны в Telegram: https://t.me/ktk45_schedule_bot";
+pub const FILES_HEADER: &str = "📎 Файлы:";
+pub const NO_PAIRS_THIS_WEEK: &str = "Пар на неделе нет.";
+pub const STALE_SCHEDULE: &str = "Сайт недоступен, сохранённая версия.";
 
-Кроме того, в Telegram доступны скачивание файлов к парам и удобные меню без ограничений соцсети.
+pub fn signed_in(account: &crate::storage::Account) -> String {
+    if account.teacher_hash.is_empty() {
+        format!(
+            "Вход выполнен: группа {}, {}.",
+            account.group_id,
+            subgroup_label(&account.subgroup)
+        )
+    } else {
+        "Вход выполнен: преподаватель.".into()
+    }
+}
 
-🔑 Для входа в ВК отправьте:
-/login логин пароль
+/// VK cannot delete the user's message: the password stays in the chat history.
+pub fn vk_signed_in(account: &crate::storage::Account) -> String {
+    format!(
+        "{} Сообщение с паролем стоит удалить из чата.",
+        signed_in(account)
+    )
+}
 
-Команды:
-/start — показать список команд
-/schedule [дата] — показать расписание
-/notify_on / /notify_off — включить или отключить утренние уведомления
-/logout — выйти и удалить сохранённые данные";
+pub fn stats(users: i64, notify: i64, sessions: u64, uptime_seconds: u64, tz: Tz) -> String {
+    format!(
+        "📊 Статистика\nПользователи: {users}\nРассылка: {notify}\nСессии в памяти: {sessions}\nАптайм: {}\nЧасовой пояс: {tz}",
+        uptime(uptime_seconds)
+    )
+}
 
-pub const VK_UNAUTHORIZED: &str = "\
-Вы не авторизованы.
+pub fn announce_done(sent: usize, failed: usize) -> String {
+    format!("Доставлено: {sent}, ошибок: {failed}.")
+}
 
-🔑 Для входа отправьте:
-/login логин пароль
+pub fn file_failed(name: &str) -> String {
+    format!("Не удалось получить файл \"{name}\".")
+}
 
-💡 Совет: мы рекомендуем использовать Telegram-версию бота:
-👉 https://t.me/ktk45_schedule_bot
+pub fn no_pairs(date: NaiveDate) -> String {
+    format!("📅 {}\n\nПар нет.", date.format("%d.%m.%Y"))
+}
 
-🔒 Безопасность: в Telegram бот автоматически удаляет сообщение с паролем из чата сразу при входе, а также там доступно скачивание файлов к парам и удобное меню без ограничений ВК.";
-/// The site ended the account's session; with no stored password only the user can sign in.
-pub const LOGIN_AGAIN: &str = "Сессия на сайте закончилась. Войди заново:\n/login логин пароль";
-pub const VK_FAILED: &str = "Не удалось получить расписание. Попробуйте позже.";
-pub const VK_TIMEOUT: &str = "Расписание загружается слишком долго. Попробуйте ещё раз.";
-pub const VK_LOGIN_AGAIN: &str =
-    "Сессия на сайте закончилась. Войдите заново:\n/login логин пароль";
+pub fn group_header(group: i64) -> String {
+    format!("📋 Группа {group}\n\n")
+}
+
+/// VK settings menu: what is selected now, then the buttons.
+pub fn vk_menu(view: &View, group: i64, teacher: bool) -> String {
+    if teacher {
+        return week_label(view.week());
+    }
+    let subgroup = if view.show_all {
+        "обе подгруппы"
+    } else if view.subgroup == "left" {
+        "1 подгруппа"
+    } else {
+        "2 подгруппа"
+    };
+    format!("Группа {group}, {subgroup}\n{}", week_label(view.week()))
+}
 
 const MONTHS: [&str; 12] = [
     "января",

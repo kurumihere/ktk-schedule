@@ -35,7 +35,11 @@ async fn sign_in_escapes_credentials_like_the_website_and_needs_no_discovery() {
         .await
         .err()
         .unwrap();
-    assert_eq!(error.to_string(), "Неверный логин или пароль.");
+    // Wrong credentials are told apart from an unreachable site.
+    let rejected = error
+        .downcast_ref::<ktk_schedule::workspace::CredentialsRejected>()
+        .unwrap();
+    assert_eq!(rejected.0, "Неверный логин или пароль.");
 }
 
 #[tokio::test]

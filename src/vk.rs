@@ -582,11 +582,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     // 1. Private chat first (AGENTS.md Golden Rule 1)
     if msg.peer_id != msg.from_id {
         let _ = vk
-            .send_message(
-                msg.peer_id,
-                "Расписание доступно только в личных сообщениях с сообществом.",
-                None,
-            )
+            .send_message(msg.peer_id, render::VK_PRIVATE_ONLY, None)
             .await;
         return Ok(());
     }
@@ -601,11 +597,7 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     // 2. Rate limiting
     if !app.allow(storage_id, command == "/login").await {
         let _ = vk
-            .send_message(
-                msg.peer_id,
-                "Слишком много запросов. Пожалуйста, подождите немного.",
-                None,
-            )
+            .send_message(msg.peer_id, render::TOO_MANY_REQUESTS, None)
             .await;
         return Ok(());
     }
@@ -621,37 +613,22 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     if command == "/login" {
         let credentials: Vec<&str> = args.split_whitespace().collect();
         let [login, password] = credentials[..] else {
-            vk.send_message(
-                msg.peer_id,
-                "Использование: /login <логин> <пароль>\nПример: /login 1000123 mypass\n\n💡 Совет: мы рекомендуем Telegram-бота, там вход безопаснее, так как пароль сразу удаляется:\n👉 https://t.me/ktk45_schedule_bot",
-                None,
-            )
-            .await?;
+            vk.send_message(msg.peer_id, render::LOGIN_USAGE, None)
+                .await?;
             return Ok(());
         };
         match app.sign_in(storage_id, login, password).await {
             Ok(user_account) => {
-                let role = if !user_account.teacher_hash.is_empty() {
-                    "преподаватель".to_string()
-                } else {
-                    format!("группа {}", user_account.group_id)
-                };
-                let welcome = format!(
-                    "✅ Вы успешно вошли в систему ({role})!\n\n⚠️ Внимание: ВКонтакте не позволяет боту автоматически удалить ваше сообщение с паролем. Рекомендуем вручную удалить сообщение с логином и паролем из этого чата в целях безопасности.\n\n💡 В Telegram бот удаляет пароли автоматически:\n👉 https://t.me/ktk45_schedule_bot"
-                );
-                vk.send_message(msg.peer_id, &welcome, None).await?;
+                vk.send_message(msg.peer_id, &render::vk_signed_in(&user_account), None)
+                    .await?;
 
                 let view = View::own(&user_account, app.now().date_naive());
                 show_vk(app, vk, &user_account, &view, None, false).await?;
             }
             Err(e) => {
                 tracing::warn!(error=%e, "vk login failed");
-                vk.send_message(
-                    msg.peer_id,
-                    "Неверный логин или пароль, либо сервис недоступен.",
-                    None,
-                )
-                .await?;
+                vk.send_message(msg.peer_id, crate::telegram::login_failure(&e), None)
+                    .await?;
             }
         }
         return Ok(());
@@ -659,24 +636,20 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
 
     if command == "/logout" {
         app.sign_out(storage_id).await?;
-        vk.send_message(
-            msg.peer_id,
-            "Вы вышли из системы. Ваши сохранённые данные удалены.",
-            None,
-        )
-        .await?;
+        vk.send_message(msg.peer_id, render::LOGGED_OUT, None)
+            .await?;
         return Ok(());
     }
 
     if command == "/my_id" {
-        vk.send_message(msg.peer_id, &format!("Ваш VK ID: {}", msg.from_id), None)
+        vk.send_message(msg.peer_id, &format!("VK ID: {}", msg.from_id), None)
             .await?;
         return Ok(());
     }
 
     if command == "/stats" {
         if app.config.owner_vk_id == 0 || msg.from_id != app.config.owner_vk_id {
-            vk.send_message(msg.peer_id, "Команда доступна только администратору.", None)
+            vk.send_message(msg.peer_id, render::NO_ACCESS, None)
                 .await?;
             return Ok(());
         }
@@ -691,21 +664,21 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
     }
 
     let Some(account) = app.storage.account(storage_id).await? else {
-        vk.send_message(msg.peer_id, render::VK_UNAUTHORIZED, None)
+        vk.send_message(msg.peer_id, render::LOGIN_FIRST, None)
             .await?;
         return Ok(());
     };
 
     if command == "/notify_on" {
         app.storage.set_notify(storage_id, true).await?;
-        vk.send_message(msg.peer_id, "🔔 Утренние уведомления включены.", None)
+        vk.send_message(msg.peer_id, render::NOTIFY_ON, None)
             .await?;
         return Ok(());
     }
 
     if command == "/notify_off" {
         app.storage.set_notify(storage_id, false).await?;
-        vk.send_message(msg.peer_id, "🔕 Утренние уведомления выключены.", None)
+        vk.send_message(msg.peer_id, render::NOTIFY_OFF, None)
             .await?;
         return Ok(());
     }
@@ -724,12 +697,8 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
 
     if command == "/schedule" {
         let Ok(target_date) = parse_date(args, app.now().date_naive()) else {
-            vk.send_message(
-                msg.peer_id,
-                "Неверный формат даты. Используйте: /schedule ДД.ММ или /schedule ГГГГ-ММ-ДД",
-                None,
-            )
-            .await?;
+            vk.send_message(msg.peer_id, render::DATE_FORMAT, None)
+                .await?;
             return Ok(());
         };
         let view = View::own(&account, target_date);
@@ -756,16 +725,12 @@ pub async fn handle_message(app: &Arc<App>, vk: &Arc<VkClient>, msg: MessageObje
 async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str) -> Result<()> {
     let peer_id = msg.peer_id;
     if app.config.owner_vk_id == 0 {
-        vk.send_message(
-            peer_id,
-            "Рассылка отключена. Напишите /my_id и укажите OWNER_VK_ID в .env.",
-            None,
-        )
-        .await?;
+        vk.send_message(peer_id, render::VK_ANNOUNCE_OFF, None)
+            .await?;
         return Ok(());
     }
     if msg.from_id != app.config.owner_vk_id {
-        vk.send_message(peer_id, "Нет доступа.", None).await?;
+        vk.send_message(peer_id, render::NO_ACCESS, None).await?;
         return Ok(());
     }
     let text = if !param.is_empty() {
@@ -776,12 +741,8 @@ async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str)
         ""
     };
     if text.is_empty() {
-        vk.send_message(
-            peer_id,
-            "Используйте:\n/announce <текст>\n\nИли ответьте /announce на сообщение, которое нужно разослать.",
-            None,
-        )
-        .await?;
+        vk.send_message(peer_id, render::ANNOUNCE_USAGE, None)
+            .await?;
         return Ok(());
     }
     let all_ids = app.storage.ids().await?;
@@ -792,12 +753,8 @@ async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str)
         .collect();
 
     if vk_recipients.is_empty() {
-        vk.send_message(
-            peer_id,
-            "Некому отправлять: в базе нет авторизованных пользователей ВКонтакте.",
-            None,
-        )
-        .await?;
+        vk.send_message(peer_id, render::NO_RECIPIENTS, None)
+            .await?;
         return Ok(());
     }
 
@@ -814,10 +771,7 @@ async fn announce_vk(app: &App, vk: &VkClient, msg: &MessageObject, param: &str)
     let sent = results.iter().filter(|r| r.is_ok()).count();
     vk.send_message(
         peer_id,
-        &format!(
-            "Рассылка завершена: отправлено {sent} из {}.",
-            results.len()
-        ),
+        &render::announce_done(sent, results.len() - sent),
         None,
     )
     .await?;
@@ -836,7 +790,7 @@ pub async fn handle_callback(
                 &event.event_id,
                 event.user_id,
                 event.peer_id,
-                Some(r#"{"type":"show_snackbar","text":"Кнопки доступны только в личных сообщениях"}"#),
+                Some(render::VK_PRIVATE_BUTTONS),
             )
             .await;
         return Ok(());
@@ -906,7 +860,7 @@ pub async fn handle_callback(
             vk.edit_message(
                 event.peer_id,
                 i64::from(cmid),
-                "Введите номер группы сообщением в чат (например: 269):",
+                render::GROUP_PROMPT,
                 Some(&keyboard),
             )
             .await?;
@@ -995,12 +949,8 @@ pub async fn handle_callback(
         }
         "schedule:download" => {
             // Note: download files for VK
-            vk.send_message(
-                event.peer_id,
-                "Скачивание файлов в VK пока не поддерживается. Используйте веб-версию или Telegram-бота.",
-                None,
-            )
-            .await?;
+            vk.send_message(event.peer_id, render::VK_FILES, None)
+                .await?;
             return Ok(());
         }
         _ => return Ok(()),
@@ -1020,10 +970,7 @@ pub async fn show_vk(
     let teacher = !account.teacher_hash.is_empty();
     match view.screen {
         Screen::Weeks => {
-            let text = format!(
-                "Выбери неделю:\n\nСейчас открыта {}",
-                render::week_label(view.week())
-            );
+            let text = render::week_label(view.week());
             let keyboard = week_keyboard_vk(view, app.config.timezone)?;
             present_vk(app, vk, account.id, cmid, &text, keyboard, view).await
         }
@@ -1037,32 +984,15 @@ pub async fn show_vk(
                 vk,
                 account.id,
                 cmid,
-                "Введите номер группы (например: 269):",
+                render::GROUP_PROMPT,
                 keyboard,
                 view,
             )
             .await
         }
         Screen::Subgroup => {
-            let current = if view.show_all {
-                "Обе подгруппы"
-            } else if view.subgroup == "left" {
-                "1 подгруппа"
-            } else {
-                "2 подгруппа"
-            };
-            let group_num = view.group.unwrap_or(account.group_id);
-            let text = if teacher {
-                format!(
-                    "⚙️ Меню и выбор недели\n\nСейчас открыта {}\n\nВыберите действие:",
-                    render::week_label(view.week())
-                )
-            } else {
-                format!(
-                    "⚙️ Меню и настройки\n\nТекущая подгруппа: {current}\nГруппа: {group_num}\nСейчас открыта {}\n\nВыберите нужный вариант:",
-                    render::week_label(view.week())
-                )
-            };
+            let group = view.group.unwrap_or(account.group_id);
+            let text = render::vk_menu(view, group, teacher);
             let keyboard = subgroup_keyboard_vk(view, teacher);
             present_vk(app, vk, account.id, cmid, &text, keyboard, view).await
         }
@@ -1142,15 +1072,14 @@ async fn dispatch(app: Arc<App>, vk: Arc<VkClient>, update: LongPollUpdate) {
         _ = app.cancel.cancelled() => (),
         result = tokio::time::timeout(HANDLER_TIMEOUT, work) => match result {
             Ok(Ok(())) => (),
-            Ok(Err(error)) if login_required(&error) => {
-                let _ = vk.send_message(peer, render::VK_LOGIN_AGAIN, None).await;
-            }
             Ok(Err(error)) => {
-                tracing::warn!(%error, "vk handler failed");
-                let _ = vk.send_message(peer, render::VK_FAILED, None).await;
+                if !login_required(&error) {
+                    tracing::warn!(%error, "vk handler failed");
+                }
+                let _ = vk.send_message(peer, crate::telegram::failure(&error), None).await;
             }
             Err(_) => {
-                let _ = vk.send_message(peer, render::VK_TIMEOUT, None).await;
+                let _ = vk.send_message(peer, render::TIMEOUT, None).await;
             }
         }
     }

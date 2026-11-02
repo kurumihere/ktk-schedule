@@ -52,6 +52,16 @@ fn rediscover(error: &anyhow::Error) -> bool {
         .is_some_and(|e| matches!(e.0, None | Some(StatusCode::NOT_FOUND | StatusCode::GONE)))
 }
 
+/// The site refused the login and password, as opposed to being unreachable.
+#[derive(Debug)]
+pub struct CredentialsRejected(pub String);
+impl std::fmt::Display for CredentialsRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "credentials rejected: {}", self.0)
+    }
+}
+impl std::error::Error for CredentialsRejected {}
+
 /// Server functions report failures in-band (HTTP 200 with `{ error: { appError: { code } } }`).
 /// An expired or revoked session must look like a 401, or the bot keeps serving stale data.
 fn server_error(value: &Value) -> Option<anyhow::Error> {
@@ -458,7 +468,7 @@ impl Workspace {
                 .as_str()
                 .or_else(|| result["error"]["message"].as_str())
                 .unwrap_or("unauthorized");
-            bail!("{message}");
+            return Err(CredentialsRejected(message.into()).into());
         }
         self.session_id = result["session"]["id"]
             .as_str()
@@ -497,6 +507,12 @@ impl Workspace {
                 false,
             )
             .await?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err(CredentialsRejected(response.status().to_string()).into());
+        }
         ensure_status(&response)?;
         let body = read_body(response, JSON_LIMIT).await?;
         drop(permit);

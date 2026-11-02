@@ -720,19 +720,15 @@ impl App {
                 }
                 render::schedule(day, view, &refs, &assets, teacher, is_personal, now)
             }
-            _ if loaded.days.is_empty() => "На этой неделе нет пар.".into(),
-            _ => format!(
-                "📅 {}\n\nПар нет. Сегодня не учебный день.",
-                view.date.format("%d.%m.%Y")
-            ),
+            _ if loaded.days.is_empty() => render::NO_PAIRS_THIS_WEEK.into(),
+            _ => render::no_pairs(view.date),
         };
         let mut text = format!("{prefix}{text}");
         if let Some(group) = view.group {
-            text = format!("📋 Расписание группы {group}\n\n{text}");
+            text = format!("{}{text}", render::group_header(group));
         }
         if loaded.stale {
-            text =
-                format!("Сайт расписания недоступен, показываю сохранённое расписание.\n\n{text}");
+            text = format!("{}\n\n{text}", render::STALE_SCHEDULE);
         }
         Ok((text, file_count))
     }
@@ -797,11 +793,12 @@ impl App {
 
     pub async fn stats(&self) -> Result<String> {
         let (users, notify) = self.storage.counts().await?;
-        Ok(format!(
-            "📊 Статистика\n\n👥 Всего пользователей: {users}\n🔔 Уведомлений: {notify}\n💾 Активных сессий: {}\n⏳ Аптайм: {}\n🌐 Таймзона: {}",
+        Ok(render::stats(
+            users,
+            notify,
             self.sessions.entry_count(),
-            render::uptime(self.started.elapsed().as_secs()),
-            self.config.timezone
+            self.started.elapsed().as_secs(),
+            self.config.timezone,
         ))
     }
 
@@ -827,7 +824,7 @@ impl App {
                     }
                     PlatformUser::Vk(peer) => {
                         if let Some(vk) = self.vk.as_ref() {
-                            vk.send_message(peer, render::VK_LOGIN_AGAIN, None).await?;
+                            vk.send_message(peer, render::LOGIN_AGAIN, None).await?;
                         }
                     }
                 }
@@ -842,15 +839,8 @@ impl App {
         }) {
             match user {
                 PlatformUser::Telegram(_) => {
-                    self.show_loaded(
-                        &account,
-                        &view,
-                        None,
-                        &loaded,
-                        false,
-                        "Доброе утро. Расписание на сегодня:\n\n",
-                    )
-                    .await?;
+                    self.show_loaded(&account, &view, None, &loaded, false, "")
+                        .await?;
                 }
                 PlatformUser::Vk(_) => {
                     if let Some(vk) = self.vk.as_ref() {

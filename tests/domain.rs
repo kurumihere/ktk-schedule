@@ -845,3 +845,74 @@ fn building_short_code_is_only_shown_when_multiple_buildings_exist_in_the_day() 
     assert!(text_multi.contains("🏫 Кабинет: 18А (IT)"));
     assert!(text_multi.contains("🏫 Кабинет: 205 (АиВТ-1)"));
 }
+
+#[test]
+fn bot_texts_stay_short_neutral_and_free_of_promotion() {
+    let account = account();
+    let texts = [
+        render::HELP.to_owned(),
+        render::VK_HELP.to_owned(),
+        render::LOGIN_FIRST.to_owned(),
+        render::LOGIN_AGAIN.to_owned(),
+        render::LOGIN_USAGE.to_owned(),
+        render::LOGIN_CANCELLED.to_owned(),
+        render::LOGIN_REJECTED.to_owned(),
+        render::SITE_DOWN.to_owned(),
+        render::TOO_MANY_LOGINS.to_owned(),
+        render::TOO_MANY_REQUESTS.to_owned(),
+        render::LOGGED_OUT.to_owned(),
+        render::PRIVATE_ONLY.to_owned(),
+        render::VK_PRIVATE_ONLY.to_owned(),
+        render::VK_PRIVATE_BUTTONS.to_owned(),
+        render::FOREIGN_BUTTONS.to_owned(),
+        render::STALE_MESSAGE.to_owned(),
+        render::REQUEST_FAILED.to_owned(),
+        render::SCHEDULE_FAILED.to_owned(),
+        render::TIMEOUT.to_owned(),
+        render::DATE_FORMAT.to_owned(),
+        render::NOTIFY_ON.to_owned(),
+        render::NOTIFY_OFF.to_owned(),
+        render::GROUP_PROMPT.to_owned(),
+        render::GROUP_FORMAT.to_owned(),
+        render::UNKNOWN_COMMAND.to_owned(),
+        render::NO_ACCESS.to_owned(),
+        render::ANNOUNCE_HINT.to_owned(),
+        render::ANNOUNCE_USAGE.to_owned(),
+        render::NO_RECIPIENTS.to_owned(),
+        render::NO_FILES.to_owned(),
+        render::FILES_OFFLINE.to_owned(),
+        render::VK_FILES.to_owned(),
+        render::NO_PAIRS_THIS_WEEK.to_owned(),
+        render::STALE_SCHEDULE.to_owned(),
+        render::signed_in(&account),
+        render::vk_signed_in(&account),
+        render::announce_done(3, 1),
+        render::file_failed("task.pdf"),
+        render::vk_menu(&View::own(&account, date()), 269, false),
+    ];
+    for text in &texts {
+        let lower = format!(" {} ", text.to_lowercase());
+        for word in [
+            "привет",
+            "доброе утро",
+            "пожалуйста",
+            "напиши",
+            "попробуй",
+            "введите",
+            "используй",
+            "рекоменд",
+            "совет",
+            " ты ",
+            " вы ",
+            " ваш",
+            " твой",
+            "💡",
+            "👉",
+        ] {
+            assert!(!lower.contains(word), "{text:?} contains {word:?}");
+        }
+        assert!(text.chars().count() <= 220, "too long: {text}");
+    }
+    // The only pointer to Telegram is a link.
+    assert!(render::VK_HELP.ends_with(render::TELEGRAM_BOT));
+}
