@@ -53,14 +53,22 @@ const MONTHS: [&str; 12] = [
 ];
 const DAYS: [&str; 7] = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
-pub fn week_label(date: NaiveDate) -> String {
+/// Academic week number (week 1 contains September 1st) with the Monday and Saturday it spans.
+/// Total for every `NaiveDate`, including the extremes chrono can represent.
+fn academic_week(date: NaiveDate) -> (i64, NaiveDate, NaiveDate) {
     let start = week_start(date);
-    let mut academic = week_start(NaiveDate::from_ymd_opt(start.year(), 9, 1).unwrap());
-    if start < academic {
-        academic = week_start(NaiveDate::from_ymd_opt(start.year() - 1, 9, 1).unwrap());
-    }
+    let first_week = |year| NaiveDate::from_ymd_opt(year, 9, 1).map(week_start);
+    let academic = first_week(start.year())
+        .filter(|first| *first <= start)
+        .or_else(|| first_week(start.year() - 1))
+        .unwrap_or(start);
     let number = (start - academic).num_days() / 7 + 1;
     let end = start.checked_add_days(Days::new(5)).unwrap_or(start);
+    (number, start, end)
+}
+
+pub fn week_label(date: NaiveDate) -> String {
+    let (number, start, end) = academic_week(date);
     format!(
         "Неделя {number} (с {:02} {} по {:02} {})",
         start.day(),
@@ -71,13 +79,7 @@ pub fn week_label(date: NaiveDate) -> String {
 }
 
 pub fn short_week_label(date: NaiveDate) -> String {
-    let start = week_start(date);
-    let mut academic = week_start(NaiveDate::from_ymd_opt(start.year(), 9, 1).unwrap());
-    if start < academic {
-        academic = week_start(NaiveDate::from_ymd_opt(start.year() - 1, 9, 1).unwrap());
-    }
-    let number = (start - academic).num_days() / 7 + 1;
-    let end = start.checked_add_days(Days::new(5)).unwrap_or(start);
+    let (number, start, end) = academic_week(date);
     format!(
         "Неделя {number} ({:02}.{:02} - {:02}.{:02})",
         start.day(),

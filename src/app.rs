@@ -457,7 +457,7 @@ impl App {
             && view.week() == week_start(view.date)
         {
             let mut next_view = view.clone();
-            next_view.week_start = telegram::shift(view.week(), 7)?;
+            next_view.week_start = shift(view.week(), 7)?;
             if let Ok(next) = self.load(account, &next_view, false).await
                 && !next.days.is_empty()
             {

@@ -48,6 +48,21 @@ fn dates_and_academic_weeks_match_the_existing_interface() {
 }
 
 #[test]
+fn dates_far_from_today_are_rejected_and_week_labels_never_panic() {
+    // `%Y` happily parses signed and two-digit years; both used to reach rendering.
+    for input in ["01.01.-262144", "01.09.26", "2040-01-01", "31.12.262143"] {
+        assert!(parse_date(input, date()).is_err(), "{input}");
+    }
+    assert!(parse_date("2035-01-01", date()).is_ok());
+    assert!(within_reach(shift(date(), 3650).unwrap(), date()));
+    assert!(!within_reach(shift(date(), -3651).unwrap(), date()));
+    for extreme in [NaiveDate::MIN, NaiveDate::MAX] {
+        assert!(render::week_label(extreme).starts_with("Неделя "));
+        assert!(render::short_week_label(extreme).starts_with("Неделя "));
+    }
+}
+
+#[test]
 fn attachments_accept_alternate_api_shapes_without_duplicate_ids() {
     let value = json!({"Files": [{"ID": 101}, {"FileID":"102"}, {"Document":{"ID":103}}, 101, -1, 2.5], "FileID":104, "Documents":[{"DocumentID":105}], "Attachments":[{"File":{"ID":106}}]});
     assert_eq!(
@@ -310,7 +325,7 @@ fn personal_scope_uses_the_linked_subgroup_not_a_global_default() {
     v.subgroup = "left".into();
     assert_eq!(v.scope(&a), "group:269");
     v.group = Some(270);
-    v.select_date(telegram::shift(date(), 7).unwrap());
+    v.select_date(shift(date(), 7).unwrap());
     assert_eq!(v.scope(&a), "group:270");
 }
 

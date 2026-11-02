@@ -1,6 +1,6 @@
 use crate::{app::App, model::*, render, storage::Account};
 use anyhow::{Result, anyhow};
-use chrono::{Days, NaiveDate};
+use chrono::NaiveDate;
 use chrono_tz::Tz;
 use futures::{StreamExt, stream};
 use std::sync::Arc;
@@ -147,15 +147,6 @@ pub fn week_keyboard(view: &View, tz: Tz) -> Result<Keyboard> {
     }
     rows.push(vec![button("Текущая неделя", "schedule:week:today")]);
     Ok(Keyboard::new(rows))
-}
-
-pub fn shift(date: NaiveDate, delta: i64) -> Result<NaiveDate> {
-    let result = if delta >= 0 {
-        date.checked_add_days(Days::new(delta as u64))
-    } else {
-        date.checked_sub_days(Days::new(delta.unsigned_abs()))
-    };
-    result.ok_or_else(|| anyhow!("date out of range"))
 }
 
 pub fn command(text: &str) -> (&str, &str) {
@@ -592,7 +583,7 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
                 .ok_or_else(|| anyhow!("invalid week"))?
                 .with_timezone(&app.config.timezone)
                 .date_naive();
-            if (date - today).num_days().unsigned_abs() > 3650 {
+            if !within_reach(date, today) {
                 return Ok(());
             }
             view.select_date(week_start(date));

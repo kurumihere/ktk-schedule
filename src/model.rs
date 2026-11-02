@@ -902,9 +902,27 @@ pub fn subgroup_label(value: &str) -> &'static str {
     }
 }
 
+/// User-selected dates (commands and week buttons) stay within ten years of today:
+/// nothing useful lies further away, and extreme years are not worth a Workspace request.
+pub const MAX_DAYS_FROM_TODAY: i64 = 3650;
+
+pub fn within_reach(date: NaiveDate, today: NaiveDate) -> bool {
+    (date - today).num_days().abs() <= MAX_DAYS_FROM_TODAY
+}
+
 pub fn week_start(date: NaiveDate) -> NaiveDate {
     date.checked_sub_days(Days::new(date.weekday().num_days_from_monday().into()))
         .unwrap_or(date)
+}
+
+pub fn shift(date: NaiveDate, delta: i64) -> Result<NaiveDate> {
+    let days = Days::new(delta.unsigned_abs());
+    if delta >= 0 {
+        date.checked_add_days(days)
+    } else {
+        date.checked_sub_days(days)
+    }
+    .ok_or_else(|| anyhow::anyhow!("date out of range"))
 }
 
 pub fn week_millis(date: NaiveDate, tz: Tz) -> Result<i64> {
@@ -930,12 +948,16 @@ pub fn parse_date(raw: &str, today: NaiveDate) -> Result<NaiveDate> {
     if raw.is_empty() {
         return Ok(today);
     }
-    for format in ["%Y-%m-%d", "%d.%m.%Y"] {
-        if let Ok(d) = NaiveDate::parse_from_str(raw, format) {
-            return Ok(d);
-        }
-    }
-    NaiveDate::parse_from_str(&format!("{raw}.{}", today.year()), "%d.%m.%Y").map_err(Into::into)
+    let date = match ["%Y-%m-%d", "%d.%m.%Y"]
+        .into_iter()
+        .find_map(|format| NaiveDate::parse_from_str(raw, format).ok())
+    {
+        Some(date) => date,
+        None => NaiveDate::parse_from_str(&format!("{raw}.{}", today.year()), "%d.%m.%Y")?,
+    };
+    // `%Y` also accepts "26" or "-262144"; such dates are typos and must not reach rendering.
+    ensure!(within_reach(date, today), "date is too far from today");
+    Ok(date)
 }
 
 pub fn visible_subjects_scoped<'a>(

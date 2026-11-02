@@ -1,6 +1,6 @@
 use crate::{app::App, model::*, render, storage::Account};
 use anyhow::{Result, anyhow};
-use chrono::{Datelike, Days, NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use chrono_tz::Tz;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -514,15 +514,6 @@ pub fn subgroup_keyboard_vk(view: &View, teacher: bool) -> VkKeyboard {
     }
 }
 
-pub fn shift(base: NaiveDate, days: i64) -> Result<NaiveDate> {
-    if days >= 0 {
-        base.checked_add_days(Days::new(days as u64))
-    } else {
-        base.checked_sub_days(Days::new((-days) as u64))
-    }
-    .ok_or_else(|| anyhow!("date overflow"))
-}
-
 pub fn extract_callback_data(value: &Value) -> Option<String> {
     if let Some(obj) = value.as_object()
         && let Some(data) = obj.get("data").and_then(|v| v.as_str())
@@ -945,20 +936,18 @@ pub async fn handle_callback(
             }
         }
         _ if data.starts_with("schedule:week:open:") => {
-            if let Ok(millis) = data
+            let Some(date) = data
                 .strip_prefix("schedule:week:open:")
-                .unwrap_or("")
-                .parse::<i64>()
-            {
-                let sec = millis / 1000;
-                let nsec = ((millis % 1000) * 1_000_000) as u32;
-                if let Some(dt) = chrono::DateTime::from_timestamp(sec, nsec) {
-                    let d = dt.with_timezone(&app.config.timezone).date_naive();
-                    view.week_start = week_start(d);
-                    view.select_date(d);
-                    view.screen = Screen::Schedule;
-                }
-            }
+                .and_then(|millis| millis.parse().ok())
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .map(|at| at.with_timezone(&app.config.timezone).date_naive())
+                .filter(|date| within_reach(*date, today))
+            else {
+                return Ok(());
+            };
+            view.select_date(week_start(date));
+            view.week_offset = 0;
+            view.screen = Screen::Schedule;
         }
         "schedule:download" => {
             // Note: download files for VK
