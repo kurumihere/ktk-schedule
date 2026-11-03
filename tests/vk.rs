@@ -284,7 +284,11 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
             .map(|i| ScheduleDay {
                 date: format!("2026-09-0{}", i + 1),
                 call_preset: 1,
-                subjects: Vec::new(),
+                subjects: vec![ktk_schedule::model::Subject {
+                    discipline: "Математика".into(),
+                    pair: 1,
+                    ..Default::default()
+                }],
                 ..Default::default()
             })
             .collect();
@@ -292,7 +296,7 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
         for teacher in [false, true] {
             for foreign_group in [None, Some(270)] {
                 view.group = foreign_group;
-                let kb = vk::schedule_keyboard_vk(&days, &view, today, tz);
+                let kb = vk::schedule_keyboard_vk(&days, &view, true, tz, teacher, false);
                 assert!(kb.inline);
                 assert!(kb.buttons.len() <= 6, "rows exceeded: {}", kb.buttons.len());
                 let total_buttons: usize = kb.buttons.iter().map(|r| r.len()).sum();
@@ -375,6 +379,92 @@ fn vk_schedule_keyboard_strictly_obeys_vk_limits() {
             }
         }
     }
+}
+
+#[test]
+fn vk_schedule_keyboard_refreshes_today_and_hides_days_without_pairs() {
+    use ktk_schedule::model::{ScheduleDay, Subject};
+    let tz: chrono_tz::Tz = "Asia/Yekaterinburg".parse().unwrap();
+    let monday = NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+    let view = View {
+        date: monday,
+        week_start: monday,
+        group: None,
+        subgroup: "left".into(),
+        show_all: false,
+        week_offset: 0,
+        screen: Screen::Schedule,
+    };
+    let pair = Subject {
+        discipline: "Математика".into(),
+        pair: 1,
+        ..Default::default()
+    };
+    // Monday has a pair, Tuesday nothing, Wednesday only the other subgroup.
+    let days = vec![
+        ScheduleDay {
+            date: "2026-08-31".into(),
+            subjects: vec![pair.clone()],
+            ..Default::default()
+        },
+        ScheduleDay {
+            date: "2026-09-01".into(),
+            ..Default::default()
+        },
+        ScheduleDay {
+            date: "2026-09-02".into(),
+            subjects: vec![Subject {
+                subgroup: "2".into(),
+                ..pair.clone()
+            }],
+            ..Default::default()
+        },
+    ];
+    let data = |kb: &vk::VkKeyboard| -> Vec<Vec<String>> {
+        kb.buttons
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|btn| match &btn.action {
+                        vk::VkAction::Callback { payload, .. } => {
+                            vk::extract_callback_data(&serde_json::from_str(payload).unwrap())
+                                .unwrap()
+                        }
+                        _ => String::new(),
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+
+    let kb = data(&vk::schedule_keyboard_vk(
+        &days, &view, true, tz, false, false,
+    ));
+    assert_eq!(kb[0][1], "schedule:refresh");
+    assert_eq!(kb[1], ["schedule:day:0"]);
+
+    let kb = data(&vk::schedule_keyboard_vk(
+        &days, &view, false, tz, false, false,
+    ));
+    assert_eq!(kb[0][1], "schedule:today");
+
+    // Both subgroups: Wednesday keeps its index.
+    let all = View {
+        show_all: true,
+        ..view.clone()
+    };
+    let kb = data(&vk::schedule_keyboard_vk(
+        &days, &all, true, tz, false, false,
+    ));
+    assert_eq!(kb[1], ["schedule:day:0", "schedule:day:2"]);
+}
+
+#[test]
+fn sunday_is_a_day_off() {
+    let sunday = NaiveDate::from_ymd_opt(2026, 9, 6).unwrap();
+    assert!(ktk_schedule::render::no_pairs(sunday).ends_with("Воскресенье, выходной."));
+    let saturday = NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+    assert!(ktk_schedule::render::no_pairs(saturday).ends_with("Пар нет."));
 }
 
 #[tokio::test]

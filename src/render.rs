@@ -100,7 +100,12 @@ pub fn file_failed(name: &str) -> String {
 }
 
 pub fn no_pairs(date: NaiveDate) -> String {
-    format!("📅 {}\n\nПар нет.", date.format("%d.%m.%Y"))
+    let note = if date.weekday() == chrono::Weekday::Sun {
+        "Воскресенье, выходной."
+    } else {
+        "Пар нет."
+    };
+    format!("📅 {}\n\n{note}", date.format("%d.%m.%Y"))
 }
 
 pub fn group_header(group: i64) -> String {

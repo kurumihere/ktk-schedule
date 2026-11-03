@@ -5,7 +5,6 @@ use crate::{
     storage::Account,
 };
 use anyhow::{Result, bail, ensure};
-use chrono::NaiveDate;
 use chrono_tz::Tz;
 use futures::{StreamExt, future::BoxFuture, stream};
 use reqwest::Url;
@@ -400,22 +399,21 @@ pub fn button_cb(label: &str, data: &str, color: &str) -> VkButton {
     }
 }
 
+/// `today`: the view shows today (`App::shows_today`). Days without pairs get no button;
+/// `schedule:day:{i}` keeps the index into `days`.
 pub fn schedule_keyboard_vk(
     days: &[ScheduleDay],
     view: &View,
-    today: NaiveDate,
+    today: bool,
     tz: Tz,
+    teacher: bool,
+    is_personal: bool,
 ) -> VkKeyboard {
     let mut buttons = Vec::new();
 
-    // Row 1: Day prev / (Week select or Today) / Day next
-    let is_today = view.date == today;
-    let center_button = if is_today {
-        button_cb(
-            &format!("📅 {}", render::short_week_label(view.week())),
-            "schedule:week:select",
-            "primary",
-        )
+    // Row 1: Day prev / (Refresh or Today) / Day next
+    let center_button = if today {
+        button_cb("🔄 Обновить", "schedule:refresh", "primary")
     } else {
         button_cb("📍 Сегодня", "schedule:today", "positive")
     };
@@ -427,7 +425,12 @@ pub fn schedule_keyboard_vk(
 
     // Rows 2 & 3: Days direct selection (up to 6 days)
     let mut day_buttons = Vec::new();
-    for (i, day) in days.iter().take(6).enumerate() {
+    for (i, day) in days
+        .iter()
+        .enumerate()
+        .filter(|(_, day)| !non_school_day_scoped(day, view, teacher, is_personal))
+        .take(6)
+    {
         let selected = day_date(&day.date, tz) == Some(view.date);
         let color = if selected { "positive" } else { "secondary" };
         let prefix = if selected { "✅ " } else { "" };
@@ -1005,8 +1008,10 @@ pub async fn show_vk(
             let keyboard = schedule_keyboard_vk(
                 &loaded.days,
                 &view,
-                app.now().date_naive(),
+                app.shows_today(&view, &loaded),
                 app.config.timezone,
+                teacher,
+                view.scope(account) == "personal",
             );
             present_vk(app, vk, account.id, cmid, &text, keyboard, &view).await
         }

@@ -888,6 +888,7 @@ fn bot_texts_stay_short_neutral_and_free_of_promotion() {
         render::vk_signed_in(&account),
         render::announce_done(3, 1),
         render::file_failed("task.pdf"),
+        render::no_pairs(NaiveDate::from_ymd_opt(2026, 9, 6).unwrap()),
         render::vk_menu(&View::own(&account, date()), 269, false),
     ];
     for text in &texts {

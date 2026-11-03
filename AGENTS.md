@@ -130,7 +130,7 @@ Rule of three: the third copy of logic gets extracted. New features do not chang
 - `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
 - `workspace.rs`: `unauthorized`, `CredentialsRejected`, `Platform::detect`, `Site::new`, `script_urls`, `find_group`, `find_subgroup`, `Candidates::add`.
 - `telegram.rs`: `schedule_keyboard`, `week_keyboard`, `command`, `failure`, `login_failure`, `private`, `owner`, `account`.
-- `app.rs`: `login_required`, `notification_due`, `App::{now, lock_user, allow, sign_in, session, sign_out, load, resolve, send, show, show_loaded, present, stats, notify_one}`.
+- `app.rs`: `login_required`, `notification_due`, `App::{now, lock_user, allow, sign_in, session, sign_out, load, resolve, shows_today, send, show, show_loaded, present, stats, notify_one}`.
 - `systemd.rs`: `notify`, `watchdog`.
 
 ## 8. Lifecycle and configuration

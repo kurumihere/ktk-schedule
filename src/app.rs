@@ -637,6 +637,20 @@ impl App {
         Ok((view.clone(), self.load(account, view, refresh).await?))
     }
 
+    /// Whether a resolved `view` is what "today" shows: the date itself or, on Sunday,
+    /// the first day of the next week that `resolve` switched to.
+    pub fn shows_today(&self, view: &View, loaded: &Loaded) -> bool {
+        let today = self.now().date_naive();
+        view.date == today
+            || (today.weekday() == chrono::Weekday::Sun
+                && shift(today, 1).is_ok_and(|monday| view.week() == monday)
+                && loaded
+                    .days
+                    .first()
+                    .and_then(|day| day_date(&day.date, self.config.timezone))
+                    == Some(view.date))
+    }
+
     /// Reference data survives restarts and outages, but only real and changed data is
     /// worth a write: an empty result must never replace a good cache.
     async fn persist_references(&self, id: i64, session: &Session, refs: &Arc<ReferenceData>) {
