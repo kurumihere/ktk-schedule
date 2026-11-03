@@ -1,4 +1,7 @@
 version: 2
+# Updates land on master by themselves: .github/workflows/dependabot.yml enables auto-merge
+# (rebase, so the commit stays authored by Dependabot) and the master ruleset requires the
+# `check` and `audit` jobs to pass. A failing update stays open as a pull request.
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -6,9 +9,22 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+    groups:
+      actions:
+        patterns: ['*']
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     commit-message:
       prefix: chore(deps)
+    # Lockfile-compatible updates come as one commit; semver-major bumps one by one.
+    groups:
+      cargo:
+        update-types: [minor, patch]
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(rust)

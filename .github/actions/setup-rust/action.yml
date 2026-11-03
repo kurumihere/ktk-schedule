@@ -9,8 +9,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        curl --proto '=https' --tlsv1.2 -sSf https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init -o /tmp/rustup-init
-        echo "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/rustup-init" | sha256sum --check --strict
+        curl --proto '=https' --tlsv1.2 -sSf https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init -o /tmp/rustup-init
+        echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init" | sha256sum --check --strict
         chmod 700 /tmp/rustup-init
         /tmp/rustup-init -y --profile minimal --default-toolchain none
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

@@ -25,7 +25,7 @@ supported and covered by tests.
 - `tests/support/mod.rs` - `College` (legacy wiremock site), `Digital` (digital platform mock answering in seroval), `telegram_server()`, `app()`, `digital_app()`, `vk_app()`.
 - `tests/*.rs` - integration tests; `tests/har.rs` replays a private HAR (ignored by default).
 - `deploy/` - systemd units, `ktk-schedule-deploy`, `ktk-schedule-backup`, `install.sh`, `ctl.sh`, `update.sh` (section 11).
-- `.github/` - `ci.yml`, `security.yml`, `actions/setup-rust` (checks only; deploys come from the workstation).
+- `.github/` - `ci.yml`, `security.yml`, `dependabot.yml` (auto-merge), `actions/setup-rust` (checks only; deploys come from the workstation).
 - `.env.example` - local config template; `.env` is gitignored.
 
 Generated, never committed, never a source of truth: `target/`, `data/`, `*.sqlite3*`, `*.har`.
@@ -213,6 +213,8 @@ Capture with DevTools -> Network, "Preserve log" and "Disable cache" on, so the 
 
 **CI/CD.** `ci.yml` (on `debian:13-slim`, the server's OS) and `security.yml` (RustSec, also weekly) check every push and PR on GitHub-hosted runners. Deploys run from the workstation: `deploy/update.sh [test|prod] [--quick]` runs the local checks (`--quick` skips them, never for prod), builds `--release`, refuses a binary whose newest `GLIBC_*` symbol is newer than the server's glibc (Arch is ahead of Debian 13), and pipes it zstd-compressed over `ssh vps` into `/usr/local/sbin/ktk-schedule-deploy <test|prod>` (about 30 s for a warm build). prod only deploys a clean tree. No self-hosted runner exists any more.
 
+**Dependabot.** Weekly cargo (minor/patch grouped, majors one by one), GitHub Actions and `rust-toolchain` updates (`.github/dependabot.yml`). `workflows/dependabot.yml` enables auto-merge (rebase, the commit stays Dependabot's) on its own pull requests; the master ruleset `required checks` requires `check` and `audit` (repository admins bypass, so direct pushes work). Green updates land on master by themselves - `git pull` before work and deploy; red ones stay open as pull requests. The merge itself does not trigger CI again (`GITHUB_TOKEN` pushes never do).
+
 **Host** (Debian 13, systemd 257, SSH alias `vps`):
 
 | Path | What |
@@ -229,7 +231,7 @@ Capture with DevTools -> Network, "Preserve log" and "Disable cache" on, so the 
 
 Rotate a secret on the host: `printf %s "$NEW" | systemd-creds encrypt --name=bot_token - /etc/ktk-schedule/prod/bot_token.cred && systemctl restart ktk-schedule@prod`. Changing `credentials_secret` makes every saved session unreadable (users must `/login` again).
 
-Agent permissions: read-only commands and the local checks above are always fine. Committing, pushing, deploying, `ssh` changes on the host and dependency changes need the user's go-ahead (dependencies also need a `cargo audit` reason). Never change `rust-toolchain.toml` (Rust 1.98.1) on your own.
+Agent permissions: read-only commands and the local checks above are always fine. Committing, pushing, deploying, `ssh` changes on the host and dependency changes need the user's go-ahead (dependencies also need a `cargo audit` reason). Never change `rust-toolchain.toml` on your own (Dependabot may).
 
 ## 12. Self-maintenance
 
