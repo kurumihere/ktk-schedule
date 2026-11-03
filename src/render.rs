@@ -15,7 +15,9 @@ pub const HELP: &str = "\
 /login логин пароль - вход
 /schedule [дата] - расписание
 /notify_on, /notify_off - утренняя рассылка
-/logout - выход и удаление данных";
+/logout - выход и удаление данных
+
+В любом чате: @ktk45_schedule_bot 369 1 [дата] - группа 369, 1 подгруппа";
 
 pub const VK_HELP: &str = "\
 /login логин пароль - вход
@@ -63,6 +65,32 @@ pub const VK_FILES: &str = "Файлы доступны в Telegram: https://t.m
 pub const FILES_HEADER: &str = "📎 Файлы:";
 pub const NO_PAIRS_THIS_WEEK: &str = "Пар на неделе нет.";
 pub const STALE_SCHEDULE: &str = "Сайт недоступен, сохранённая версия.";
+/// Inline mode: the button above empty results when the user has no site session.
+pub const INLINE_LOGIN: &str = "Нужен вход в боте";
+
+/// Inline mode: the result title, e.g. "Группа 369, 1 подгруппа".
+pub fn inline_title(group: i64, view: &View) -> String {
+    let subgroup = if view.show_all {
+        "обе подгруппы"
+    } else {
+        subgroup_label(&view.subgroup)
+    };
+    format!("Группа {group}, {subgroup}")
+}
+
+/// Inline mode: the result description, e.g. "Вт 03.11".
+pub fn inline_description(date: NaiveDate) -> String {
+    format!(
+        "{} {}",
+        DAYS[date.weekday().num_days_from_monday() as usize],
+        date.format("%d.%m")
+    )
+}
+
+/// Inline mode: the header of the message sent to a chat.
+pub fn shared_header(group: i64, view: &View) -> String {
+    format!("📋 {}\n\n", inline_title(group, view))
+}
 
 pub fn signed_in(account: &crate::storage::Account) -> String {
     if account.teacher_hash.is_empty() {
@@ -289,8 +317,47 @@ pub fn schedule(
     is_personal: bool,
     now: DateTime<Tz>,
 ) -> String {
+    schedule_text(day, view, refs, assets, teacher, is_personal, now, true)
+}
+
+/// A day for a shared chat (inline mode): a snapshot without marks, own files,
+/// "Сегодня" or countdowns, since the message stays in the chat unchanged.
+pub fn shared_schedule(
+    day: &ScheduleDay,
+    view: &View,
+    refs: &ReferenceData,
+    now: DateTime<Tz>,
+) -> String {
+    let mut day = day.clone();
+    for subject in &mut day.subjects {
+        subject.appraisal = 0;
+        subject.mark = 0;
+    }
+    schedule_text(
+        &day,
+        view,
+        refs,
+        &Assets::default(),
+        false,
+        false,
+        now,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_text(
+    day: &ScheduleDay,
+    view: &View,
+    refs: &ReferenceData,
+    assets: &Assets,
+    teacher: bool,
+    is_personal: bool,
+    now: DateTime<Tz>,
+    live: bool,
+) -> String {
     let date = day_date(&day.date, now.timezone());
-    let today = date == Some(now.date_naive());
+    let today = live && date == Some(now.date_naive());
     let label = date
         .map(|d| d.format("%d.%m.%Y").to_string())
         .unwrap_or_else(|| day.date.clone());

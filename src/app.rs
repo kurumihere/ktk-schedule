@@ -747,6 +747,50 @@ impl App {
         Ok((text, file_count))
     }
 
+    /// The timetable of `view.group` for a shared chat (inline mode). Callers pass a group
+    /// view, so the data comes from the `group:` scope; the text carries no marks and no own files.
+    pub async fn render_shared(
+        &self,
+        account: &Account,
+        view: &View,
+        loaded: &Loaded,
+    ) -> Result<String> {
+        let group = view
+            .group
+            .ok_or_else(|| anyhow!("shared timetables need a group view"))?;
+        let selected = loaded
+            .days
+            .iter()
+            .find(|day| day_date(&day.date, self.config.timezone) == Some(view.date));
+        let text = match selected {
+            Some(day) if !non_school_day_scoped(day, view, false, false) => {
+                let refs = match loaded.session.as_ref() {
+                    Some(session) => {
+                        let refs = session.references().await;
+                        self.persist_references(account.id, session, &refs).await;
+                        refs
+                    }
+                    None => self
+                        .storage
+                        .references(account.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(Arc::new)
+                        .unwrap_or_default(),
+                };
+                render::shared_schedule(day, view, &refs, self.now())
+            }
+            _ if loaded.days.is_empty() => render::NO_PAIRS_THIS_WEEK.into(),
+            _ => render::no_pairs(view.date),
+        };
+        let mut text = format!("{}{text}", render::shared_header(group, view));
+        if loaded.stale {
+            text = format!("{}\n\n{text}", render::STALE_SCHEDULE);
+        }
+        Ok(text)
+    }
+
     pub async fn show_loaded(
         &self,
         account: &Account,
@@ -933,7 +977,8 @@ pub async fn run(config: Config) -> Result<()> {
     let app = Arc::new(App::new(config, bot.clone(), username.clone()).await?);
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(telegram::handle_message))
-        .branch(Update::filter_callback_query().endpoint(telegram::handle_callback));
+        .branch(Update::filter_callback_query().endpoint(telegram::handle_callback))
+        .branch(Update::filter_inline_query().endpoint(telegram::handle_inline));
     let mut dispatcher = Dispatcher::builder(bot.clone(), handler)
         .dependencies(dptree::deps![app.clone()])
         .worker_queue_size(16)

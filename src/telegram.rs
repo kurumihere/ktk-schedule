@@ -13,7 +13,10 @@ use std::sync::Arc;
 use teloxide::{
     prelude::*,
     types::{
-        InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard, InputFile, MessageId,
+        InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard, InlineQuery,
+        InlineQueryResult, InlineQueryResultArticle, InlineQueryResultsButton,
+        InlineQueryResultsButtonKind, InputFile, InputMessageContent, InputMessageContentText,
+        MessageId,
     },
 };
 
@@ -184,6 +187,149 @@ pub fn command(text: &str) -> (&str, &str) {
     text.split_once(char::is_whitespace)
         .map(|(c, a)| (c, a.trim()))
         .unwrap_or((text, ""))
+}
+
+/// Which subgroup an inline query asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineSubgroup {
+    /// The account's own setting (only without a group number).
+    Own,
+    Both,
+    One(&'static str),
+}
+
+/// An inline query: `[group] [subgroup] [date]`, e.g. `369 1`, `369 2 05.11`, `369 обе`.
+/// Without a group number it is the own group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineRequest {
+    pub group: Option<i64>,
+    pub subgroup: InlineSubgroup,
+    pub date: Option<NaiveDate>,
+}
+
+/// `None` for anything else: such queries get no results.
+pub fn inline_request(query: &str, today: NaiveDate) -> Option<InlineRequest> {
+    let mut words = query.split_whitespace().peekable();
+    let group = match words.peek().map(|word| word.parse::<i64>()) {
+        Some(Ok(group)) if (1..=100_000).contains(&group) => {
+            words.next();
+            Some(group)
+        }
+        Some(Ok(_)) => return None,
+        _ => None,
+    };
+    let mut request = InlineRequest {
+        group,
+        subgroup: if group.is_some() {
+            InlineSubgroup::Both
+        } else {
+            InlineSubgroup::Own
+        },
+        date: None,
+    };
+    for word in words {
+        let lower = word.to_lowercase();
+        if matches!(lower.as_str(), "группа" | "гр" | "подгруппа" | "подгр") {
+            continue;
+        }
+        if matches!(lower.as_str(), "обе" | "все" | "all" | "both") {
+            request.subgroup = InlineSubgroup::Both;
+        } else if let Some(subgroup) = personal_subgroup(word) {
+            request.subgroup = InlineSubgroup::One(subgroup);
+        } else {
+            request.date = Some(parse_date(word, today).ok()?);
+        }
+    }
+    Some(request)
+}
+
+/// Telegram drops an inline query after a few seconds; a later answer is wasted.
+const INLINE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+enum Inline {
+    Article(Box<InlineQueryResultArticle>),
+    Login,
+    Nothing,
+}
+
+/// Inline mode: another group's timetable for any chat, through the asking user's own site
+/// session. Only the `group:` scope is shown, so nothing personal reaches a shared chat.
+pub async fn handle_inline(app: Arc<App>, query: InlineQuery) -> Result<()> {
+    let id = query.from.id.0 as i64;
+    let work = inline_inner(&app, id, &query.query);
+    let outcome = tokio::select! {
+        _ = app.cancel.cancelled() => return Ok(()),
+        result = tokio::time::timeout(INLINE_DEADLINE, work) => result,
+    };
+    let login = InlineQueryResultsButton {
+        text: render::INLINE_LOGIN.into(),
+        kind: InlineQueryResultsButtonKind::StartParameter("login".into()),
+    };
+    let answer = app
+        .bot
+        .answer_inline_query(query.id, Vec::<InlineQueryResult>::new())
+        // Results depend on the user's session; a short cache keeps fresh data.
+        .is_personal(true)
+        .cache_time(60);
+    let answer = match outcome {
+        Err(_) => return Ok(()),
+        Ok(Ok(Inline::Article(article))) => answer.results([InlineQueryResult::Article(*article)]),
+        Ok(Ok(Inline::Login)) => answer.button(login).cache_time(0),
+        Ok(Err(error)) if login_required(&error) => answer.button(login).cache_time(0),
+        Ok(Ok(Inline::Nothing)) => answer.cache_time(0),
+        Ok(Err(error)) => {
+            tracing::warn!(user_id = id, error = %error, "inline query failed");
+            answer.cache_time(0)
+        }
+    };
+    // An expired query is routine when the site is slow.
+    if let Err(error) = answer.await {
+        tracing::debug!(user_id = id, %error, "inline answer not delivered");
+    }
+    Ok(())
+}
+
+async fn inline_inner(app: &App, id: i64, query: &str) -> Result<Inline> {
+    let today = app.now().date_naive();
+    let Some(request) = inline_request(query, today) else {
+        return Ok(Inline::Nothing);
+    };
+    let Some(account) = app.storage.account(id).await? else {
+        return Ok(Inline::Login);
+    };
+    // A teacher's account has no group of its own.
+    let Some(group) = request
+        .group
+        .or((account.teacher_hash.is_empty()).then_some(account.group_id))
+    else {
+        return Ok(Inline::Nothing);
+    };
+    if !app.allow(id, false).await {
+        return Ok(Inline::Nothing);
+    }
+    let mut view = View::own(&account, request.date.unwrap_or(today));
+    view.group = Some(group);
+    match request.subgroup {
+        InlineSubgroup::Own => (),
+        InlineSubgroup::Both => view.show_all = true,
+        InlineSubgroup::One(subgroup) => {
+            view.show_all = false;
+            view.subgroup = subgroup.into();
+        }
+    }
+    let (view, loaded) = app.resolve(&account, &view, false).await?;
+    let text = app.render_shared(&account, &view, &loaded).await?;
+    let article = InlineQueryResultArticle::new(
+        format!(
+            "{group}:{}:{}",
+            if view.show_all { "all" } else { &view.subgroup },
+            view.date
+        ),
+        render::inline_title(group, &view),
+        InputMessageContent::Text(InputMessageContentText::new(render::fit_text(&text, 4096))),
+    )
+    .description(render::inline_description(view.date));
+    Ok(Inline::Article(Box::new(article)))
 }
 
 fn private(message: &Message) -> bool {

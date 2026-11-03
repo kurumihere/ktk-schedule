@@ -32,7 +32,7 @@ Generated, never committed, never a source of truth: `target/`, `data/`, `*.sqli
 
 ## 1. Golden rules - never violate
 
-1. **Private chat first.** `/login`, `/logout`, `/schedule`, `/notify_*`, personal buttons, `/stats`, `/announce`: Telegram only in `private()` chats (`chat.is_private() && from.id == chat.id`), VK only when `peer_id == from_id`. In groups the bot ignores everything but its own commands. A violation is a P0 bug.
+1. **Private chat first.** `/login`, `/logout`, `/schedule`, `/notify_*`, personal buttons, `/stats`, `/announce`: Telegram only in `private()` chats (`chat.is_private() && from.id == chat.id`), VK only when `peer_id == from_id`. In groups the bot ignores everything but its own commands. Telegram inline mode (`telegram::handle_inline`) may post into any chat, so it shows only a `group:` scope through `App::render_shared` / `render::shared_schedule` (no marks, no own files, no live countdowns). A violation is a P0 bug.
 2. **Passwords are never stored and never logged.** `/login` sends the password to the site once (`App::sign_in`) and keeps only the resulting site session (`sessions` table, sealed). No re-login with stored credentials exists or may be added: a rejected session means `LoginRequired` -> the user signs in again. In Telegram the `/login` message is deleted first; if `delete_message` fails, the login is cancelled and nothing is sent anywhere.
 3. **HTTPS only, credentials never in URLs.** `KTK_BASE_URL` and `VK_API_URL` must be HTTPS without userinfo (`config.rs:https_url`). Redirects stay same-origin without userinfo, file links must be on the site origin (`workspace.rs:http_client/download`). The loopback-HTTP bypass exists only in `tests/support/mod.rs`. Errors that may carry a URL with a secret (VK long poll key) are logged `without_url()`.
 4. **Per-user scopes.** Cache scope is `personal`, `group:{id}` or `teacher:{hash}` (`View::scope`). Another group is always fetched separately; grades/homework from `personal` never leak into a `group:` scope.
@@ -61,6 +61,8 @@ Callbacks always start with `schedule:`; data elsewhere is ignored.
 Invalid: no `schedule:` prefix, `schedule:day:01x` (ignored in VK, error in Telegram), scope `Group:269` (only `group:269`).
 
 Commands: `/start /my_id /login /logout /schedule [date] /notify_on /notify_off /stats /announce`; VK also accepts `/refresh`, `/my` and the words "Начать", "Обновить", "Моё" in any case. Both platforms parse with `telegram::command`. Help text: `render::HELP` / `render::VK_HELP`.
+
+Inline mode (Telegram only, enable with BotFather `/setinline`): `@bot [group] [subgroup] [date]`, parsed by `telegram::inline_request` (`369`, `369 1`, `369 2 05.11`, `369 обе`; no group = own group and subgroup). One article per query, `is_personal`, cached 60 s; no session -> empty results with the `INLINE_LOGIN` button (`/start login`).
 
 Subgroups: canonical `left/right`; input normalized by `personal_subgroup()` (`1/первая/left -> left`); labels via `subgroup_label()`.
 
@@ -127,10 +129,10 @@ Rule of three: the third copy of logic gets extracted. New features do not chang
 ## 7. Helpers (check before writing new ones)
 
 - `model.rs`: `personal_subgroup`, `subgroup_label`, `week_start`, `shift`, `week_millis`, `Week::new/academic_year`, `academic_year_start`, `within_reach`, `day_date`, `parse_date`, `visible_subjects(_scoped)`, `non_school_day(_scoped)`, `infer_subgroup`, `attachment_ids`, `limited_file_ids`, `parse_schedule`, `parse_digital_schedule`, `digital_week`, `seroval_escape/unescape/request`, `decode_seroval`, `null_default`, `positive_id`, `ReferenceData::merge/is_empty`, `PlatformUser`.
-- `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
+- `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `inline_title`, `inline_description`, `shared_header`, `shared_schedule`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
 - `workspace.rs`: `unauthorized`, `CredentialsRejected`, `Platform::detect`, `Site::new`, `script_urls`, `find_group`, `find_subgroup`, `Candidates::add`.
-- `telegram.rs`: `schedule_keyboard`, `week_keyboard`, `command`, `failure`, `login_failure`, `private`, `owner`, `account`.
-- `app.rs`: `login_required`, `notification_due`, `App::{now, lock_user, allow, sign_in, session, sign_out, load, resolve, shows_today, send, show, show_loaded, present, stats, notify_one}`.
+- `telegram.rs`: `schedule_keyboard`, `week_keyboard`, `command`, `inline_request`, `failure`, `login_failure`, `private`, `owner`, `account`.
+- `app.rs`: `login_required`, `notification_due`, `App::{now, lock_user, allow, sign_in, session, sign_out, load, resolve, shows_today, render_shared, send, show, show_loaded, present, stats, notify_one}`.
 - `systemd.rs`: `notify`, `watchdog`.
 
 ## 8. Lifecycle and configuration
@@ -142,6 +144,7 @@ Rule of three: the third copy of logic gets extracted. New features do not chang
 | Task | Owner | Notes |
 |---|---|---|
 | `telegram::handle_message/callback` | dispatcher | 120 s deadline (`/announce` 1 h), errors answered with `render` texts |
+| `telegram::handle_inline` | dispatcher | 10 s deadline (Telegram drops older queries), shares the `allow(id, false)` limit |
 | `vk::run` -> `dispatch` | `JoinSet`, 16 at once | 120 s deadline, answers on failure, drained on shutdown |
 | `App::background` | 30 s ticker | notifications when `notification_due` (0..120 s window), fan-out 4; cleanup of locks/limits + `prune` every 300 s |
 | `systemd::watchdog` | `WATCHDOG_USEC / 3` | only under systemd |

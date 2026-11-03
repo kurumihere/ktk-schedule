@@ -627,6 +627,83 @@ fn keyboard_keeps_labels_order_and_callback_data() {
 }
 
 #[test]
+fn inline_queries_name_a_group_subgroup_and_date() {
+    use telegram::{InlineRequest, InlineSubgroup, inline_request};
+    let request = |group, subgroup, date| {
+        Some(InlineRequest {
+            group,
+            subgroup,
+            date,
+        })
+    };
+    let sept_5 = NaiveDate::from_ymd_opt(2026, 9, 5);
+    assert_eq!(
+        inline_request("369", date()),
+        request(Some(369), InlineSubgroup::Both, None)
+    );
+    for query in ["369 1", " 369  первая ", "369 1 подгруппа", "369 left"] {
+        assert_eq!(
+            inline_request(query, date()),
+            request(Some(369), InlineSubgroup::One("left"), None),
+            "{query}"
+        );
+    }
+    assert_eq!(
+        inline_request("369 2 05.09", date()),
+        request(Some(369), InlineSubgroup::One("right"), sept_5)
+    );
+    assert_eq!(
+        inline_request("369 Обе", date()),
+        request(Some(369), InlineSubgroup::Both, None)
+    );
+    // No group number: the own group with the own subgroup.
+    assert_eq!(
+        inline_request("", date()),
+        request(None, InlineSubgroup::Own, None)
+    );
+    assert_eq!(
+        inline_request("05.09", date()),
+        request(None, InlineSubgroup::Own, sept_5)
+    );
+    for query in ["0", "100001", "-5", "369 3", "369 abc", "369 31.02", "abc"] {
+        assert_eq!(inline_request(query, date()), None, "{query}");
+    }
+}
+
+#[test]
+fn shared_timetables_are_snapshots_without_marks() {
+    let day: ScheduleDay = serde_json::from_value(json!({
+        "Date":"2026-09-01T00:00:00Z","CallPreset":1,
+        "Subjects":[{"Pair":1,"Discipline":"Math","Appraisal":5,"Mark":2,"Teacher":"Иванов"}]
+    }))
+    .unwrap();
+    let mut view = View::own(&account(), date());
+    view.group = Some(270);
+    let now = TZ.with_ymd_and_hms(2026, 9, 1, 8, 30, 0).unwrap();
+    let text = render::shared_schedule(&day, &view, &ReferenceData::default(), now);
+    assert_eq!(text, "📅 01.09.2026\n\n1 пара - Math\n👤 Иванов");
+    // The own view still shows today's marks.
+    let own = render::schedule(
+        &day,
+        &view,
+        &ReferenceData::default(),
+        &Assets::default(),
+        false,
+        false,
+        now,
+    );
+    assert!(own.starts_with("📅 Сегодня - 01.09.2026"));
+    assert!(own.contains("📊 Оценка: 5"));
+    assert_eq!(render::inline_title(270, &view), "Группа 270, 1 подгруппа");
+    view.show_all = true;
+    assert_eq!(
+        render::inline_title(270, &view),
+        "Группа 270, обе подгруппы"
+    );
+    assert_eq!(render::inline_description(date()), "Вт 01.09");
+}
+
+#[test]
 fn messages_handle_unicode_limits() {
     let long = "🦀".repeat(3000);
     let result = render::fit_text(&long, 4096);
@@ -895,6 +972,9 @@ fn bot_texts_stay_short_neutral_and_free_of_promotion() {
         render::announce_done(3, 1),
         render::file_failed("task.pdf"),
         render::no_pairs(NaiveDate::from_ymd_opt(2026, 9, 6).unwrap()),
+        render::INLINE_LOGIN.to_owned(),
+        render::shared_header(269, &View::own(&account, date())),
+        render::inline_description(date()),
         render::vk_menu(&View::own(&account, date()), 269, false),
     ];
     for text in &texts {

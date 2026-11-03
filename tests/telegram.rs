@@ -2,12 +2,12 @@ mod support;
 use chrono::NaiveDate;
 use ktk_schedule::{
     model::{Screen, View},
-    telegram::{handle_callback, handle_message},
+    telegram::{handle_callback, handle_inline, handle_message},
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::Ordering};
 use support::*;
-use teloxide::types::{CallbackQuery, Message};
+use teloxide::types::{CallbackQuery, InlineQuery, Message};
 
 fn callback(id: i64, message: i32, data: &str) -> CallbackQuery {
     serde_json::from_value(json!({"id":"callback-test","from":{"id":id,"is_bot":false,"first_name":"Test"},"chat_instance":"TEST","data":data,"message":{"message_id":message,"date":1788202800,"chat":{"id":42,"type":"private","first_name":"Test"},"text":"Schedule"}})).unwrap()
@@ -17,6 +17,84 @@ fn message(chat: i64, text: &str) -> Message {
 }
 fn date() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()
+}
+
+fn inline(id: i64, query: &str) -> InlineQuery {
+    serde_json::from_value(json!({"id":"inline-test","from":{"id":id,"is_bot":false,"first_name":"Test"},"query":query,"offset":""})).unwrap()
+}
+
+async fn inline_answer(server: &wiremock::MockServer) -> Value {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .rfind(|r| r.url.path().to_lowercase().ends_with("/answerinlinequery"))
+        .unwrap()
+        .body_json()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn inline_query_shares_another_groups_timetable_without_personal_data() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    app.sign_in(42, "user", "password").await.unwrap();
+    handle_inline(app.clone(), inline(42, "270 1 01.09.2026"))
+        .await
+        .unwrap();
+    let answer = inline_answer(&server).await;
+    assert_eq!(answer["is_personal"], true);
+    let result = &answer["results"][0];
+    assert_eq!(result["title"], "Группа 270, 1 подгруппа");
+    assert_eq!(result["description"], "Вт 01.09");
+    let text = result["input_message_content"]["message_text"]
+        .as_str()
+        .unwrap();
+    assert!(text.starts_with("📋 Группа 270, 1 подгруппа\n\n📅 01.09.2026"));
+    assert!(text.contains("Group 270"));
+    assert!(!text.contains("Оценка") && !text.contains("Personal"));
+    // Inline mode never stores views or sends messages.
+    assert!(app.storage.view(42, 100).await.unwrap().is_none());
+    assert!(
+        !server.received_requests().await.unwrap().iter().any(|r| r
+            .url
+            .path()
+            .to_lowercase()
+            .ends_with("/sendmessage"))
+    );
+}
+
+#[tokio::test]
+async fn inline_query_without_a_session_offers_the_private_chat() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    handle_inline(app.clone(), inline(42, "270 1"))
+        .await
+        .unwrap();
+    let answer = inline_answer(&server).await;
+    assert_eq!(answer["results"], json!([]));
+    assert_eq!(answer["button"]["start_parameter"], "login");
+    // Queries that are not "group subgroup date" get nothing, and no site request.
+    app.sign_in(42, "user", "password").await.unwrap();
+    let group_requests = || async {
+        college
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/v3/ws/groups/schedule")
+            .count()
+    };
+    let before = group_requests().await;
+    handle_inline(app.clone(), inline(42, "привет"))
+        .await
+        .unwrap();
+    assert_eq!(inline_answer(&server).await["results"], json!([]));
+    assert_eq!(group_requests().await, before);
 }
 
 #[tokio::test]
