@@ -28,6 +28,7 @@ pub fn schedule_keyboard(
     tz: Tz,
     files: usize,
     teacher: bool,
+    is_personal: bool,
 ) -> Keyboard {
     let index = days
         .iter()
@@ -122,7 +123,12 @@ pub fn schedule_keyboard(
             "schedule:download",
         )]);
     }
-    for (i, day) in days.iter().enumerate() {
+    // Days without pairs get no button; `schedule:day:{i}` keeps the index into `days`.
+    for (i, day) in days
+        .iter()
+        .enumerate()
+        .filter(|(_, day)| !non_school_day_scoped(day, view, teacher, is_personal))
+    {
         let label = format!(
             "{}{}",
             if index == Some(i) { "✅ " } else { "" },

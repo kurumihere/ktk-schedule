@@ -550,11 +550,6 @@ pub fn subgroup_keyboard_vk(view: &View, teacher: bool) -> VkKeyboard {
         "secondary",
     )]);
     buttons.push(vec![button_cb(
-        "🔄 Обновить расписание",
-        "schedule:refresh",
-        "secondary",
-    )]);
-    buttons.push(vec![button_cb(
         "↩️ Назад к расписанию",
         "schedule:back",
         "primary",

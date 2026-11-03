@@ -584,8 +584,12 @@ fn teacher_output_omits_personal_grades_and_homework_submissions() {
 
 #[test]
 fn keyboard_keeps_labels_order_and_callback_data() {
-    let days: Vec<ScheduleDay> =
-        serde_json::from_value(json!([{"Date":"2026-09-01"},{"Date":"2026-09-02"}])).unwrap();
+    // Wednesday has no pairs and gets no button.
+    let days: Vec<ScheduleDay> = serde_json::from_value(json!([
+        {"Date":"2026-09-01","Subjects":[{"Discipline":"Math","Pair":1}]},
+        {"Date":"2026-09-02"}
+    ]))
+    .unwrap();
     let keyboard = serde_json::to_value(telegram::schedule_keyboard(
         &days,
         &View::own(&account(), date()),
@@ -593,6 +597,7 @@ fn keyboard_keeps_labels_order_and_callback_data() {
         TZ,
         2,
         false,
+        true,
     ))
     .unwrap();
     assert_eq!(
@@ -613,6 +618,7 @@ fn keyboard_keeps_labels_order_and_callback_data() {
         "📎 Скачать файлы (2)"
     );
     assert_eq!(keyboard["inline_keyboard"][5][0]["text"], "✅ Вт 01.09");
+    assert_eq!(keyboard["inline_keyboard"].as_array().unwrap().len(), 6);
     for row in keyboard["inline_keyboard"].as_array().unwrap() {
         for button in row.as_array().unwrap() {
             assert!(button["callback_data"].as_str().unwrap().len() <= 64);

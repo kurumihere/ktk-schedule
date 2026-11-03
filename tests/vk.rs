@@ -448,6 +448,12 @@ fn vk_schedule_keyboard_refreshes_today_and_hides_days_without_pairs() {
     ));
     assert_eq!(kb[0][1], "schedule:today");
 
+    // The menu has no refresh button: the timetable itself has one.
+    for teacher in [false, true] {
+        let menu = data(&vk::subgroup_keyboard_vk(&view, teacher)).concat();
+        assert!(!menu.iter().any(|d| d == "schedule:refresh"));
+    }
+
     // Both subgroups: Wednesday keeps its index.
     let all = View {
         show_all: true,

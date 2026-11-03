@@ -768,6 +768,7 @@ impl App {
             self.config.timezone,
             file_count,
             teacher,
+            view.scope(account) == "personal",
         );
         self.present(account.id, message, &text, keyboard, view)
             .await
