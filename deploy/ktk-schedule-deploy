@@ -1,8 +1,8 @@
 #!/bin/sh
 # ktk-schedule-deploy prod|test < ktk-schedule
 #
-# Installs a new binary for one instance. Runs as root; the GitHub Actions runner calls it
-# through sudo (see deploy/install.sh). It never leaves the bot broken:
+# Installs a new binary for one instance. Runs as root; deploy/update.sh calls it over SSH
+# from the build machine. It never leaves the bot broken:
 #   1. take the binary (size-limited) and check that it runs
 #   2. rehearse on a copy of the live database: migrations and CREDENTIALS_SECRET
 #   3. back up the live database, swap the binary, restart, wait for READY and stability

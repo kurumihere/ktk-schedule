@@ -25,7 +25,7 @@ supported and covered by tests.
 - `tests/support/mod.rs` - `College` (legacy wiremock site), `Digital` (digital platform mock answering in seroval), `telegram_server()`, `app()`, `digital_app()`, `vk_app()`.
 - `tests/*.rs` - integration tests; `tests/har.rs` replays a private HAR (ignored by default).
 - `deploy/` - systemd units, `ktk-schedule-deploy`, `ktk-schedule-backup`, `install.sh`, `ctl.sh`, `update.sh` (section 11).
-- `.github/` - `ci.yml`, `deploy.yml`, `security.yml`, `actions/setup-rust`.
+- `.github/` - `ci.yml`, `security.yml`, `actions/setup-rust` (checks only; deploys come from the workstation).
 - `.env.example` - local config template; `.env` is gitignored.
 
 Generated, never committed, never a source of truth: `target/`, `data/`, `*.sqlite3*`, `*.har`.
@@ -211,7 +211,7 @@ KTK_HAR_PATH=/path/to/capture.har cargo test --locked --test har -- --ignored
 ```
 Capture with DevTools -> Network, "Preserve log" and "Disable cache" on, so the main JS bundles are included (discovery is only verified when they are).
 
-**CI/CD.** `ci.yml` checks every push and PR. `deploy.yml` (manual, default branch only): RustSec audit -> build on `debian:13-slim` (same OS as the server) with all checks -> artifact with sha256 -> self-hosted runner `ktk-deploy` verifies the hash and runs `sudo -n /usr/local/sbin/ktk-schedule-deploy <test|prod>`. Start it with `deploy/update.sh [test|prod]`.
+**CI/CD.** `ci.yml` (on `debian:13-slim`, the server's OS) and `security.yml` (RustSec, also weekly) check every push and PR on GitHub-hosted runners. Deploys run from the workstation: `deploy/update.sh [test|prod] [--quick]` runs the local checks (`--quick` skips them, never for prod), builds `--release`, refuses a binary whose newest `GLIBC_*` symbol is newer than the server's glibc (Arch is ahead of Debian 13), and pipes it zstd-compressed over `ssh vps` into `/usr/local/sbin/ktk-schedule-deploy <test|prod>` (about 30 s for a warm build). prod only deploys a clean tree. No self-hosted runner exists any more.
 
 **Host** (Debian 13, systemd 257, SSH alias `vps`):
 
@@ -223,9 +223,9 @@ Capture with DevTools -> Network, "Preserve log" and "Disable cache" on, so the 
 | `/opt/ktk-schedule/<instance>/ktk-schedule[.prev]` | binary and the previous one |
 | `/var/lib/ktk-schedule/<instance>/bot.sqlite3` | data (owner `ktk-schedule`) |
 | `/var/backups/ktk-schedule/<instance>/` | 10 pre-deploy + 14 daily backups (`ktk-schedule-backup@<instance>.timer`) |
-| `/usr/local/sbin/ktk-schedule-{deploy,backup}`, `/etc/sudoers.d/ktk-schedule-runner` | tooling; the runner (`ktk-runner`) may only run the deploy script |
+| `/usr/local/sbin/ktk-schedule-{deploy,backup}` | tooling, run as root over SSH; `deploy/ctl.sh install` updates them and the units |
 
-`ktk-schedule-deploy` rehearses the migration on a copy of the live database, backs it up, swaps the binary, waits for READY and 15 s of stability, and restores the previous binary and database on any failure. `deploy/install.sh` (root, idempotent) provisions all of the above. `deploy/ctl.sh status|logs|follow|start|stop|restart|backup [prod|test]` manages it from a workstation.
+`ktk-schedule-deploy` rehearses the migration on a copy of the live database, backs it up, swaps the binary, waits for READY and 15 s of stability, and restores the previous binary and database on any failure. `deploy/install.sh` (root, idempotent) provisions all of the above. `deploy/ctl.sh status|install|logs|follow|start|stop|restart|backup [prod|test]` manages it from a workstation.
 
 Rotate a secret on the host: `printf %s "$NEW" | systemd-creds encrypt --name=bot_token - /etc/ktk-schedule/prod/bot_token.cred && systemctl restart ktk-schedule@prod`. Changing `credentials_secret` makes every saved session unreadable (users must `/login` again).
 

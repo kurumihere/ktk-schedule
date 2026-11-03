@@ -2,8 +2,7 @@
 # deploy/install.sh: provision or update a host for ktk-schedule. Idempotent; run as root
 # from a checkout (or with this directory copied to the host).
 #
-#   - service user, directories, systemd units and backup timers, deploy/backup tools,
-#     the sudo rule that lets the CI runner deploy
+#   - service user, directories, systemd units and backup timers, deploy/backup tools
 #   - per-instance settings /etc/ktk-schedule/<instance>/bot.env plus encrypted credentials
 #     (bot_token, credentials_secret, vk_group_token), converted once from the pre-0.3
 #     files /etc/ktk-schedule/bot.env (prod) and bot-test.env (test)
@@ -30,11 +29,9 @@ install -d -m 0755 /opt/ktk-schedule
 install -m 0644 "$here/ktk-schedule@.service" "$here/ktk-schedule-backup@.service" \
     "$here/ktk-schedule-backup@.timer" /etc/systemd/system/
 install -m 0755 "$here/ktk-schedule-deploy" "$here/ktk-schedule-backup" /usr/local/sbin/
-rule=/etc/sudoers.d/ktk-schedule-runner
-printf 'ktk-runner ALL=(root) NOPASSWD: /usr/local/sbin/ktk-schedule-deploy *\n' >"$rule.new"
-chmod 0440 "$rule.new"
-visudo -cqf "$rule.new"
-mv -f "$rule.new" "$rule"
+# Deploys come over SSH from the build machine (deploy/update.sh); the GitHub runner's
+# sudo rule of 0.3.0 is gone.
+rm -f /etc/sudoers.d/ktk-schedule-runner
 
 # Value of KEY in an env file, without surrounding quotes.
 setting() {
