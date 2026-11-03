@@ -1179,6 +1179,33 @@ pub fn parse_date(raw: &str, today: NaiveDate) -> Result<NaiveDate> {
     Ok(date)
 }
 
+/// A day by name: "сегодня", "завтра", "послезавтра", or a weekday ("чт", "пятница", "пон.")
+/// as its next occurrence from `today` on, today included.
+pub fn parse_day(raw: &str, today: NaiveDate) -> Option<NaiveDate> {
+    const WEEKDAYS: [(&str, &str); 7] = [
+        ("пн", "понедельник"),
+        ("вт", "вторник"),
+        ("ср", "среда"),
+        ("чт", "четверг"),
+        ("пт", "пятница"),
+        ("сб", "суббота"),
+        ("вс", "воскресенье"),
+    ];
+    let word = raw.trim().trim_end_matches('.').to_lowercase();
+    let ahead = match word.as_str() {
+        "сегодня" => 0,
+        "завтра" => 1,
+        "послезавтра" => 2,
+        _ => {
+            let weekday = WEEKDAYS.iter().position(|(short, full)| {
+                word == *short || (word.chars().count() >= 3 && full.starts_with(&word))
+            })?;
+            (weekday as u32 + 7 - today.weekday().num_days_from_monday()) % 7
+        }
+    };
+    today.checked_add_days(Days::new(ahead.into()))
+}
+
 pub fn visible_subjects_scoped<'a>(
     day: &'a ScheduleDay,
     view: &View,

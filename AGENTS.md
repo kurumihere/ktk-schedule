@@ -62,7 +62,7 @@ Invalid: no `schedule:` prefix, `schedule:day:01x` (ignored in VK, error in Tele
 
 Commands: `/start /my_id /login /logout /schedule [date] /notify_on /notify_off /stats /announce`; VK also accepts `/refresh`, `/my` and the words "Начать", "Обновить", "Моё" in any case. Both platforms parse with `telegram::command`. Help text: `render::HELP` / `render::VK_HELP`.
 
-Inline mode (Telegram only, enable with BotFather `/setinline`): `@bot [group] [subgroup] [date]`, parsed by `telegram::inline_request` (`369`, `369 1`, `369 2 05.11`, `369 обе`; no group = own group and subgroup). One article per query, `is_personal`, cached 60 s; no session -> empty results with the `INLINE_LOGIN` button (`/start login`).
+Inline mode (Telegram only, enable with BotFather `/setinline`): `@bot [group] [subgroup] [date]`, parsed by `telegram::inline_request` (`369`, `369 1`, `369 2 05.11`, `369 1 чт`, `369 обе завтра`; days by name via `model::parse_day`; no group = own group and subgroup). Results are a day picker: the week's other days with pairs on top, the asked day (today by default) last, next to the input field; `is_personal`, cached 60 s; no session -> empty results with the `INLINE_LOGIN` button (`/start login`).
 
 Subgroups: canonical `left/right`; input normalized by `personal_subgroup()` (`1/первая/left -> left`); labels via `subgroup_label()`.
 
@@ -86,7 +86,7 @@ app.show(&a, &view, Some(message), refresh).await
 
 | Logic | Where |
 |---|---|
-| Dates, weeks, visibility (`week_start`, `shift`, `Week`, `day_date`, `parse_date`, `within_reach`, `visible_subjects*`, `non_school_day*`, `infer_subgroup`) | `model.rs` |
+| Dates, weeks, visibility (`week_start`, `shift`, `Week`, `day_date`, `parse_date`, `parse_day`, `within_reach`, `visible_subjects*`, `non_school_day*`, `infer_subgroup`) | `model.rs` |
 | seroval encode/decode, digital week parsing | `model.rs` |
 | Texts, emoji, declensions, UTF-16 truncation | `render.rs` |
 | Site HTTP, discovery, retries, server functions, files | `workspace.rs` |
@@ -129,7 +129,7 @@ Rule of three: the third copy of logic gets extracted. New features do not chang
 ## 7. Helpers (check before writing new ones)
 
 - `model.rs`: `personal_subgroup`, `subgroup_label`, `week_start`, `shift`, `week_millis`, `Week::new/academic_year`, `academic_year_start`, `within_reach`, `day_date`, `parse_date`, `visible_subjects(_scoped)`, `non_school_day(_scoped)`, `infer_subgroup`, `attachment_ids`, `limited_file_ids`, `parse_schedule`, `parse_digital_schedule`, `digital_week`, `seroval_escape/unescape/request`, `decode_seroval`, `null_default`, `positive_id`, `ReferenceData::merge/is_empty`, `PlatformUser`.
-- `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `inline_title`, `inline_description`, `shared_header`, `shared_schedule`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
+- `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `inline_title`, `inline_day`, `shared_header`, `shared_schedule`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
 - `workspace.rs`: `unauthorized`, `CredentialsRejected`, `Platform::detect`, `Site::new`, `script_urls`, `find_group`, `find_subgroup`, `Candidates::add`.
 - `telegram.rs`: `schedule_keyboard`, `week_keyboard`, `command`, `inline_request`, `failure`, `login_failure`, `private`, `owner`, `account`.
 - `app.rs`: `login_required`, `notification_due`, `App::{now, lock_user, allow, sign_in, session, sign_out, load, resolve, shows_today, render_shared, send, show, show_loaded, present, stats, notify_one}`.

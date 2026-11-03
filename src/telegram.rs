@@ -198,7 +198,8 @@ pub enum InlineSubgroup {
     One(&'static str),
 }
 
-/// An inline query: `[group] [subgroup] [date]`, e.g. `369 1`, `369 2 05.11`, `369 обе`.
+/// An inline query: `[group] [subgroup] [date or day]`, e.g. `369 1`, `369 2 05.11`,
+/// `369 1 чт`, `369 обе завтра`.
 /// Without a group number it is the own group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InlineRequest {
@@ -236,6 +237,8 @@ pub fn inline_request(query: &str, today: NaiveDate) -> Option<InlineRequest> {
             request.subgroup = InlineSubgroup::Both;
         } else if let Some(subgroup) = personal_subgroup(word) {
             request.subgroup = InlineSubgroup::One(subgroup);
+        } else if let Some(day) = parse_day(word, today) {
+            request.date = Some(day);
         } else {
             request.date = Some(parse_date(word, today).ok()?);
         }
@@ -247,7 +250,7 @@ pub fn inline_request(query: &str, today: NaiveDate) -> Option<InlineRequest> {
 const INLINE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 enum Inline {
-    Article(Box<InlineQueryResultArticle>),
+    Articles(Vec<InlineQueryResult>),
     Login,
     Nothing,
 }
@@ -273,7 +276,7 @@ pub async fn handle_inline(app: Arc<App>, query: InlineQuery) -> Result<()> {
         .cache_time(60);
     let answer = match outcome {
         Err(_) => return Ok(()),
-        Ok(Ok(Inline::Article(article))) => answer.results([InlineQueryResult::Article(*article)]),
+        Ok(Ok(Inline::Articles(articles))) => answer.results(articles),
         Ok(Ok(Inline::Login)) => answer.button(login).cache_time(0),
         Ok(Err(error)) if login_required(&error) => answer.button(login).cache_time(0),
         Ok(Ok(Inline::Nothing)) => answer.cache_time(0),
@@ -318,18 +321,36 @@ async fn inline_inner(app: &App, id: i64, query: &str) -> Result<Inline> {
         }
     }
     let (view, loaded) = app.resolve(&account, &view, false).await?;
-    let text = app.render_shared(&account, &view, &loaded).await?;
-    let article = InlineQueryResultArticle::new(
-        format!(
-            "{group}:{}:{}",
-            if view.show_all { "all" } else { &view.subgroup },
-            view.date
-        ),
-        render::inline_title(group, &view),
-        InputMessageContent::Text(InputMessageContentText::new(render::fit_text(&text, 4096))),
-    )
-    .description(render::inline_description(view.date));
-    Ok(Inline::Article(Box::new(article)))
+    // A day picker: the week's other days with pairs on top, the asked day (today by
+    // default) last, right above the input field.
+    let tz = app.config.timezone;
+    let mut dates: Vec<NaiveDate> = loaded
+        .days
+        .iter()
+        .filter(|day| !non_school_day_scoped(day, &view, false, false))
+        .filter_map(|day| day_date(&day.date, tz))
+        .filter(|date| *date != view.date)
+        .collect();
+    dates.sort_unstable();
+    dates.dedup();
+    dates.push(view.date);
+    let mut articles = Vec::with_capacity(dates.len());
+    for date in dates {
+        let mut day = view.clone();
+        day.select_date(date);
+        let text = app.render_shared(&account, &day, &loaded).await?;
+        let article = InlineQueryResultArticle::new(
+            format!(
+                "{group}:{}:{date}",
+                if day.show_all { "all" } else { &day.subgroup },
+            ),
+            render::inline_day(date, date == today),
+            InputMessageContent::Text(InputMessageContentText::new(render::fit_text(&text, 4096))),
+        )
+        .description(render::inline_title(group, &day));
+        articles.push(InlineQueryResult::Article(article));
+    }
+    Ok(Inline::Articles(articles))
 }
 
 fn private(message: &Message) -> bool {

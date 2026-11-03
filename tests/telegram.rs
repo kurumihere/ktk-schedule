@@ -47,8 +47,9 @@ async fn inline_query_shares_another_groups_timetable_without_personal_data() {
     let answer = inline_answer(&server).await;
     assert_eq!(answer["is_personal"], true);
     let result = &answer["results"][0];
-    assert_eq!(result["title"], "Группа 270, 1 подгруппа");
-    assert_eq!(result["description"], "Вт 01.09");
+    assert_eq!(answer["results"].as_array().unwrap().len(), 1);
+    assert_eq!(result["title"], "Вт 01.09");
+    assert_eq!(result["description"], "Группа 270, 1 подгруппа");
     let text = result["input_message_content"]["message_text"]
         .as_str()
         .unwrap();
@@ -63,6 +64,59 @@ async fn inline_query_shares_another_groups_timetable_without_personal_data() {
             .path()
             .to_lowercase()
             .ends_with("/sendmessage"))
+    );
+}
+
+#[tokio::test]
+async fn inline_results_pick_a_day_with_the_asked_one_last() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{path, query_param},
+    };
+    let college = College::start(false).await;
+    // Group 271: pairs on Tuesday and Thursday, an empty Wednesday in between.
+    let subject = |name: &str| json!({"Pair":1,"Discipline":name,"LectureHall":1,"Group":"271","Subgroup":"middle","ExtraData":{"LectureType":1}});
+    Mock::given(path("/v3/ws/groups/schedule"))
+        .and(query_param("Group", "271"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"Date":"2026-09-01T00:00:00Z","CallPreset":1,"Subjects":[subject("Tuesday")]},
+            {"Date":"2026-09-02T00:00:00Z","CallPreset":1,"Subjects":[]},
+            {"Date":"2026-09-03T00:00:00Z","CallPreset":1,"Subjects":[subject("Thursday")]}
+        ])))
+        .with_priority(1)
+        .mount(&college.server)
+        .await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    app.sign_in(42, "user", "password").await.unwrap();
+    let titles = |answer: &Value| -> Vec<String> {
+        answer["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["title"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    handle_inline(app.clone(), inline(42, "271 01.09.2026"))
+        .await
+        .unwrap();
+    let answer = inline_answer(&server).await;
+    assert_eq!(titles(&answer), ["Чт 03.09", "Вт 01.09"]);
+    let texts: Vec<&str> = answer["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["input_message_content"]["message_text"].as_str().unwrap())
+        .collect();
+    assert!(texts[0].contains("Thursday") && !texts[0].contains("Tuesday"));
+    assert!(texts[1].contains("Tuesday"));
+    // An empty day that was asked for still comes last.
+    handle_inline(app.clone(), inline(42, "271 02.09.2026"))
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(&inline_answer(&server).await),
+        ["Вт 01.09", "Чт 03.09", "Ср 02.09"]
     );
 }
 

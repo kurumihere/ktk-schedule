@@ -17,7 +17,7 @@ pub const HELP: &str = "\
 /notify_on, /notify_off - утренняя рассылка
 /logout - выход и удаление данных
 
-В любом чате: @ktk45_schedule_bot 369 1 [дата] - группа 369, 1 подгруппа";
+В любом чате: @ktk45_schedule_bot 369 1 [дата, чт, завтра] - группа 369, 1 подгруппа";
 
 pub const VK_HELP: &str = "\
 /login логин пароль - вход
@@ -68,7 +68,7 @@ pub const STALE_SCHEDULE: &str = "Сайт недоступен, сохранё�
 /// Inline mode: the button above empty results when the user has no site session.
 pub const INLINE_LOGIN: &str = "Нужен вход в боте";
 
-/// Inline mode: the result title, e.g. "Группа 369, 1 подгруппа".
+/// Inline mode: the group of a result and the message header, e.g. "Группа 369, 1 подгруппа".
 pub fn inline_title(group: i64, view: &View) -> String {
     let subgroup = if view.show_all {
         "обе подгруппы"
@@ -78,10 +78,11 @@ pub fn inline_title(group: i64, view: &View) -> String {
     format!("Группа {group}, {subgroup}")
 }
 
-/// Inline mode: the result description, e.g. "Вт 03.11".
-pub fn inline_description(date: NaiveDate) -> String {
+/// Inline mode: a result's day, e.g. "Чт 05.11" or "Сегодня, Вт 03.11".
+pub fn inline_day(date: NaiveDate, today: bool) -> String {
     format!(
-        "{} {}",
+        "{}{} {}",
+        if today { "Сегодня, " } else { "" },
         DAYS[date.weekday().num_days_from_monday() as usize],
         date.format("%d.%m")
     )

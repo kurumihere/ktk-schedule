@@ -665,6 +665,45 @@ fn inline_queries_name_a_group_subgroup_and_date() {
         inline_request("05.09", date()),
         request(None, InlineSubgroup::Own, sept_5)
     );
+    // Days by name: the next occurrence from Tuesday 01.09 on, today included.
+    let day = |d| NaiveDate::from_ymd_opt(2026, 9, d);
+    for (word, expected) in [
+        ("вт", day(1)),
+        ("сегодня", day(1)),
+        ("завтра", day(2)),
+        ("Ср", day(2)),
+        ("чт", day(3)),
+        ("четверг", day(3)),
+        ("Пт.", day(4)),
+        ("пят", day(4)),
+        ("сб", day(5)),
+        ("вс", day(6)),
+        ("пн", day(7)),
+        ("понедельник", day(7)),
+        ("послезавтра", day(3)),
+    ] {
+        assert_eq!(parse_day(word, date()), expected, "{word}");
+    }
+    for word in ["п", "чет1", "вторая", "все", "01.09"] {
+        assert_eq!(parse_day(word, date()), None, "{word}");
+    }
+    assert_eq!(
+        inline_request("369 1 чт", date()),
+        request(Some(369), InlineSubgroup::One("left"), day(3))
+    );
+    assert_eq!(
+        inline_request("369 обе завтра", date()),
+        request(Some(369), InlineSubgroup::Both, day(2))
+    );
+    // "вторая" is the subgroup, not Tuesday.
+    assert_eq!(
+        inline_request("369 вторая", date()),
+        request(Some(369), InlineSubgroup::One("right"), None)
+    );
+    assert_eq!(
+        inline_request("пятница", date()),
+        request(None, InlineSubgroup::Own, day(4))
+    );
     for query in ["0", "100001", "-5", "369 3", "369 abc", "369 31.02", "abc"] {
         assert_eq!(inline_request(query, date()), None, "{query}");
     }
@@ -700,7 +739,8 @@ fn shared_timetables_are_snapshots_without_marks() {
         render::inline_title(270, &view),
         "Группа 270, обе подгруппы"
     );
-    assert_eq!(render::inline_description(date()), "Вт 01.09");
+    assert_eq!(render::inline_day(date(), false), "Вт 01.09");
+    assert_eq!(render::inline_day(date(), true), "Сегодня, Вт 01.09");
 }
 
 #[test]
@@ -974,7 +1014,7 @@ fn bot_texts_stay_short_neutral_and_free_of_promotion() {
         render::no_pairs(NaiveDate::from_ymd_opt(2026, 9, 6).unwrap()),
         render::INLINE_LOGIN.to_owned(),
         render::shared_header(269, &View::own(&account, date())),
-        render::inline_description(date()),
+        render::inline_day(date(), true),
         render::vk_menu(&View::own(&account, date()), 269, false),
     ];
     for text in &texts {
