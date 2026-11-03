@@ -59,6 +59,12 @@ pub struct ExtendedData {
     pub discipline_full: String,
     #[serde(deserialize_with = "null_default")]
     pub pair_type: i64,
+    /// Digital platform: the lesson is in a virtual auditorium (distance learning).
+    #[serde(default)]
+    pub remote: bool,
+    /// Digital platform: the teacher set a task; its text and files come separately.
+    #[serde(default)]
+    pub has_homework: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -553,15 +559,43 @@ pub fn seroval_unescape(value: &str) -> String {
     out
 }
 
+/// A server function argument: the platform validates types, so ids go as numbers.
+#[derive(Clone, Copy, Debug)]
+pub enum Field<'a> {
+    Text(&'a str),
+    Number(i64),
+}
+
+impl<'a> From<&'a str> for Field<'a> {
+    fn from(value: &'a str) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl<'a> From<&'a String> for Field<'a> {
+    fn from(value: &'a String) -> Self {
+        Self::Text(value)
+    }
+}
+
 /// Server function payload: `{ data: { field: value, ... } }` serialized as a seroval tree,
 /// framed the way the website's own client sends it.
 pub fn seroval_request(fields: &[(&str, &str)]) -> Value {
+    let fields: Vec<_> = fields.iter().map(|(k, v)| (*k, Field::Text(v))).collect();
+    seroval_fields(&fields)
+}
+
+/// `seroval_request` with typed values.
+pub fn seroval_fields(fields: &[(&str, Field)]) -> Value {
     let (keys, values): (Vec<_>, Vec<_>) = fields
         .iter()
         .map(|(key, value)| {
             (
                 seroval_escape(key),
-                serde_json::json!({ "t": 1, "s": seroval_escape(value) }),
+                match value {
+                    Field::Text(text) => serde_json::json!({ "t": 1, "s": seroval_escape(text) }),
+                    Field::Number(number) => serde_json::json!({ "t": 0, "s": number }),
+                },
             )
         })
         .unzip();
@@ -744,6 +778,7 @@ pub fn digital_week(root: &Value) -> Result<(Vec<ScheduleDay>, ReferenceData)> {
     }
 
     let mut halls = HashMap::new();
+    let mut remote_halls = HashSet::new();
     if let Some(a_list) = refs_obj
         .and_then(|r| r.get("auditoriums"))
         .and_then(Value::as_array)
@@ -763,6 +798,9 @@ pub fn digital_week(root: &Value) -> Result<(Vec<ScheduleDay>, ReferenceData)> {
                     .trim();
                 let is_virtual =
                     a.get("variant").and_then(Value::as_str) == Some("virtual") || code == "Д";
+                if is_virtual {
+                    remote_halls.insert(id);
+                }
                 let (number, building) = if is_virtual {
                     ("Дистанционно".to_string(), String::new())
                 } else {
@@ -949,6 +987,11 @@ pub fn digital_week(root: &Value) -> Result<(Vec<ScheduleDay>, ReferenceData)> {
                         academic_hour,
                         discipline_full,
                         pair_type,
+                        remote: remote_halls.contains(&auditorium_id),
+                        has_homework: lesson
+                            .get("hasHomework")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     },
                     extra_data: ExtraData {
                         lecture_theme: String::new(),
@@ -1212,7 +1255,8 @@ pub fn visible_subjects_scoped<'a>(
     teacher: bool,
     is_personal: bool,
 ) -> Vec<&'a Subject> {
-    day.subjects
+    let subjects: Vec<&Subject> = day
+        .subjects
         .iter()
         .filter(|s| {
             teacher
@@ -1220,7 +1264,25 @@ pub fn visible_subjects_scoped<'a>(
                 || view.show_all
                 || personal_subgroup(&s.subgroup).is_none_or(|sub| sub == view.subgroup)
         })
-        .collect()
+        .collect();
+    // A student's day of distance pairs only is shown when any pair has a webinar or a task;
+    // otherwise there is nothing to attend and the day is empty.
+    if !teacher
+        && subjects.iter().all(|s| s.extended_data.remote)
+        && !subjects.iter().any(|s| has_webinar_or_task(s))
+    {
+        return Vec::new();
+    }
+    subjects
+}
+
+fn has_webinar_or_task(subject: &Subject) -> bool {
+    let homework = &subject.extra_data.homework;
+    let filled = |text: &Option<String>| text.as_deref().is_some_and(|t| !t.trim().is_empty());
+    subject.extended_data.has_homework
+        || filled(&homework.webinar)
+        || filled(&homework.task)
+        || !homework.files.is_empty()
 }
 
 pub fn visible_subjects<'a>(day: &'a ScheduleDay, view: &View, teacher: bool) -> Vec<&'a Subject> {

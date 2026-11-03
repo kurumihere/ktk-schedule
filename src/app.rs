@@ -975,6 +975,10 @@ pub async fn run(config: Config) -> Result<()> {
     let me = bot.get_me().await?;
     let username = me.user.username.unwrap_or_default();
     let app = Arc::new(App::new(config, bot.clone(), username.clone()).await?);
+    // The menu is a convenience: a failure must not keep the bot from starting.
+    if let Err(error) = telegram::set_commands(&app).await {
+        tracing::warn!(%error, "could not set the command menu");
+    }
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(telegram::handle_message))
         .branch(Update::filter_callback_query().endpoint(telegram::handle_callback))

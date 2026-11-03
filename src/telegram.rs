@@ -13,10 +13,10 @@ use std::sync::Arc;
 use teloxide::{
     prelude::*,
     types::{
-        InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard, InlineQuery,
-        InlineQueryResult, InlineQueryResultArticle, InlineQueryResultsButton,
-        InlineQueryResultsButtonKind, InputFile, InputMessageContent, InputMessageContentText,
-        MessageId,
+        BotCommand, BotCommandScope, InlineKeyboardButton as Button,
+        InlineKeyboardMarkup as Keyboard, InlineQuery, InlineQueryResult, InlineQueryResultArticle,
+        InlineQueryResultsButton, InlineQueryResultsButtonKind, InputFile, InputMessageContent,
+        InputMessageContentText, MessageId,
     },
 };
 
@@ -351,6 +351,34 @@ async fn inline_inner(app: &App, id: i64, query: &str) -> Result<Inline> {
         articles.push(InlineQueryResult::Article(article));
     }
     Ok(Inline::Articles(articles))
+}
+
+/// The "/" menu: every command in private chats (the only place they work, golden rule 1),
+/// plus the owner tools in the owner's chat.
+pub async fn set_commands(app: &App) -> Result<()> {
+    let commands = |list: &[(&str, &str)]| -> Vec<BotCommand> {
+        list.iter()
+            .map(|(name, description)| BotCommand::new(*name, *description))
+            .collect()
+    };
+    app.bot
+        .set_my_commands(commands(&render::COMMANDS))
+        .scope(BotCommandScope::AllPrivateChats)
+        .await?;
+    if app.config.owner_id > 0 {
+        let owner: Vec<_> = render::COMMANDS
+            .iter()
+            .chain(&render::OWNER_COMMANDS)
+            .copied()
+            .collect();
+        app.bot
+            .set_my_commands(commands(&owner))
+            .scope(BotCommandScope::Chat {
+                chat_id: ChatId(app.config.owner_id).into(),
+            })
+            .await?;
+    }
+    Ok(())
 }
 
 fn private(message: &Message) -> bool {

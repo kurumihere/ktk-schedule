@@ -710,29 +710,33 @@ fn inline_queries_name_a_group_subgroup_and_date() {
 }
 
 #[test]
-fn shared_timetables_are_snapshots_without_marks() {
+fn shared_timetables_drop_marks_and_tasks_but_keep_live_times() {
     let day: ScheduleDay = serde_json::from_value(json!({
         "Date":"2026-09-01T00:00:00Z","CallPreset":1,
-        "Subjects":[{"Pair":1,"Discipline":"Math","Appraisal":5,"Mark":2,"Teacher":"Иванов"}]
+        "Subjects":[{"Pair":1,"Discipline":"Math","Appraisal":5,"Mark":2,"Teacher":"Иванов",
+            "ExtraData":{"Homework":{"Task":"Прочитать §3","Webinar":"https://meet.example/1","Files":[7]}}}]
     }))
     .unwrap();
+    let mut refs = ReferenceData::default();
+    let preset: Preset = serde_json::from_value(json!({"ID":1,"Begin":"1970-01-01T08:00:00Z","CallSet":[{"PairNumber":1,"Duration":90,"Break":10}]})).unwrap();
+    refs.presets.insert(1, preset);
     let mut view = View::own(&account(), date());
     view.group = Some(270);
     let now = TZ.with_ymd_and_hms(2026, 9, 1, 8, 30, 0).unwrap();
-    let text = render::shared_schedule(&day, &view, &ReferenceData::default(), now);
-    assert_eq!(text, "📅 01.09.2026\n\n1 пара - Math\n👤 Иванов");
-    // The own view still shows today's marks.
-    let own = render::schedule(
-        &day,
-        &view,
-        &ReferenceData::default(),
-        &Assets::default(),
-        false,
-        false,
-        now,
+    let text = render::shared_schedule(&day, &view, &refs, now);
+    // As of sending: today and the running pair, like the own timetable.
+    assert!(
+        text.starts_with("📅 Сегодня - 01.09.2026\n\n1 пара"),
+        "{text}"
     );
-    assert!(own.starts_with("📅 Сегодня - 01.09.2026"));
-    assert!(own.contains("📊 Оценка: 5"));
+    assert!(text.contains("⏳ идёт"), "{text}");
+    assert!(text.contains("Вебинар: https://meet.example/1"));
+    for hidden in ["Оценка", "Отметка", "Задание", "📎"] {
+        assert!(!text.contains(hidden), "{hidden} in {text}");
+    }
+    // The own view still shows marks and the task.
+    let own = render::schedule(&day, &view, &refs, &Assets::default(), false, false, now);
+    assert!(own.contains("📊 Оценка: 5") && own.contains("Задание: Прочитать §3"));
     assert_eq!(render::inline_title(270, &view), "Группа 270, 1 подгруппа");
     view.show_all = true;
     assert_eq!(
@@ -1017,6 +1021,16 @@ fn bot_texts_stay_short_neutral_and_free_of_promotion() {
         render::inline_day(date(), true),
         render::vk_menu(&View::own(&account, date()), 269, false),
     ];
+    // The "/" menu descriptions follow the same style.
+    let texts: Vec<String> = texts
+        .into_iter()
+        .chain(
+            render::COMMANDS
+                .iter()
+                .chain(&render::OWNER_COMMANDS)
+                .map(|(_, description)| description.to_string()),
+        )
+        .collect();
     for text in &texts {
         let lower = format!(" {} ", text.to_lowercase());
         for word in [

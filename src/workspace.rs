@@ -10,9 +10,9 @@ use reqwest::{
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -144,6 +144,10 @@ struct Endpoints {
     branch: String,
     sign_in: String,
     logout: String,
+    student_homework: String,
+    student_webinar: String,
+    group_homework: String,
+    group_webinar: String,
 }
 
 /// Digital platform server functions the bot calls.
@@ -154,13 +158,18 @@ enum ServerFn {
     Teacher,
     Group,
     Logout,
+    /// A lesson's task and files: `{weekStart, journalId}` (group: `+ groupId`).
+    StudentHomework,
+    StudentWebinar,
+    GroupHomework,
+    GroupWebinar,
 }
 
 impl ServerFn {
     fn method(self) -> Method {
         match self {
             Self::SignIn | Self::Logout => Method::POST,
-            Self::Student | Self::Teacher | Self::Group => Method::GET,
+            _ => Method::GET,
         }
     }
 
@@ -171,6 +180,10 @@ impl ServerFn {
             Self::Teacher => DEFAULT_DIGITAL_TEACHER,
             Self::Group => DEFAULT_DIGITAL_GROUP,
             Self::Logout => DEFAULT_DIGITAL_LOGOUT,
+            Self::StudentHomework => DEFAULT_DIGITAL_STUDENT_HOMEWORK,
+            Self::StudentWebinar => DEFAULT_DIGITAL_STUDENT_WEBINAR,
+            Self::GroupHomework => DEFAULT_DIGITAL_GROUP_HOMEWORK,
+            Self::GroupWebinar => DEFAULT_DIGITAL_GROUP_WEBINAR,
         }
     }
 
@@ -181,6 +194,11 @@ impl ServerFn {
             Self::Teacher => candidates.digital_teacher_schedule.as_ref(),
             Self::Group => candidates.digital_group_schedule.as_ref(),
             Self::Logout => candidates.digital_logout.as_ref(),
+            // Not told apart by discovery yet: the known ids are used.
+            Self::StudentHomework
+            | Self::StudentWebinar
+            | Self::GroupHomework
+            | Self::GroupWebinar => None,
         }
     }
 
@@ -190,6 +208,10 @@ impl ServerFn {
             Self::Student | Self::Teacher => &mut endpoints.personal,
             Self::Group => &mut endpoints.group,
             Self::Logout => &mut endpoints.logout,
+            Self::StudentHomework => &mut endpoints.student_homework,
+            Self::StudentWebinar => &mut endpoints.student_webinar,
+            Self::GroupHomework => &mut endpoints.group_homework,
+            Self::GroupWebinar => &mut endpoints.group_webinar,
         }
     }
 }
@@ -224,6 +246,18 @@ pub const DEFAULT_DIGITAL_GROUP: &str =
     "/_serverFn/d418f54f8d5ba132bd168b1792cc8f0efbff634c7861f6aa66890cb9f7103c05";
 pub const DEFAULT_DIGITAL_LOGOUT: &str =
     "/_serverFn/2e1ca1208f926608597adee62b6f7a786ebfd7e01b208963ecb9bee6e800f9f5";
+/// `ownStudentLessonHomework`, `ownStudentLessonWebinar`, `groupLessonHomework` and
+/// `groupLessonWebinar` of the timetable page (bundle of 2026-11-03).
+pub const DEFAULT_DIGITAL_STUDENT_HOMEWORK: &str =
+    "/_serverFn/6856a131ea327da0ae2769d0e8b9950bce030194dda15acd331dd5ad2c273f38";
+pub const DEFAULT_DIGITAL_STUDENT_WEBINAR: &str =
+    "/_serverFn/b218948fba15961755e1cf6c0742e352d8709719e99ac7bd3e06315787e13650";
+pub const DEFAULT_DIGITAL_GROUP_HOMEWORK: &str =
+    "/_serverFn/c45239ec7e4dc5b1d502259920ddafa06eec8ce3391ba127bd60b4e86e07c60b";
+pub const DEFAULT_DIGITAL_GROUP_WEBINAR: &str =
+    "/_serverFn/b45e772e2c78dafc8e71009e176b018dc30498e626381ce78c54098424cb9335";
+/// At most this many task/webinar requests per digital week.
+const MAX_LESSON_EXTRAS: usize = 40;
 
 static SERVER_FN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"/_serverFn/([0-9a-fA-F]{32,64})"#).unwrap());
@@ -400,6 +434,20 @@ fn device_fingerprint(login: &str, device: &str) -> String {
     hash[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A digital task file: downloads go to the lesson's file route of the same timetable.
+#[derive(Clone, Debug)]
+struct DigitalFile {
+    caption: String,
+    extension: String,
+    journal: i64,
+    week_start: String,
+    /// `None` for the own timetable (`students/self`).
+    group: Option<String>,
+}
+
+/// Digital file names are remembered per session up to this many.
+const MAX_DIGITAL_FILES: usize = 4096;
+
 pub struct Workspace {
     http: HttpClient,
     jar: Arc<Jar>,
@@ -412,6 +460,8 @@ pub struct Workspace {
     refresh_lock: Mutex<()>,
     /// Halls, presets and pair types accumulated from every digital week this session read.
     digital_refs: RwLock<Arc<ReferenceData>>,
+    /// Task files seen in digital weeks: their names and where to download them.
+    digital_files: std::sync::Mutex<HashMap<i64, DigitalFile>>,
     pub subgroup: String,
     pub group: i64,
     pub teacher: String,
@@ -432,6 +482,7 @@ impl Workspace {
             endpoints: RwLock::default(),
             refresh_lock: Mutex::new(()),
             digital_refs: RwLock::default(),
+            digital_files: std::sync::Mutex::default(),
             subgroup: String::new(),
             group: 0,
             teacher: String::new(),
@@ -752,10 +803,10 @@ impl Workspace {
         &self,
         function: ServerFn,
         path: &str,
-        fields: &[(&str, &str)],
+        fields: &[(&str, Field<'_>)],
     ) -> Result<Value> {
         let url = self.endpoint_url(path)?;
-        let payload = seroval_request(fields);
+        let payload = seroval_fields(fields);
         let referer = match function {
             ServerFn::SignIn => self.base.join("/welcome?redirect=%2F")?,
             _ => self.base.clone(),
@@ -793,6 +844,11 @@ impl Workspace {
 
     /// Call a server function; after a redeploy its id changes, so look it up once again.
     async fn call(&self, function: ServerFn, fields: &[(&str, &str)]) -> Result<Value> {
+        let fields: Vec<_> = fields.iter().map(|(k, v)| (*k, Field::Text(v))).collect();
+        self.call_fields(function, &fields).await
+    }
+
+    async fn call_fields(&self, function: ServerFn, fields: &[(&str, Field<'_>)]) -> Result<Value> {
         let path = {
             let mut endpoints = self.endpoints.write().await;
             let slot = function.slot(&mut endpoints);
@@ -996,8 +1052,7 @@ impl Workspace {
             branch,
             file_hash: candidates.files.first().cloned().unwrap_or_default(),
             homework_hash: candidates.homework.first().cloned().unwrap_or_default(),
-            sign_in: String::new(),
-            logout: String::new(),
+            ..Endpoints::default()
         };
         Ok(())
     }
@@ -1043,9 +1098,207 @@ impl Workspace {
         if let Some(error) = server_error(&result) {
             return Err(error);
         }
-        let (days, refs) = digital_week(&result)?;
+        let (mut days, refs) = digital_week(&result)?;
         self.absorb_references(refs).await;
+        // Tasks and webinars are separate per lesson; a teacher's week has its own calls.
+        if !scope.starts_with("teacher:") && self.teacher.is_empty() {
+            let group = scope.starts_with("group:").then(|| group.to_string());
+            self.lesson_extras(&mut days, group.as_deref(), &week_start)
+                .await;
+        }
         Ok(days)
+    }
+
+    /// Fill in the task (text, deadline, files) of lessons flagged `hasHomework` and the
+    /// webinar of distance lessons. Extras are best effort: the week stands without them.
+    async fn lesson_extras(&self, days: &mut [ScheduleDay], group: Option<&str>, week_start: &str) {
+        let wanted: Vec<_> = days
+            .iter()
+            .enumerate()
+            .flat_map(|(d, day)| {
+                day.subjects.iter().enumerate().filter_map(move |(i, s)| {
+                    let (homework, webinar) =
+                        (s.extended_data.has_homework, s.extended_data.remote);
+                    (s.extra_data.sheet > 0 && (homework || webinar)).then_some((
+                        d,
+                        i,
+                        s.extra_data.sheet,
+                        homework,
+                        webinar,
+                    ))
+                })
+            })
+            .take(MAX_LESSON_EXTRAS / 2)
+            .collect();
+        let results = stream::iter(wanted.into_iter().map(|(d, i, journal, homework, webinar)| async move {
+            let (task, link) = tokio::join!(
+                async {
+                    if !homework {
+                        return None;
+                    }
+                    self.lesson_homework(journal, group, week_start)
+                        .await
+                        .inspect_err(|e| tracing::debug!(journal, error = %e, "lesson task unavailable"))
+                        .ok()
+                        .flatten()
+                },
+                async {
+                    if !webinar {
+                        return None;
+                    }
+                    self.lesson_webinar(journal, group, week_start)
+                        .await
+                        .inspect_err(|e| tracing::debug!(journal, error = %e, "lesson webinar unavailable"))
+                        .ok()
+                        .flatten()
+                }
+            );
+            (d, i, task, link)
+        }))
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await;
+        for (d, i, task, link) in results {
+            let homework = &mut days[d].subjects[i].extra_data.homework;
+            if let Some(task) = task {
+                *homework = task;
+            }
+            if link.is_some() {
+                homework.webinar = link;
+            }
+        }
+    }
+
+    async fn lesson_call(
+        &self,
+        student: ServerFn,
+        of_group: ServerFn,
+        journal: i64,
+        group: Option<&str>,
+        week_start: &str,
+    ) -> Result<Value> {
+        let value = match group {
+            Some(group) => {
+                self.call_fields(
+                    of_group,
+                    &[
+                        ("groupId", Field::Text(group)),
+                        ("weekStart", Field::Text(week_start)),
+                        ("journalId", Field::Number(journal)),
+                    ],
+                )
+                .await?
+            }
+            None => {
+                self.call_fields(
+                    student,
+                    &[
+                        ("weekStart", Field::Text(week_start)),
+                        ("journalId", Field::Number(journal)),
+                    ],
+                )
+                .await?
+            }
+        };
+        if let Some(error) = server_error(&value) {
+            return Err(error);
+        }
+        Ok(value)
+    }
+
+    /// `{homework: {task, deadline, files: [{userFileId, caption, ...}]} | null}`; the group
+    /// variant may add `status`, and `restricted` gives `None` like a missing task.
+    async fn lesson_homework(
+        &self,
+        journal: i64,
+        group: Option<&str>,
+        week_start: &str,
+    ) -> Result<Option<Homework>> {
+        let value = self
+            .lesson_call(
+                ServerFn::StudentHomework,
+                ServerFn::GroupHomework,
+                journal,
+                group,
+                week_start,
+            )
+            .await?;
+        let homework = &value["homework"];
+        if restricted(&value) || !homework.is_object() {
+            return Ok(None);
+        }
+        let text = |key: &str| {
+            homework[key]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(Into::into)
+        };
+        let mut files = Vec::new();
+        let mut known = self
+            .digital_files
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for file in homework["files"].as_array().into_iter().flatten() {
+            let Some(id) = positive_id(&file["userFileId"]) else {
+                continue;
+            };
+            if file["availability"] != "available" || files.len() >= MAX_ATTACHMENTS {
+                continue;
+            }
+            if known.len() >= MAX_DIGITAL_FILES {
+                known.clear();
+            }
+            known.insert(
+                id,
+                DigitalFile {
+                    caption: file["caption"].as_str().unwrap_or_default().trim().into(),
+                    extension: file["extension"].as_str().unwrap_or_default().trim().into(),
+                    journal,
+                    week_start: week_start.into(),
+                    group: group.map(Into::into),
+                },
+            );
+            files.push(id);
+        }
+        Ok(Some(Homework {
+            task: text("task"),
+            deadline: text("deadline"),
+            webinar: None,
+            files,
+            lock_upload: None,
+        }))
+    }
+
+    /// `{webinar: "https://..." | null}` (the group variant may add `status`).
+    async fn lesson_webinar(
+        &self,
+        journal: i64,
+        group: Option<&str>,
+        week_start: &str,
+    ) -> Result<Option<String>> {
+        let value = self
+            .lesson_call(
+                ServerFn::StudentWebinar,
+                ServerFn::GroupWebinar,
+                journal,
+                group,
+                week_start,
+            )
+            .await?;
+        Ok((!restricted(&value))
+            .then(|| value["webinar"].as_str().map(str::trim))
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .map(Into::into))
+    }
+
+    fn digital_file(&self, id: i64) -> Option<DigitalFile> {
+        self.digital_files
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned()
     }
 
     async fn legacy_schedule(
@@ -1170,6 +1423,16 @@ impl Workspace {
     }
 
     pub async fn document(&self, id: i64) -> Result<Document> {
+        if self.platform == Platform::Digital {
+            let file = self
+                .digital_file(id)
+                .context("file was not listed by this session")?;
+            return Ok(Document {
+                id,
+                caption: file_name(&file.caption, &file.extension, id),
+                icon: file.extension,
+            });
+        }
         let mut doc: Document = self
             .auxiliary(false, "id", &[("ID", id.to_string())])
             .await?;
@@ -1194,6 +1457,27 @@ impl Workspace {
     }
 
     pub async fn download(&self, id: i64) -> Result<(tempfile::TempPath, String)> {
+        if self.platform == Platform::Digital {
+            let file = self
+                .digital_file(id)
+                .context("file was not listed by this session")?;
+            let path = match &file.group {
+                Some(group) => format!(
+                    "/api/timetable/groups/{group}/lessons/{}/files/{id}",
+                    file.journal
+                ),
+                None => format!(
+                    "/api/timetable/students/self/lessons/{}/files/{id}",
+                    file.journal
+                ),
+            };
+            let mut url = self.base.join(&path)?;
+            url.query_pairs_mut()
+                .append_pair("weekStart", &file.week_start);
+            return self
+                .fetch_file(url, file_name(&file.caption, &file.extension, id))
+                .await;
+        }
         let value: Value = self
             .auxiliary(false, "open", &[("ID", id.to_string())])
             .await?;
@@ -1202,6 +1486,16 @@ impl Workspace {
             .filter(|s| !s.is_empty())
             .context("file has no download link")?;
         let url = self.base.join(link)?;
+        let caption = value["Caption"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(Into::into)
+            .unwrap_or_else(|| format!("file_{id}"));
+        self.fetch_file(url, caption).await
+    }
+
+    /// Stream a file of the site's origin into a temporary file, within `FILE_LIMIT`.
+    async fn fetch_file(&self, url: Url, caption: String) -> Result<(tempfile::TempPath, String)> {
         ensure!(
             url.origin() == self.base.origin()
                 && url.username().is_empty()
@@ -1238,12 +1532,34 @@ impl Workspace {
         }
         file.flush().await?;
         drop(file);
-        let caption = value["Caption"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(Into::into)
-            .unwrap_or_else(|| format!("file_{id}"));
         Ok((path, caption))
+    }
+}
+
+/// Lesson extras answer without `status` for the own timetable (HAR of 2026-11-03); a
+/// `status` other than `available` withholds the content.
+fn restricted(value: &Value) -> bool {
+    value
+        .get("status")
+        .is_some_and(|status| status != "available")
+}
+
+/// "Отчёт" + "pdf" -> "Отчёт.pdf"; a caption that already ends with the extension stays.
+fn file_name(caption: &str, extension: &str, id: i64) -> String {
+    let caption = if caption.is_empty() {
+        format!("file_{id}")
+    } else {
+        caption.to_string()
+    };
+    let extension = extension.trim_start_matches('.');
+    if extension.is_empty()
+        || caption
+            .to_lowercase()
+            .ends_with(&format!(".{}", extension.to_lowercase()))
+    {
+        caption
+    } else {
+        format!("{caption}.{extension}")
     }
 }
 

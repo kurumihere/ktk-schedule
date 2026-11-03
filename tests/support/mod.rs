@@ -416,7 +416,12 @@ pub async fn telegram_server() -> MockServer {
         let data:Value=request.body_json().unwrap();
         ResponseTemplate::new(200).set_body_json(json!({"ok":true,"result":{"message_id":data["message_id"],"date":1788202800,"chat":{"id":data["chat_id"],"type":"private"},"text":data["text"]}}))
     }).mount(&server).await;
-    for method in ["answercallbackquery", "answerinlinequery", "deletemessage"] {
+    for method in [
+        "answercallbackquery",
+        "answerinlinequery",
+        "deletemessage",
+        "setmycommands",
+    ] {
         Mock::given(path_regex(format!("(?i)/bot123456:TEST/{method}")))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(json!({"ok":true,"result":true})),

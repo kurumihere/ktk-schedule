@@ -36,6 +36,48 @@ async fn inline_answer(server: &wiremock::MockServer) -> Value {
 }
 
 #[tokio::test]
+async fn the_command_menu_lists_every_command_in_private_chats_only() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = app(&college, &server).await;
+    ktk_schedule::telegram::set_commands(&app).await.unwrap();
+    let calls: Vec<Value> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().to_lowercase().ends_with("/setmycommands"))
+        .map(|r| r.body_json().unwrap())
+        .collect();
+    let names = |call: &Value| -> Vec<String> {
+        call["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["command"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(calls[0]["scope"]["type"], "all_private_chats");
+    let everyone = names(&calls[0]);
+    for command in [
+        "schedule",
+        "login",
+        "logout",
+        "notify_on",
+        "notify_off",
+        "start",
+    ] {
+        assert!(everyone.iter().any(|c| c == command), "{command}");
+    }
+    assert!(!everyone.iter().any(|c| c == "stats" || c == "announce"));
+    // The owner's chat adds the owner tools.
+    if let Some(owner) = calls.get(1) {
+        assert_eq!(owner["scope"]["type"], "chat");
+        assert!(names(owner).iter().any(|c| c == "announce"));
+    }
+}
+
+#[tokio::test]
 async fn inline_query_shares_another_groups_timetable_without_personal_data() {
     let college = College::start(false).await;
     let server = telegram_server().await;

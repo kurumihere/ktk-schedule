@@ -32,7 +32,7 @@ Generated, never committed, never a source of truth: `target/`, `data/`, `*.sqli
 
 ## 1. Golden rules - never violate
 
-1. **Private chat first.** `/login`, `/logout`, `/schedule`, `/notify_*`, personal buttons, `/stats`, `/announce`: Telegram only in `private()` chats (`chat.is_private() && from.id == chat.id`), VK only when `peer_id == from_id`. In groups the bot ignores everything but its own commands. Telegram inline mode (`telegram::handle_inline`) may post into any chat, so it shows only a `group:` scope through `App::render_shared` / `render::shared_schedule` (no marks, no own files, no live countdowns). A violation is a P0 bug.
+1. **Private chat first.** `/login`, `/logout`, `/schedule`, `/notify_*`, personal buttons, `/stats`, `/announce`: Telegram only in `private()` chats (`chat.is_private() && from.id == chat.id`), VK only when `peer_id == from_id`. In groups the bot ignores everything but its own commands. Telegram inline mode (`telegram::handle_inline`) may post into any chat, so it shows only a `group:` scope through `App::render_shared` / `render::shared_schedule` (no marks, no tasks or files; webinars and live times as of sending). A violation is a P0 bug.
 2. **Passwords are never stored and never logged.** `/login` sends the password to the site once (`App::sign_in`) and keeps only the resulting site session (`sessions` table, sealed). No re-login with stored credentials exists or may be added: a rejected session means `LoginRequired` -> the user signs in again. In Telegram the `/login` message is deleted first; if `delete_message` fails, the login is cancelled and nothing is sent anywhere.
 3. **HTTPS only, credentials never in URLs.** `KTK_BASE_URL` and `VK_API_URL` must be HTTPS without userinfo (`config.rs:https_url`). Redirects stay same-origin without userinfo, file links must be on the site origin (`workspace.rs:http_client/download`). The loopback-HTTP bypass exists only in `tests/support/mod.rs`. Errors that may carry a URL with a secret (VK long poll key) are logged `without_url()`.
 4. **Per-user scopes.** Cache scope is `personal`, `group:{id}` or `teacher:{hash}` (`View::scope`). Another group is always fetched separately; grades/homework from `personal` never leak into a `group:` scope.
@@ -60,7 +60,7 @@ Callbacks always start with `schedule:`; data elsewhere is ignored.
 
 Invalid: no `schedule:` prefix, `schedule:day:01x` (ignored in VK, error in Telegram), scope `Group:269` (only `group:269`).
 
-Commands: `/start /my_id /login /logout /schedule [date] /notify_on /notify_off /stats /announce`; VK also accepts `/refresh`, `/my` and the words "Начать", "Обновить", "Моё" in any case. Both platforms parse with `telegram::command`. Help text: `render::HELP` / `render::VK_HELP`.
+Commands: `/start /my_id /login /logout /schedule [date] /notify_on /notify_off /stats /announce`; VK also accepts `/refresh`, `/my` and the words "Начать", "Обновить", "Моё" in any case. Both platforms parse with `telegram::command`. Help text: `render::HELP` / `render::VK_HELP`. Telegram's "/" menu comes from `render::COMMANDS` (+ `OWNER_COMMANDS` in the owner's chat), set at start by `telegram::set_commands` for private chats only; a new command goes there too.
 
 Inline mode (Telegram only, enable with BotFather `/setinline`): `@bot [group] [subgroup] [date]`, parsed by `telegram::inline_request` (`369`, `369 1`, `369 2 05.11`, `369 1 чт`, `369 обе завтра`; days by name via `model::parse_day`; no group = own group and subgroup). Results are a day picker: the week's other days with pairs on top, the asked day (today by default) last, next to the input field; `is_personal`, cached 60 s; no session -> empty results with the `INLINE_LOGIN` button (`/start login`).
 
@@ -122,13 +122,13 @@ Grep the symbol first, then read with offset/limit.
 | `App::session(&account)` | the in-memory or restored site session | never create `Workspace::login` outside `sign_in` |
 | `App::allow(id, login)` | rate limit: login 5/60 s (block 300 s), other 8/10 s (block 20 s); VK buttons included | new expensive commands |
 | `App::lock_user(id)` | per-user mutex | any account/view mutation |
-| `Workspace::call(ServerFn, fields)` | one digital server function with rediscovery | new digital endpoints |
+| `Workspace::call(ServerFn, fields)` / `call_fields` (typed `Field::Number`) | one digital server function with rediscovery | new digital endpoints |
 
 Rule of three: the third copy of logic gets extracted. New features do not change existing screens unless asked.
 
 ## 7. Helpers (check before writing new ones)
 
-- `model.rs`: `personal_subgroup`, `subgroup_label`, `week_start`, `shift`, `week_millis`, `Week::new/academic_year`, `academic_year_start`, `within_reach`, `day_date`, `parse_date`, `visible_subjects(_scoped)`, `non_school_day(_scoped)`, `infer_subgroup`, `attachment_ids`, `limited_file_ids`, `parse_schedule`, `parse_digital_schedule`, `digital_week`, `seroval_escape/unescape/request`, `decode_seroval`, `null_default`, `positive_id`, `ReferenceData::merge/is_empty`, `PlatformUser`.
+- `model.rs`: `personal_subgroup`, `subgroup_label`, `week_start`, `shift`, `week_millis`, `Week::new/academic_year`, `academic_year_start`, `within_reach`, `day_date`, `parse_date`, `visible_subjects(_scoped)`, `non_school_day(_scoped)`, `infer_subgroup`, `attachment_ids`, `limited_file_ids`, `parse_schedule`, `parse_digital_schedule`, `digital_week`, `seroval_escape/unescape/request`, `seroval_fields` + `Field`, `decode_seroval`, `null_default`, `positive_id`, `ReferenceData::merge/is_empty`, `PlatformUser`.
 - `render.rs`: texts (section 1.8), `signed_in`, `vk_signed_in`, `vk_menu`, `stats`, `announce_done`, `file_failed`, `no_pairs`, `group_header`, `inline_title`, `inline_day`, `shared_header`, `shared_schedule`, `week_label`, `short_week_label`, `short_day`, `schedule`, `duration`, `uptime`, `mark`, `file_icon`, `timings`, `fit_text`.
 - `workspace.rs`: `unauthorized`, `CredentialsRejected`, `Platform::detect`, `Site::new`, `script_urls`, `find_group`, `find_subgroup`, `Candidates::add`.
 - `telegram.rs`: `schedule_keyboard`, `week_keyboard`, `command`, `inline_request`, `failure`, `login_failure`, `private`, `owner`, `account`.
@@ -183,17 +183,19 @@ New variable -> `config.rs` (`from_values` + `load` if secret) + `.env.example` 
 1. **Digital wire format.** Requests are `{t: node, f: 127, m: []}`; responses are bare seroval nodes. Every string node is escaped like JavaScript (`<` -> `\x3C`, `"` -> `\"`): use `seroval_request`/`decode_seroval`, never raw `{"t":1,"s":...}`. `t:11` (null-prototype dictionaries) are objects.
 2. **Sessions slide.** A digital session lives 30 days after its last use (`expiresAt - lastSeen = 30 d`); there is nothing to refresh proactively. Failures come in-band as `{error: {appError: {code: "authRequired"}}}` with HTTP 200 -> `server_error` maps them to 401 -> `LoginRequired` (a refused *group* timetable ends the session only if the personal one is refused too).
 3. **Server function ids** are content hashes: a site deploy changes them. `Workspace::call` rediscovers once on 404/410 or a non-JSON answer, and one crawl serves all sessions (`Site` discovery generation). Known-good defaults live in `DEFAULT_DIGITAL_*`; verify them with a fresh HAR (section 11) when the site changes.
-4. **Subgroup.** The digital account does not name it; `App::detect_subgroup` reads the personal timetable (only the own split lessons appear). Inconclusive weeks fall back to `DEFAULT_SUBGROUP`.
-5. `delete_message` failure cancels a Telegram login (rule 2). VK cannot delete user messages: `render::vk_signed_in` says the password message should be deleted.
-6. `fit_text(text, 4096)` counts UTF-16; byte slicing panics.
-7. `Circuit`: always `permit.finish(healthy)`; a rejected session counts as healthy.
-8. `week_millis` = Monday 06:00 in `TIMEZONE`; `Week` carries both the date and the millis. Never convert millis back with a hardcoded zone.
-9. Dates from users go through `parse_date`/`within_reach`; `%Y` accepts "-262144", which used to panic in `week_label`.
-10. VK: the long poll key expires about hourly (`failed: 2`) - renew it and keep `ts`. API calls are paced (60 ms) under the 20/s limit; error 6/10 is retried once. Never log poll URLs.
-11. teloxide logs listener errors itself unless `dispatch_with_listener` gets a handler (`run` does this).
-12. `storage.prune` and `mark_notified` compare `%Y-%m-%d` strings; change the format everywhere at once.
-13. Root must not open the live SQLite file in WAL mode: it would leave root-owned `-wal/-shm` files. Deploy and backup scripts run `sqlite3` as `ktk-schedule`.
-14. wiremock `MockGuard` drops did not unmount scoped mocks reliably here: prefer `.up_to_n_times(n)`.
+4. **Digital tasks, webinars, files.** A digital week only flags `hasHomework`, `billingType` and the auditorium; `Workspace::lesson_extras` fetches the task (`ownStudentLessonHomework` / `groupLessonHomework`) of flagged lessons and the webinar of distance lessons, at most `MAX_LESSON_EXTRAS` calls per week. Their ids are `DEFAULT_DIGITAL_*_HOMEWORK/WEBINAR` (not rediscovered yet). Files download from `/api/timetable/{students/self|groups/{id}}/lessons/{journal}/files/{file}?weekStart=` and only when the session listed them (`digital_files`). Webinars of in-person lessons are not fetched.
+5. **Distance days.** For students, a day of distance lessons only is shown (all its pairs) when any pair has a webinar or a task (`visible_subjects_scoped`); otherwise it is empty, i.e. a non-school day everywhere (buttons, text, notifications).
+6. **Subgroup.** The digital account does not name it; `App::detect_subgroup` reads the personal timetable (only the own split lessons appear). Inconclusive weeks fall back to `DEFAULT_SUBGROUP`.
+7. `delete_message` failure cancels a Telegram login (rule 2). VK cannot delete user messages: `render::vk_signed_in` says the password message should be deleted.
+8. `fit_text(text, 4096)` counts UTF-16; byte slicing panics.
+9. `Circuit`: always `permit.finish(healthy)`; a rejected session counts as healthy.
+10. `week_millis` = Monday 06:00 in `TIMEZONE`; `Week` carries both the date and the millis. Never convert millis back with a hardcoded zone.
+11. Dates from users go through `parse_date`/`within_reach`; `%Y` accepts "-262144", which used to panic in `week_label`.
+12. VK: the long poll key expires about hourly (`failed: 2`) - renew it and keep `ts`. API calls are paced (60 ms) under the 20/s limit; error 6/10 is retried once. Never log poll URLs.
+13. teloxide logs listener errors itself unless `dispatch_with_listener` gets a handler (`run` does this).
+14. `storage.prune` and `mark_notified` compare `%Y-%m-%d` strings; change the format everywhere at once.
+15. Root must not open the live SQLite file in WAL mode: it would leave root-owned `-wal/-shm` files. Deploy and backup scripts run `sqlite3` as `ktk-schedule`.
+16. wiremock `MockGuard` drops did not unmount scoped mocks reliably here: prefer `.up_to_n_times(n)`.
 
 ## 11. Workflows
 

@@ -27,6 +27,20 @@ pub const VK_HELP: &str = "\
 
 Telegram: https://t.me/ktk45_schedule_bot";
 
+/// Telegram's command menu ("/" button) in private chats: name without the slash, description.
+pub const COMMANDS: [(&str, &str); 7] = [
+    ("schedule", "Расписание, можно с датой: /schedule 05.11"),
+    ("login", "Вход: /login логин пароль"),
+    ("notify_on", "Включить утреннюю рассылку"),
+    ("notify_off", "Выключить утреннюю рассылку"),
+    ("logout", "Выход и удаление данных"),
+    ("my_id", "Telegram ID"),
+    ("start", "Справка"),
+];
+/// Added to the menu in the owner's chat only.
+pub const OWNER_COMMANDS: [(&str, &str); 2] =
+    [("stats", "Статистика"), ("announce", "Рассылка всем")];
+
 pub const LOGIN_FIRST: &str = "Нужен вход: /login логин пароль";
 /// The site ended the session; with no stored password only the user can sign in again.
 pub const LOGIN_AGAIN: &str = "Сессия истекла. Нужен вход: /login логин пароль";
@@ -275,6 +289,15 @@ pub fn file_icon(icon: &str) -> &'static str {
         ("excel", "📊"),
         ("powerpoint", "📽"),
         ("archive", "📦"),
+        // Digital files name their extension instead.
+        ("doc", "📝"),
+        ("xls", "📊"),
+        ("ppt", "📽"),
+        ("png", "🖼"),
+        ("jp", "🖼"),
+        ("zip", "📦"),
+        ("rar", "📦"),
+        ("7z", "📦"),
     ] {
         if icon.contains(part) {
             return emoji;
@@ -318,47 +341,8 @@ pub fn schedule(
     is_personal: bool,
     now: DateTime<Tz>,
 ) -> String {
-    schedule_text(day, view, refs, assets, teacher, is_personal, now, true)
-}
-
-/// A day for a shared chat (inline mode): a snapshot without marks, own files,
-/// "Сегодня" or countdowns, since the message stays in the chat unchanged.
-pub fn shared_schedule(
-    day: &ScheduleDay,
-    view: &View,
-    refs: &ReferenceData,
-    now: DateTime<Tz>,
-) -> String {
-    let mut day = day.clone();
-    for subject in &mut day.subjects {
-        subject.appraisal = 0;
-        subject.mark = 0;
-    }
-    schedule_text(
-        &day,
-        view,
-        refs,
-        &Assets::default(),
-        false,
-        false,
-        now,
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn schedule_text(
-    day: &ScheduleDay,
-    view: &View,
-    refs: &ReferenceData,
-    assets: &Assets,
-    teacher: bool,
-    is_personal: bool,
-    now: DateTime<Tz>,
-    live: bool,
-) -> String {
     let date = day_date(&day.date, now.timezone());
-    let today = live && date == Some(now.date_naive());
+    let today = date == Some(now.date_naive());
     let label = date
         .map(|d| d.format("%d.%m.%Y").to_string())
         .unwrap_or_else(|| day.date.clone());
@@ -487,6 +471,26 @@ fn schedule_text(
         }
     }
     out.trim_end().into()
+}
+
+/// A day for a shared chat (inline mode): no marks and no tasks (text, deadline, files),
+/// only the timetable itself with webinar links; times and countdowns are as of sending.
+pub fn shared_schedule(
+    day: &ScheduleDay,
+    view: &View,
+    refs: &ReferenceData,
+    now: DateTime<Tz>,
+) -> String {
+    let mut day = day.clone();
+    for subject in &mut day.subjects {
+        subject.appraisal = 0;
+        subject.mark = 0;
+        let homework = &mut subject.extra_data.homework;
+        homework.task = None;
+        homework.deadline = None;
+        homework.files.clear();
+    }
+    schedule(&day, view, refs, &Assets::default(), false, false, now)
 }
 
 fn write_filename(out: &mut String, id: i64, assets: &Assets) {

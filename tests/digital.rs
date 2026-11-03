@@ -406,3 +406,127 @@ mod app {
         );
     }
 }
+
+/// A week of distance lessons: Monday a lesson with a task plus a bare one, Tuesday a
+/// lecture with a webinar, Wednesday a lecture with nothing.
+fn distance_week() -> serde_json::Value {
+    let lesson = |date: &str, pair: i64, journal: i64, pair_type: i64, homework: bool| {
+        serde_json::json!({"pairNumber": pair, "lesson": {
+            "journalId": journal, "date": date, "pairNumber": pair, "groupId": "269",
+            "subgroup": "middle", "teacherId": "t-1", "auditoriumId": 900,
+            "disciplineShortName": format!("L{journal}"), "disciplineFullName": format!("L{journal}"),
+            "pairTypeId": pair_type, "billingType": null, "academicHours": 2,
+            "hasHomework": homework, "assessment": {"grade": 0, "mark": 0}
+        }})
+    };
+    let day = |date: &str, pairs: Vec<serde_json::Value>| serde_json::json!({"date": date, "pages": [{"pairs": pairs}]});
+    serde_json::json!({"result": {
+        "scope": {"weekStart": "2026-08-31"},
+        "maxPairNumber": 6,
+        "days": [
+            day("2026-08-31", vec![lesson("2026-08-31", 1, 11, 7, true), lesson("2026-08-31", 2, 12, 5, false)]),
+            day("2026-09-01", vec![lesson("2026-09-01", 1, 13, 5, false)]),
+            day("2026-09-02", vec![lesson("2026-09-02", 1, 14, 5, false)])
+        ],
+        "references": {
+            "teachers": [{"id": "t-1", "surname": "Иванова", "name": "Анна", "patronymic": "Петровна"}],
+            "auditoriums": [{"auditoriumId": 900, "code": "Д", "buildingShortCode": "", "variant": "virtual"}],
+            "pairTypes": [
+                {"id": 5, "name": "Лекция", "billingType": "Theoretical"},
+                {"id": 7, "name": "Самостоятельная работа", "billingType": "IndependentWork"}
+            ]
+        },
+        "callPresets": [],
+        "bellScopes": []
+    }})
+}
+
+#[tokio::test]
+async fn distance_lessons_carry_tasks_webinars_and_downloadable_files() {
+    use ktk_schedule::{
+        model::{View, non_school_day, visible_subjects},
+        workspace::{DEFAULT_DIGITAL_STUDENT_HOMEWORK, DEFAULT_DIGITAL_STUDENT_WEBINAR},
+    };
+    use wiremock::{Request, matchers::query_param};
+    let digital = Digital::start(false, "left").await;
+    Mock::given(path(DEFAULT_DIGITAL_STUDENT))
+        .respond_with(ResponseTemplate::new(200).set_body_json(seroval(&distance_week())))
+        .with_priority(1)
+        .mount(&digital.server)
+        .await;
+    Mock::given(path(DEFAULT_DIGITAL_STUDENT_HOMEWORK))
+        .respond_with(|request: &Request| {
+            let data = server_fn_data(request);
+            // Ids go as numbers: the platform validates types.
+            assert_eq!(data["journalId"], 11);
+            assert_eq!(data["weekStart"], "2026-08-31");
+            ResponseTemplate::new(200).set_body_json(seroval(&serde_json::json!({"result": {
+                "homework": {"task": "Прочитать §3", "deadline": null, "requiresResponse": false, "files": [
+                    {"userFileId": 501, "caption": "Лекция", "extension": "pdf", "sizeBytes": 4, "availability": "available"},
+                    {"userFileId": 502, "availability": "missing"}
+                ]}
+            }})))
+        })
+        .mount(&digital.server)
+        .await;
+    Mock::given(path(DEFAULT_DIGITAL_STUDENT_WEBINAR))
+        .respond_with(|request: &Request| {
+            // Real answers have no `status` (HAR of 2026-11-03); withheld content never counts.
+            let body = match server_fn_data(request)["journalId"].as_i64() {
+                Some(13) => serde_json::json!({"result": {"webinar": "https://meet.example/13"}}),
+                Some(14) => serde_json::json!({"result": {"status": "restricted", "webinar": "https://meet.example/14"}}),
+                _ => serde_json::json!({"result": {"webinar": null}}),
+            };
+            ResponseTemplate::new(200).set_body_json(seroval(&body))
+        })
+        .mount(&digital.server)
+        .await;
+    Mock::given(path("/api/timetable/students/self/lessons/11/files/501"))
+        .and(query_param("weekStart", "2026-08-31"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"%PDF".to_vec()))
+        .mount(&digital.server)
+        .await;
+
+    let client = Workspace::login(&digital.site(), "1000204", "password")
+        .await
+        .unwrap();
+    let tz = chrono_tz::Asia::Yekaterinburg;
+    let days = client.schedule(269, week(tz), "personal").await.unwrap();
+    let account = ktk_schedule::storage::Account {
+        id: 42,
+        group_id: 269,
+        personal_subgroup: "left".into(),
+        subgroup: "left".into(),
+        show_all: false,
+        teacher_hash: String::new(),
+        notify: false,
+    };
+    let view = View::own(&account, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    let names = |i: usize| -> Vec<String> {
+        visible_subjects(&days[i], &view, false)
+            .iter()
+            .map(|s| s.discipline.clone())
+            .collect()
+    };
+    // Monday: one task is enough to show every pair of the distance day.
+    assert_eq!(names(0), ["L11", "L12"]);
+    let task = &days[0].subjects[0].extra_data.homework;
+    assert_eq!(task.task.as_deref(), Some("Прочитать §3"));
+    assert_eq!(task.files, [501]);
+    // Tuesday: a webinar makes the lecture count. Wednesday has nothing to attend.
+    assert_eq!(names(1), ["L13"]);
+    assert_eq!(
+        days[1].subjects[0].extra_data.homework.webinar.as_deref(),
+        Some("https://meet.example/13")
+    );
+    assert!(names(2).is_empty() && non_school_day(&days[2], &view, false));
+    // Teachers see their distance lessons regardless.
+    assert_eq!(visible_subjects(&days[2], &view, true).len(), 1);
+
+    assert_eq!(client.document(501).await.unwrap().caption, "Лекция.pdf");
+    let (file, name) = client.download(501).await.unwrap();
+    assert_eq!(name, "Лекция.pdf");
+    assert_eq!(std::fs::read(&file).unwrap(), b"%PDF");
+    // A file no listed task named is never fetched.
+    assert!(client.download(999).await.is_err());
+}
