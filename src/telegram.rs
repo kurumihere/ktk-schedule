@@ -796,39 +796,14 @@ async fn callback_inner(app: &App, id: i64, message: MessageId, data: &str) -> R
             view.week_offset = 0;
             view.screen = Screen::Schedule;
         }
+        // Calendar days, as in VK: a day off shows `render::no_pairs` ("выходной").
         "schedule:prev" | "schedule:next" => {
-            let loaded = app.load(&a, &view, false).await?;
-            let current = loaded
-                .days
-                .iter()
-                .position(|d| day_date(&d.date, app.config.timezone) == Some(view.date));
-            let next = if data == "schedule:prev" {
-                current.and_then(|i| i.checked_sub(1)).or_else(|| {
-                    if let Some(first) = loaded
-                        .days
-                        .first()
-                        .and_then(|d| day_date(&d.date, app.config.timezone))
-                        && view.date > first
-                    {
-                        Some(loaded.days.len().saturating_sub(1))
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                current.map(|i| i + 1).or(Some(0))
-            };
-            let Some(day) = next.and_then(|i| loaded.days.get(i)) else {
+            let date = shift(view.date, if data == "schedule:prev" { -1 } else { 1 })?;
+            if !within_reach(date, today) {
                 return Ok(());
-            };
-            view.select_date(
-                day_date(&day.date, app.config.timezone)
-                    .ok_or_else(|| anyhow!("invalid schedule date"))?,
-            );
+            }
+            view.select_date(date);
             view.screen = Screen::Schedule;
-            return app
-                .show_loaded(&a, &view, Some(message), &loaded, false, "")
-                .await;
         }
         _ if data.starts_with("schedule:day:") => {
             let index: usize = data.trim_start_matches("schedule:day:").parse()?;

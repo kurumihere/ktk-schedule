@@ -472,6 +472,43 @@ async fn non_school_day_on_saturday_keeps_current_week() {
 }
 
 #[tokio::test]
+async fn day_buttons_step_through_calendar_days_including_days_off() {
+    let college = College::start(false).await;
+    let server = telegram_server().await;
+    let app = Arc::new(app(&college, &server).await);
+    let a = app.sign_in(42, "user", "password").await.unwrap();
+    let saturday = NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+    app.storage
+        .save_view(42, 100, &View::own(&a, saturday))
+        .await
+        .unwrap();
+    handle_callback(app.clone(), callback(42, 100, "schedule:next"))
+        .await
+        .unwrap();
+    let edit: Value = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .rfind(|r| r.url.path().to_lowercase().ends_with("/editmessagetext"))
+        .unwrap()
+        .body_json()
+        .unwrap();
+    let text = edit["text"].as_str().unwrap();
+    assert!(text.contains("01.11.2026"), "{text}");
+    assert!(text.ends_with("Воскресенье, выходной."), "{text}");
+    let sunday = app.storage.view(42, 100).await.unwrap().unwrap();
+    assert_eq!(sunday.date, NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
+    handle_callback(app.clone(), callback(42, 100, "schedule:prev"))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.storage.view(42, 100).await.unwrap().unwrap().date,
+        saturday
+    );
+}
+
+#[tokio::test]
 async fn groups_only_hear_the_bots_own_commands_and_owner_tools_stay_private() {
     let college = College::start(false).await;
     let server = telegram_server().await;
