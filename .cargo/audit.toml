@@ -1,0 +1,10 @@
+# cargo audit settings (read by security.yml and local `cargo audit`).
+
+[advisories]
+ignore = [
+    # Bundled SQLite < 3.54 can return uninitialized memory for a crafted database + `-wal`
+    # pair. The bot opens only its own database, writable by the `ktk-schedule` user alone.
+    # sqlx-sqlite 0.9.0 caps libsqlite3-sys below 0.38; drop this entry as soon as sqlx
+    # allows libsqlite3-sys >= 0.39.
+    "RUSTSEC-2026-0459",
+]

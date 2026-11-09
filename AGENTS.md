@@ -196,6 +196,7 @@ New variable -> `config.rs` (`from_values` + `load` if secret) + `.env.example` 
 14. `storage.prune` and `mark_notified` compare `%Y-%m-%d` strings; change the format everywhere at once.
 15. Root must not open the live SQLite file in WAL mode: it would leave root-owned `-wal/-shm` files. Deploy and backup scripts run `sqlite3` as `ktk-schedule`.
 16. wiremock `MockGuard` drops did not unmount scoped mocks reliably here: prefer `.up_to_n_times(n)`.
+17. `.cargo/audit.toml` ignores RUSTSEC-2026-0459 (bundled SQLite < 3.54) because sqlx-sqlite 0.9.0 caps libsqlite3-sys below 0.38; remove the entry once sqlx allows >= 0.39.
 
 ## 11. Workflows
 
