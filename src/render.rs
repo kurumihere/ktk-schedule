@@ -144,7 +144,7 @@ pub fn file_failed(name: &str) -> String {
 
 pub fn no_pairs(date: NaiveDate) -> String {
     let note = if date.weekday() == chrono::Weekday::Sun {
-        "Воскресенье, выходной."
+        "Пар нет, выходной."
     } else {
         "Пар нет."
     };
@@ -355,7 +355,12 @@ pub fn schedule(
         .unwrap_or(0)
         .clamp(0, 100);
     if last == 0 {
-        out.push_str("Пар нет.");
+        let note = if date.is_some_and(|d| d.weekday() == chrono::Weekday::Sun) {
+            "Пар нет, выходной."
+        } else {
+            "Пар нет."
+        };
+        out.push_str(note);
         return out;
     }
     let mut buildings = HashSet::new();

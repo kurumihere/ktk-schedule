@@ -1255,8 +1255,7 @@ pub fn visible_subjects_scoped<'a>(
     teacher: bool,
     is_personal: bool,
 ) -> Vec<&'a Subject> {
-    let subjects: Vec<&Subject> = day
-        .subjects
+    day.subjects
         .iter()
         .filter(|s| {
             teacher
@@ -1264,25 +1263,7 @@ pub fn visible_subjects_scoped<'a>(
                 || view.show_all
                 || personal_subgroup(&s.subgroup).is_none_or(|sub| sub == view.subgroup)
         })
-        .collect();
-    // A student's day of distance pairs only is shown when any pair has a webinar or a task;
-    // otherwise there is nothing to attend and the day is empty.
-    if !teacher
-        && subjects.iter().all(|s| s.extended_data.remote)
-        && !subjects.iter().any(|s| has_webinar_or_task(s))
-    {
-        return Vec::new();
-    }
-    subjects
-}
-
-fn has_webinar_or_task(subject: &Subject) -> bool {
-    let homework = &subject.extra_data.homework;
-    let filled = |text: &Option<String>| text.as_deref().is_some_and(|t| !t.trim().is_empty());
-    subject.extended_data.has_homework
-        || filled(&homework.webinar)
-        || filled(&homework.task)
-        || !homework.files.is_empty()
+        .collect()
 }
 
 pub fn visible_subjects<'a>(day: &'a ScheduleDay, view: &View, teacher: bool) -> Vec<&'a Subject> {

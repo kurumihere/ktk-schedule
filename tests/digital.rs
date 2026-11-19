@@ -513,14 +513,15 @@ async fn distance_lessons_carry_tasks_webinars_and_downloadable_files() {
     let task = &days[0].subjects[0].extra_data.homework;
     assert_eq!(task.task.as_deref(), Some("Прочитать §3"));
     assert_eq!(task.files, [501]);
-    // Tuesday: a webinar makes the lecture count. Wednesday has nothing to attend.
+    // Tuesday: a webinar makes the lecture count. Wednesday has a distance lesson without task/webinar.
     assert_eq!(names(1), ["L13"]);
     assert_eq!(
         days[1].subjects[0].extra_data.homework.webinar.as_deref(),
         Some("https://meet.example/13")
     );
-    assert!(names(2).is_empty() && non_school_day(&days[2], &view, false));
-    // Teachers see their distance lessons regardless.
+    assert_eq!(names(2), ["L14"]);
+    assert!(!non_school_day(&days[2], &view, false));
+    // Teachers see their distance lessons as well.
     assert_eq!(visible_subjects(&days[2], &view, true).len(), 1);
 
     assert_eq!(client.document(501).await.unwrap().caption, "Лекция.pdf");

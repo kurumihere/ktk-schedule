@@ -496,7 +496,7 @@ async fn day_buttons_step_through_calendar_days_including_days_off() {
         .unwrap();
     let text = edit["text"].as_str().unwrap();
     assert!(text.contains("01.11.2026"), "{text}");
-    assert!(text.ends_with("Воскресенье, выходной."), "{text}");
+    assert!(text.ends_with("Пар нет, выходной."), "{text}");
     let sunday = app.storage.view(42, 100).await.unwrap().unwrap();
     assert_eq!(sunday.date, NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
     handle_callback(app.clone(), callback(42, 100, "schedule:prev"))

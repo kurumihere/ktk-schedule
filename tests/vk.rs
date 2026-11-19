@@ -468,7 +468,7 @@ fn vk_schedule_keyboard_refreshes_today_and_hides_days_without_pairs() {
 #[test]
 fn sunday_is_a_day_off() {
     let sunday = NaiveDate::from_ymd_opt(2026, 9, 6).unwrap();
-    assert!(ktk_schedule::render::no_pairs(sunday).ends_with("Воскресенье, выходной."));
+    assert!(ktk_schedule::render::no_pairs(sunday).ends_with("Пар нет, выходной."));
     let saturday = NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
     assert!(ktk_schedule::render::no_pairs(saturday).ends_with("Пар нет."));
 }
